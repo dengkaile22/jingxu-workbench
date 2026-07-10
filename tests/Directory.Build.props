@@ -1,0 +1,10 @@
+<Project>
+  <!-- 继承根目录的统一工程规则 -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <!-- 测试方法使用下划线命名是 xUnit 社区标准惯例 -->
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+</Project>
+

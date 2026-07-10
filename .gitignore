@@ -1,0 +1,12 @@
+.superpowers/
+.vs/
+.idea/
+bin/
+obj/
+artifacts/
+dist/
+publish/
+TestResults/
+*.user
+*.suo
+*.log

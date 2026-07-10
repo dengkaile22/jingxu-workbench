@@ -1,5 +1,6 @@
 .superpowers/
 .worktrees/
+.tools/
 .vs/
 .idea/
 bin/
@@ -8,6 +9,8 @@ artifacts/
 dist/
 publish/
 TestResults/
+runtime/*
+!runtime/README.md
 *.user
 *.suo
 *.log

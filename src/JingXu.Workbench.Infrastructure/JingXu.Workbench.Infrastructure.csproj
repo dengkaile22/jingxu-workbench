@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\JingXu.Workbench.Application\JingXu.Workbench.Application.csproj" />
+    <ProjectReference Include="..\JingXu.Workbench.Domain\JingXu.Workbench.Domain.csproj" />
+  </ItemGroup>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+</Project>

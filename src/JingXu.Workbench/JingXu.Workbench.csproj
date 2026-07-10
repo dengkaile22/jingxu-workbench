@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JingXu.Workbench.Application\JingXu.Workbench.Application.csproj" />
+    <ProjectReference Include="..\JingXu.Workbench.Infrastructure\JingXu.Workbench.Infrastructure.csproj" />
+    <ProjectReference Include="..\JingXu.Workbench.Domain\JingXu.Workbench.Domain.csproj" />
+  </ItemGroup>
+</Project>

@@ -4,7 +4,7 @@ namespace JingXu.Workbench.Domain.Composition;
 /// 基于 SplitMix64 的确定性伪随机数发生器。
 /// 使用自有实现而非 System.Random，确保种子在 .NET 版本升级后仍然稳定可复现。
 /// </summary>
-internal sealed class DeterministicRandom
+public sealed class DeterministicRandom
 {
     private ulong _state;
 
@@ -45,6 +45,11 @@ internal sealed class DeterministicRandom
             return z ^ (z >> 31);
         }
     }
+
+    /// <summary>
+    /// 返回 [0.0, 1.0) 范围内的均匀分布浮点数。
+    /// </summary>
+    public double NextDouble() => NextUInt64() / (double)ulong.MaxValue;
 
     /// <summary>
     /// 返回 [0, exclusiveMax) 范围内的均匀分布整数。

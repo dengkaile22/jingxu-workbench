@@ -1,0 +1,26 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+
+    <!-- 动效令牌：全部 ≤180ms，缓出，无 Forever 循环。
+         由壳层代码后置（ShellWindow）读取，用于启动 stagger、导航过渡和
+         状态灯一次性交叉淡变。 -->
+
+    <CubicEase x:Key="Motion.Ease" EasingMode="EaseOut" />
+
+    <!-- 单区淡入 + 上移时长。 -->
+    <Duration x:Key="Motion.Enter">0:0:0.16</Duration>
+
+    <!-- 导航内容淡入淡出时长。 -->
+    <Duration x:Key="Motion.Navigate">0:0:0.14</Duration>
+
+    <!-- 状态灯交叉淡变时长。 -->
+    <Duration x:Key="Motion.Status">0:0:0.18</Duration>
+
+    <!-- 启动 stagger 每区延迟步进（秒）。 -->
+    <sys:Double x:Key="Motion.StaggerStepSeconds">0.045</sys:Double>
+
+    <!-- 入场上移距离（像素）。 -->
+    <sys:Double x:Key="Motion.RisePixels">8</sys:Double>
+
+</ResourceDictionary>

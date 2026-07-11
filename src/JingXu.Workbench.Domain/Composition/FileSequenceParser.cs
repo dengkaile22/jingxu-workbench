@@ -21,6 +21,14 @@ public static partial class FileSequenceParser
 
         // 去除扩展名后查找最后一个连续数字片段
         var nameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
+
+        // 微信等客户端导出的纯十六进制哈希名（如 32 位 msg 视频名）不含业务序号，
+        // 避免把哈希中的数字误当作序号（例如 ...4e1d → 1）。
+        if (HexHashFileNameRegex().IsMatch(nameWithoutExtension))
+        {
+            return Result<int>.Failure($"文件名 \"{fileName}\" 中未找到数字序号。");
+        }
+
         var matches = LastNumericTokenRegex().Matches(nameWithoutExtension);
 
         if (matches.Count == 0)
@@ -35,6 +43,25 @@ public static partial class FileSequenceParser
         }
 
         return Result<int>.Success(index);
+    }
+
+    /// <summary>
+    /// 将多任务输入拆分为多条序号表达式（换行或分号分隔，忽略空行）。
+    /// 单条任务示例：<c>264513</c> 或 <c>2,6,14,5,1,3</c>；
+    /// 多任务示例：每行一串，或 <c>264513; 351246</c>。
+    /// </summary>
+    public static IReadOnlyList<string> SplitExpressions(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return [];
+        }
+
+        return ExpressionSeparatorRegex()
+            .Split(input.Trim())
+            .Select(segment => segment.Trim())
+            .Where(segment => segment.Length > 0)
+            .ToArray();
     }
 
     /// <summary>
@@ -124,9 +151,16 @@ public static partial class FileSequenceParser
         return Result<IReadOnlyList<int>>.Success(indices);
     }
 
+    [GeneratedRegex(@"[\r\n;]+")]
+    private static partial Regex ExpressionSeparatorRegex();
+
     [GeneratedRegex(@"\d+")]
     private static partial Regex LastNumericTokenRegex();
 
     [GeneratedRegex(@"^\d+$")]
     private static partial Regex AllDigitsRegex();
+
+    /// <summary>至少 16 位的纯十六进制文件名（常见于即时通讯导出的媒体哈希）。</summary>
+    [GeneratedRegex(@"^[0-9a-fA-F]{16,}$")]
+    private static partial Regex HexHashFileNameRegex();
 }

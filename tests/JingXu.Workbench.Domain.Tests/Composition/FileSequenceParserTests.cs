@@ -19,8 +19,18 @@ public sealed class FileSequenceParserTests
     [InlineData("no-number.mp4")]
     [InlineData("")]
     [InlineData("   ")]
+    [InlineData("11e6dfdbde17e0e9f0a4bbefc95f4e1d.mp4")] // 微信哈希文件名：不得误解析为序号 1
+    [InlineData("ABCDEF0123456789abcdef0123456789.mp4")]
     public void Returns_failure_for_missing_or_empty_filename(string fileName) =>
         Assert.False(FileSequenceParser.ExtractIndex(fileName).IsSuccess);
+
+    [Fact]
+    public void WeChat_hash_filename_reports_missing_sequence_not_false_positive()
+    {
+        var result = FileSequenceParser.ExtractIndex("11e6dfdbde17e0e9f0a4bbefc95f4e1d.mp4");
+        Assert.False(result.IsSuccess);
+        Assert.Contains("未找到数字序号", result.Error!);
+    }
 
     // --- Parse compact ---
 
@@ -78,4 +88,15 @@ public sealed class FileSequenceParserTests
         Assert.Contains("第 2 项", result.Error!);
         Assert.Contains("abc", result.Error!);
     }
+
+    [Theory]
+    [InlineData("264513; 351246", new[] { "264513", "351246" })]
+    [InlineData("264513\n351246", new[] { "264513", "351246" })]
+    [InlineData(" 264513 ; ; 351246 ", new[] { "264513", "351246" })]
+    public void SplitExpressions_supports_semicolon_and_newline_tasks(string input, string[] expected) =>
+        Assert.Equal(expected, FileSequenceParser.SplitExpressions(input));
+
+    [Fact]
+    public void SplitExpressions_returns_empty_for_blank_input() =>
+        Assert.Empty(FileSequenceParser.SplitExpressions("   "));
 }

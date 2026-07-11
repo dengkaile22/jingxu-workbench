@@ -141,7 +141,13 @@ public sealed class RecordingMediaFilePicker : IMediaFilePicker
 
     public string? NextImagePick { get; set; }
 
-    public IReadOnlyList<string>? PickVideoFiles() => NextPick;
+    public string? LastVideoDialogTitle { get; private set; }
+
+    public IReadOnlyList<string>? PickVideoFiles(string? dialogTitle = null)
+    {
+        LastVideoDialogTitle = dialogTitle;
+        return NextPick;
+    }
 
     public string? PickAudioFile() => NextAudioPick;
 

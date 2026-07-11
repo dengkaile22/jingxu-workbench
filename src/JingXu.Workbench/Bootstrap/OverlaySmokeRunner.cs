@@ -79,40 +79,42 @@ internal static class OverlaySmokeRunner
                 return 1;
             }
 
-            var layer = mode switch
-            {
-                OverlayMode.FreeCover => OverlayLayer.CreateScreenshotPreset(mediaPath, info.Duration),
-                OverlayMode.FullFrameLowOpacity => OverlayLayer.CreateFullFramePreset(mediaPath, info.Duration),
-                OverlayMode.ShapeMask => OverlayLayer.CreateShapeMask(
-                    mediaPath,
-                    info.Duration,
-                    new Domain.Common.NormalizedRect(0.1, 0.1, 0.8, 0.4)),
-                _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
-            };
-
             var state = new OverlayWorkbenchState();
             var picker = new FixedMediaFilePicker(mediaPath);
             var vm = new OverlayEditorViewModel(picker, state, probe, new WpfUiDispatcher());
 
-            var command = mode switch
+            if (mode == OverlayMode.FreeCover)
             {
-                OverlayMode.FreeCover => vm.AddFreeCoverCommand,
-                OverlayMode.FullFrameLowOpacity => vm.AddFullFrameCommand,
-                OverlayMode.ShapeMask => vm.AddShapeMaskCommand,
-                _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
-            };
-
-            await command.ExecuteAsync(null).ConfigureAwait(false);
+                // 主交互：导入蒙版素材（默认自由覆盖）。
+                await vm.ImportMaskMaterialsCommand.ExecuteAsync(null).ConfigureAwait(false);
+            }
+            else
+            {
+                // 全屏/形状仍由领域层支持；冒烟验证工作台可承载并展示这些层。
+                var layer = mode switch
+                {
+                    OverlayMode.FullFrameLowOpacity => OverlayLayer.CreateFullFramePreset(mediaPath, info.Duration),
+                    OverlayMode.ShapeMask => OverlayLayer.CreateShapeMask(
+                        mediaPath,
+                        info.Duration,
+                        new Domain.Common.NormalizedRect(0.1, 0.1, 0.8, 0.4)),
+                    _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
+                };
+                state.Add(layer);
+            }
 
             report["layerCount"] = vm.Layers.Count;
             report["statusMessage"] = vm.StatusMessage;
             report["sourcePath"] = vm.Selected?.Layer.SourcePath;
-            report["success"] = vm.Layers.Count == 1 && vm.Selected?.Layer.SourcePath == mediaPath;
+            report["mode"] = mode.ToString();
+            report["success"] = vm.Layers.Count == 1
+                && vm.Selected?.Layer.SourcePath == mediaPath
+                && vm.Selected?.Layer.Mode == mode;
 
             if (report["success"] is not true)
             {
                 report["error"] = string.IsNullOrWhiteSpace(vm.StatusMessage)
-                    ? "添加蒙版层后列表为空，原因未知。"
+                    ? "导入/装载蒙版层后列表为空或不匹配，原因未知。"
                     : vm.StatusMessage;
             }
         }
@@ -182,7 +184,7 @@ internal static class OverlaySmokeRunner
 
     private sealed class FixedMediaFilePicker(string path) : IMediaFilePicker
     {
-        public IReadOnlyList<string>? PickVideoFiles() => [path];
+        public IReadOnlyList<string>? PickVideoFiles(string? dialogTitle = null) => [path];
 
         public string? PickAudioFile() => path;
 

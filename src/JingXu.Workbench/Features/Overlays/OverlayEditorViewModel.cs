@@ -13,9 +13,11 @@ using JingXu.Workbench.Infrastructure.Persistence;
 
 namespace JingXu.Workbench.Features.Overlays;
 
-/// <summary>蒙版工作台视图模型。</summary>
+/// <summary>蒙版工作台视图模型：导入蒙版视频素材、编辑叠加参数、同步素材库。</summary>
 public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
 {
+    public const string MaskVideoDialogTitle = "选择蒙版视频素材";
+
     private readonly IMediaFilePicker _filePicker;
     private readonly IMediaProbe _mediaProbe;
     private readonly IUiDispatcher _uiDispatcher;
@@ -40,6 +42,7 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
             new AtomicJsonStore<OverlayLibraryDocument>(OverlayLibraryDocument.CurrentSchemaVersion));
         _workbenchState.Changed += OnWorkbenchStateChanged;
         RefreshFromState();
+        _ = RefreshLibraryCountAsync();
     }
 
     public override WorkspaceModule ModuleKind => WorkspaceModule.Overlays;
@@ -50,15 +53,12 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(RemoveSelectedCommand))]
-    [NotifyCanExecuteChangedFor(nameof(RegisterToLibraryCommand))]
     [NotifyCanExecuteChangedFor(nameof(ApplyBoundsCommand))]
-    [NotifyCanExecuteChangedFor(nameof(AddFreeCoverCommand))]
-    [NotifyCanExecuteChangedFor(nameof(AddFullFrameCommand))]
-    [NotifyCanExecuteChangedFor(nameof(AddShapeMaskCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ImportMaskMaterialsCommand))]
     private OverlayLayerRowViewModel? _selected;
 
     [ObservableProperty]
-    private string _previewSummary = "添加蒙版层后，将叠加到混剪成片中。";
+    private string _previewSummary = "导入蒙版视频素材后，可在混剪页启用叠加到成片。";
 
     [ObservableProperty]
     private string _statusMessage = string.Empty;
@@ -104,36 +104,14 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ApplyBoundsCommand))]
-    private ShapeKind _selectedShape = ShapeKind.Rectangle;
-
-    [ObservableProperty]
-    private string? _alphaPngPath;
-
-    [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(ApplyBoundsCommand))]
     private bool _mixOverlayAudio;
 
     [ObservableProperty]
     private int _libraryEntryCount;
 
-    /// <summary>形状遮罩可选几何类型（含导入 PNG）。</summary>
-    public IReadOnlyList<ShapeKind> AvailableShapes { get; } =
-    [
-        ShapeKind.Rectangle,
-        ShapeKind.RoundedRectangle,
-        ShapeKind.Ellipse,
-        ShapeKind.ImportedPng
-    ];
-
-    public bool IsShapeMaskSelected => Selected?.Layer.Mode == OverlayMode.ShapeMask;
-
-    public bool IsImportedPngShape => IsShapeMaskSelected && SelectedShape == ShapeKind.ImportedPng;
-
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(AddFreeCoverCommand))]
-    [NotifyCanExecuteChangedFor(nameof(AddFullFrameCommand))]
-    [NotifyCanExecuteChangedFor(nameof(AddShapeMaskCommand))]
-    private bool _isAddingLayer;
+    [NotifyCanExecuteChangedFor(nameof(ImportMaskMaterialsCommand))]
+    private bool _isImporting;
 
     public bool HasLayers => Layers.Count > 0;
 
@@ -164,8 +142,6 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
     partial void OnSelectedChanged(OverlayLayerRowViewModel? value)
     {
         OnPropertyChanged(nameof(HasSelected));
-        OnPropertyChanged(nameof(IsShapeMaskSelected));
-        OnPropertyChanged(nameof(IsImportedPngShape));
         if (value is null)
         {
             return;
@@ -183,13 +159,9 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
         OffsetY = value.Layer.OffsetY;
         RotationDegrees = value.Layer.RotationDegrees;
         Feather = value.Layer.Feather;
-        SelectedShape = value.Layer.Shape;
-        AlphaPngPath = value.Layer.AlphaPngPath;
         MixOverlayAudio = value.Layer.AudioMode == OverlayAudioMode.Mix;
         _isLoadingSelection = false;
         NotifyPreviewChanged();
-        OnPropertyChanged(nameof(IsShapeMaskSelected));
-        OnPropertyChanged(nameof(IsImportedPngShape));
     }
 
     partial void OnBoundsXChanged(double value) => OnMaskFieldChanged();
@@ -214,29 +186,142 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
 
     partial void OnFeatherChanged(double value) => OnMaskFieldChanged();
 
-    partial void OnSelectedShapeChanged(ShapeKind value)
-    {
-        OnPropertyChanged(nameof(IsImportedPngShape));
-        OnMaskFieldChanged();
-    }
-
-    partial void OnAlphaPngPathChanged(string? value) => OnMaskFieldChanged();
-
     partial void OnMixOverlayAudioChanged(bool value) => OnMaskFieldChanged();
 
-    private bool CanAddLayer() => !IsAddingLayer;
+    private bool CanImportMaskMaterials() => !IsImporting;
 
-    [RelayCommand(CanExecute = nameof(CanAddLayer))]
-    private async Task AddFreeCoverAsync() =>
-        await AddLayerAsync(OverlayMode.FreeCover).ConfigureAwait(true);
+    /// <summary>导入蒙版视频素材：多选文件 → 探测 → 加入列表并写入素材库（默认自由覆盖）。</summary>
+    [RelayCommand(CanExecute = nameof(CanImportMaskMaterials))]
+    private async Task ImportMaskMaterialsAsync()
+    {
+        _uiDispatcher.Invoke(() =>
+        {
+            IsImporting = true;
+            StatusMessage = string.Empty;
+        });
 
-    [RelayCommand(CanExecute = nameof(CanAddLayer))]
-    private async Task AddFullFrameAsync() =>
-        await AddLayerAsync(OverlayMode.FullFrameLowOpacity).ConfigureAwait(true);
+        try
+        {
+            IReadOnlyList<string>? paths;
+            try
+            {
+                paths = _uiDispatcher.Invoke(() => _filePicker.PickVideoFiles(MaskVideoDialogTitle));
+            }
+            catch (Exception ex)
+            {
+                _uiDispatcher.Invoke(() => StatusMessage = $"无法打开文件选择对话框：{ToChineseOverlayError(ex)}");
+                return;
+            }
 
-    [RelayCommand(CanExecute = nameof(CanAddLayer))]
-    private async Task AddShapeMaskAsync() =>
-        await AddLayerAsync(OverlayMode.ShapeMask).ConfigureAwait(true);
+            if (paths is null || paths.Count == 0)
+            {
+                return;
+            }
+
+            await ImportPathsAsync(paths).ConfigureAwait(true);
+        }
+        finally
+        {
+            _uiDispatcher.Invoke(() => IsImporting = false);
+        }
+    }
+
+    /// <summary>供测试与拖放等入口复用：按路径列表导入蒙版素材。</summary>
+    internal async Task ImportPathsAsync(IReadOnlyList<string> paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+
+        var successCount = 0;
+        var failCount = 0;
+        string? lastError = null;
+
+        foreach (var rawPath in paths)
+        {
+            if (string.IsNullOrWhiteSpace(rawPath))
+            {
+                failCount++;
+                lastError = "未选择有效的蒙版素材路径。";
+                continue;
+            }
+
+            var path = rawPath;
+            if (!File.Exists(path))
+            {
+                failCount++;
+                lastError = $"蒙版素材不存在或无法访问：{path}";
+                continue;
+            }
+
+            _uiDispatcher.Invoke(() => StatusMessage = $"正在探测蒙版素材…（{Path.GetFileName(path)}）");
+
+            try
+            {
+                var info = await _mediaProbe.ProbeAsync(path, CancellationToken.None).ConfigureAwait(false);
+                if (info.Duration <= TimeSpan.Zero)
+                {
+                    failCount++;
+                    lastError = "蒙版素材时长无效（必须大于 0 秒）。";
+                    continue;
+                }
+
+                _layerCounter++;
+                var name = $"蒙版 {_layerCounter}";
+                var layer = OverlayLayer.CreateScreenshotPreset(path, info.Duration) with
+                {
+                    Name = name,
+                    ZIndex = _layerCounter - 1
+                };
+
+                try
+                {
+                    await _libraryService.RegisterAsync(
+                        path,
+                        tags: ["FreeCover"],
+                        cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // 入库失败不阻断加入工作台列表；状态里提示。
+                    lastError = $"加入素材库失败：{ToChineseOverlayError(ex)}";
+                }
+
+                _uiDispatcher.Invoke(() => _workbenchState.Add(layer));
+                successCount++;
+            }
+            catch (MediaProbeException ex)
+            {
+                failCount++;
+                lastError = $"蒙版素材探测失败：{ToChineseOverlayError(ex)}";
+            }
+            catch (Exception ex)
+            {
+                failCount++;
+                lastError = $"导入蒙版失败：{ToChineseOverlayError(ex)}";
+            }
+        }
+
+        await RefreshLibraryCountAsync().ConfigureAwait(true);
+
+        _uiDispatcher.Invoke(() =>
+        {
+            if (successCount == 0 && failCount == 0)
+            {
+                return;
+            }
+
+            if (failCount == 0)
+            {
+                StatusMessage = successCount == 1
+                    ? $"已导入 1 个蒙版素材。"
+                    : $"已导入 {successCount} 个蒙版素材。";
+                return;
+            }
+
+            StatusMessage = successCount == 0
+                ? lastError ?? "导入蒙版失败。"
+                : $"已导入 {successCount} 个，失败 {failCount} 个。" + (lastError is null ? string.Empty : $" 最近错误：{lastError}");
+        });
+    }
 
     [RelayCommand(CanExecute = nameof(CanMutateSelected))]
     private void RemoveSelected()
@@ -267,48 +352,6 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
 
         _workbenchState.Update(Selected.DisplayName, updated);
         StatusMessage = $"已更新蒙版层「{Selected.DisplayName}」。";
-    }
-
-    [RelayCommand(CanExecute = nameof(CanMutateSelected))]
-    private async Task RegisterToLibraryAsync()
-    {
-        if (Selected is null)
-        {
-            return;
-        }
-
-        try
-        {
-            await _libraryService.RegisterAsync(
-                Selected.Layer.SourcePath,
-                tags: [Selected.Layer.Mode.ToString()],
-                cancellationToken: CancellationToken.None).ConfigureAwait(true);
-            await RefreshLibraryCountAsync().ConfigureAwait(true);
-            _uiDispatcher.Invoke(() => StatusMessage = $"已将「{Path.GetFileName(Selected.Layer.SourcePath)}」加入蒙版素材库。");
-        }
-        catch (Exception ex)
-        {
-            _uiDispatcher.Invoke(() => StatusMessage = $"加入素材库失败：{ToChineseOverlayError(ex)}");
-        }
-    }
-
-    [RelayCommand(CanExecute = nameof(CanMutateSelected))]
-    private void PickAlphaPng()
-    {
-        if (Selected is null || Selected.Layer.Mode != OverlayMode.ShapeMask)
-        {
-            return;
-        }
-
-        var path = _filePicker.PickImageFile();
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
-        SelectedShape = ShapeKind.ImportedPng;
-        AlphaPngPath = path;
-        StatusMessage = $"已选择 PNG 遮罩：{Path.GetFileName(path)}";
     }
 
     [RelayCommand]
@@ -346,6 +389,7 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
             return false;
         }
 
+        // 形状/PNG 字段由领域层保留；本页主流程不再编辑，避免回退已修复的渲染参数。
         updated = Selected.Layer with
         {
             Bounds = bounds.Value,
@@ -356,10 +400,6 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
             OffsetY = OffsetY,
             RotationDegrees = RotationDegrees,
             Feather = Feather,
-            Shape = Selected.Layer.Mode == OverlayMode.ShapeMask ? SelectedShape : Selected.Layer.Shape,
-            AlphaPngPath = Selected.Layer.Mode == OverlayMode.ShapeMask && SelectedShape == ShapeKind.ImportedPng
-                ? AlphaPngPath
-                : null,
             AudioMode = MixOverlayAudio ? OverlayAudioMode.Mix : OverlayAudioMode.Discard
         };
 
@@ -376,85 +416,6 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
         OnPropertyChanged(nameof(PreviewMaskCenterY));
         OnPropertyChanged(nameof(PreviewMaskRenderLeft));
         OnPropertyChanged(nameof(PreviewMaskRenderTop));
-    }
-
-    private async Task AddLayerAsync(OverlayMode mode)
-    {
-        _uiDispatcher.Invoke(() =>
-        {
-            IsAddingLayer = true;
-            StatusMessage = string.Empty;
-        });
-
-        try
-        {
-            IReadOnlyList<string>? paths;
-            try
-            {
-                paths = _uiDispatcher.Invoke(() => _filePicker.PickVideoFiles());
-            }
-            catch (Exception ex)
-            {
-                _uiDispatcher.Invoke(() => StatusMessage = $"无法打开文件选择对话框：{ToChineseOverlayError(ex)}");
-                return;
-            }
-
-            if (paths is null || paths.Count == 0)
-            {
-                return;
-            }
-
-            var path = paths[0];
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                _uiDispatcher.Invoke(() => StatusMessage = "未选择有效的蒙版素材路径。");
-                return;
-            }
-
-            if (!File.Exists(path))
-            {
-                _uiDispatcher.Invoke(() => StatusMessage = $"蒙版素材不存在或无法访问：{path}");
-                return;
-            }
-
-            _uiDispatcher.Invoke(() => StatusMessage = "正在探测蒙版素材…");
-
-            var info = await _mediaProbe.ProbeAsync(path, CancellationToken.None).ConfigureAwait(false);
-            if (info.Duration <= TimeSpan.Zero)
-            {
-                _uiDispatcher.Invoke(() => StatusMessage = "蒙版素材时长无效（必须大于 0 秒）。");
-                return;
-            }
-
-            _layerCounter++;
-            var name = $"蒙版 {_layerCounter}";
-
-            var layer = mode switch
-            {
-                OverlayMode.FreeCover => OverlayLayer.CreateScreenshotPreset(path, info.Duration) with { Name = name, ZIndex = _layerCounter - 1 },
-                OverlayMode.FullFrameLowOpacity => OverlayLayer.CreateFullFramePreset(path, info.Duration) with { Name = name, ZIndex = _layerCounter - 1 },
-                OverlayMode.ShapeMask => OverlayLayer.CreateShapeMask(path, info.Duration, new NormalizedRect(0.1, 0.1, 0.8, 0.4)) with { Name = name, ZIndex = _layerCounter - 1 },
-                _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
-            };
-
-            _uiDispatcher.Invoke(() =>
-            {
-                _workbenchState.Add(layer);
-                StatusMessage = $"已添加{ModeLabel(mode)}：{Path.GetFileName(path)}。";
-            });
-        }
-        catch (MediaProbeException ex)
-        {
-            _uiDispatcher.Invoke(() => StatusMessage = $"蒙版素材探测失败：{ToChineseOverlayError(ex)}");
-        }
-        catch (Exception ex)
-        {
-            _uiDispatcher.Invoke(() => StatusMessage = $"添加蒙版失败：{ToChineseOverlayError(ex)}");
-        }
-        finally
-        {
-            _uiDispatcher.Invoke(() => IsAddingLayer = false);
-        }
     }
 
     private void OnWorkbenchStateChanged()
@@ -481,11 +442,16 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
                 Layers.Add(new OverlayLayerRowViewModel(layer));
             }
 
+            if (Layers.Count > 0)
+            {
+                _layerCounter = Math.Max(_layerCounter, Layers.Count);
+            }
+
             OnPropertyChanged(nameof(HasLayers));
             Selected = Layers.LastOrDefault();
             PreviewSummary = Layers.Count switch
             {
-                0 => "添加蒙版层后，在混剪模块入队时将自动叠加到成片。",
+                0 => "导入蒙版视频素材后，在混剪页开启「启用蒙版叠加到成片」即可渲染。",
                 1 => $"已配置 1 层蒙版（{Selected?.ModeLabel}），入队时启用重新编码。",
                 _ => $"已配置 {Layers.Count} 层蒙版，按层级顺序叠加。"
             };
@@ -501,14 +467,6 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
         var document = await _libraryService.LoadAsync(cancellationToken: CancellationToken.None).ConfigureAwait(false);
         _uiDispatcher.Invoke(() => LibraryEntryCount = document.Entries.Count);
     }
-
-    private static string ModeLabel(OverlayMode mode) => mode switch
-    {
-        OverlayMode.FreeCover => "自由覆盖层",
-        OverlayMode.FullFrameLowOpacity => "全屏低透明度覆盖",
-        OverlayMode.ShapeMask => "形状遮罩",
-        _ => mode.ToString()
-    };
 
     private static string ToChineseOverlayError(Exception ex)
     {

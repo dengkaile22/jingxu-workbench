@@ -5,11 +5,11 @@ namespace JingXu.Workbench.Bootstrap;
 /// <summary>使用 WPF 标准文件对话框选择视频素材。</summary>
 public sealed class WpfMediaFilePicker : IMediaFilePicker
 {
-    public IReadOnlyList<string>? PickVideoFiles()
+    public IReadOnlyList<string>? PickVideoFiles(string? dialogTitle = null)
     {
         var dialog = new OpenFileDialog
         {
-            Title = "选择蒙版视频素材",
+            Title = string.IsNullOrWhiteSpace(dialogTitle) ? "选择视频素材" : dialogTitle,
             Filter = "视频文件|*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v|所有文件|*.*",
             Multiselect = true,
             CheckFileExists = true

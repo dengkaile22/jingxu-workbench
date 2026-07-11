@@ -425,7 +425,7 @@
                               IsEnabled="{Binding IsOverlaySectionEnabled}"
                               Margin="0,10,0,0"
                               AutomationProperties.Name="随机套用素材库蒙版" />
-                    <TextBlock Text="蒙版在渲染阶段叠加到最终成片；关闭开关时入队不带蒙版层。参数在「蒙版」页配置，素材可手动指定或从素材库随机。"
+                    <TextBlock Text="蒙版在渲染阶段叠加到最终成片；关闭开关时入队不带蒙版层。请先在「蒙版」页导入蒙版素材，或开启随机套用素材库。"
                                Style="{DynamicResource Text.Caption}"
                                Margin="0,8,0,0"
                                TextWrapping="Wrap" />

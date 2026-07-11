@@ -21,23 +21,12 @@
                        Margin="0,8,0,0"
                        Visibility="{Binding HasStatusMessage, Converter={StaticResource BoolToVis}}" />
 
-            <TextBlock Text="添加蒙版" Style="{DynamicResource Text.SectionHeader}" Margin="0,18,0,8" />
-            <WrapPanel>
-                <Button Style="{DynamicResource Button.Secondary}"
-                        Content="自由覆盖层"
-                        Command="{Binding AddFreeCoverCommand}"
+            <WrapPanel Margin="0,18,0,0">
+                <Button Style="{DynamicResource Button.Primary}"
+                        Content="导入蒙版素材"
+                        Command="{Binding ImportMaskMaterialsCommand}"
                         Margin="0,0,8,8"
-                        AutomationProperties.Name="添加自由覆盖蒙版" />
-                <Button Style="{DynamicResource Button.Secondary}"
-                        Content="全屏低透明"
-                        Command="{Binding AddFullFrameCommand}"
-                        Margin="0,0,8,8"
-                        AutomationProperties.Name="添加全屏低透明度蒙版" />
-                <Button Style="{DynamicResource Button.Secondary}"
-                        Content="形状遮罩"
-                        Command="{Binding AddShapeMaskCommand}"
-                        Margin="0,0,8,8"
-                        AutomationProperties.Name="添加形状遮罩" />
+                        AutomationProperties.Name="导入蒙版素材" />
             </WrapPanel>
 
             <Grid Margin="0,8,0,0">
@@ -45,7 +34,7 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="蒙版层" Style="{DynamicResource Text.SectionHeader}" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="0" Text="蒙版列表" Style="{DynamicResource Text.SectionHeader}" VerticalAlignment="Center" />
                 <TextBlock Grid.Column="1"
                            Style="{DynamicResource Text.Caption}"
                            VerticalAlignment="Center">
@@ -67,29 +56,30 @@
                          SelectedItem="{Binding Selected}"
                          BorderThickness="0"
                          Background="Transparent">
-                    <!-- 手动验证：添加任意蒙版层后列表应显示 DisplayName，且不弹「操作失败」绑定异常。 -->
+                    <!-- Run.Text 默认 TwoWay：只读行属性必须显式 OneWay，否则添加层后会抛绑定异常并弹「操作失败」。 -->
                     <ListBox.ItemTemplate>
                         <DataTemplate DataType="{x:Type overlays:OverlayLayerRowViewModel}">
                             <StackPanel Margin="0,4">
                                 <TextBlock Style="{DynamicResource Text.Body}">
                                     <Run Text="{Binding DisplayName, Mode=OneWay}" FontWeight="SemiBold" />
                                     <Run Text=" · " />
-                                    <Run Text="{Binding ModeLabel}" />
+                                    <Run Text="{Binding ModeLabel, Mode=OneWay}" />
                                     <Run Text=" · Z" />
-                                    <Run Text="{Binding ZIndex}" />
+                                    <Run Text="{Binding ZIndex, Mode=OneWay}" />
                                 </TextBlock>
-                                <TextBlock Text="{Binding SourceFileName}" Style="{DynamicResource Text.Caption}" />
-                                <TextBlock Text="{Binding BoundsText}" Style="{DynamicResource Text.Mono}" FontSize="11" />
-                                <TextBlock Text="{Binding TransformText}" Style="{DynamicResource Text.Mono}" FontSize="11" />
+                                <TextBlock Text="{Binding SourceFileName, Mode=OneWay}" Style="{DynamicResource Text.Caption}" />
+                                <TextBlock Text="{Binding BoundsText, Mode=OneWay}" Style="{DynamicResource Text.Mono}" FontSize="11" />
+                                <TextBlock Text="{Binding TransformText, Mode=OneWay}" Style="{DynamicResource Text.Mono}" FontSize="11" />
                             </StackPanel>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
             </Border>
 
-            <TextBlock Text="未配置蒙版层。使用上方按钮选择素材并添加。"
+            <TextBlock Text="暂无蒙版素材。点击「导入蒙版素材」选择视频文件，将加入列表并写入素材库。"
                        Style="{DynamicResource Text.Caption}"
                        Margin="0,12,0,0"
+                       TextWrapping="Wrap"
                        Visibility="{Binding HasLayers, Converter={StaticResource InverseBoolToVis}}" />
 
             <TextBlock Text="镜台预览" Style="{DynamicResource Text.SectionHeader}" Margin="0,18,0,8" />
@@ -138,7 +128,6 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,8,8">
@@ -166,30 +155,7 @@
                     <TextBox Text="{Binding StartClipIndex, UpdateSourceTrigger=PropertyChanged}" Padding="8,6" />
                 </StackPanel>
 
-                <StackPanel Grid.Row="3"
-                            Grid.ColumnSpan="2"
-                            Margin="0,0,0,8"
-                            Visibility="{Binding IsShapeMaskSelected, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="形状" Style="{DynamicResource Text.Caption}" />
-                    <ComboBox ItemsSource="{Binding AvailableShapes}"
-                              SelectedItem="{Binding SelectedShape}"
-                              Margin="0,4,0,0"
-                              AutomationProperties.Name="形状遮罩类型" />
-                    <StackPanel Margin="0,8,0,0"
-                                Visibility="{Binding IsImportedPngShape, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Text="{Binding AlphaPngPath, TargetNullValue=未选择 PNG 遮罩}"
-                                   Style="{DynamicResource Text.Caption}"
-                                   TextTrimming="CharacterEllipsis" />
-                        <Button Style="{DynamicResource Button.Secondary}"
-                                Content="选择 PNG 遮罩…"
-                                Command="{Binding PickAlphaPngCommand}"
-                                Margin="0,6,0,0"
-                                HorizontalAlignment="Left"
-                                AutomationProperties.Name="选择 PNG 形状遮罩" />
-                    </StackPanel>
-                </StackPanel>
-
-                <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Margin="0,4,0,8">
+                <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Margin="0,4,0,8">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -212,7 +178,7 @@
                     </Grid>
                 </StackPanel>
 
-                <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Margin="0,0,0,8">
+                <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Margin="0,0,0,8">
                     <Grid Margin="0,0,0,8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -243,7 +209,7 @@
                     </Grid>
                 </StackPanel>
 
-                <StackPanel Grid.Row="6" Grid.ColumnSpan="2">
+                <StackPanel Grid.Row="5" Grid.ColumnSpan="2">
                     <Grid Margin="0,0,0,8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -288,17 +254,12 @@
                         Margin="0,0,8,8"
                         AutomationProperties.Name="应用蒙版参数到选中层" />
                 <Button Style="{DynamicResource Button.Secondary}"
-                        Content="加入素材库"
-                        Command="{Binding RegisterToLibraryCommand}"
-                        Margin="0,0,8,0"
-                        AutomationProperties.Name="将选中蒙版注册到素材库" />
-                <Button Style="{DynamicResource Button.Secondary}"
-                        Content="移除选中层"
+                        Content="移除选中"
                         Command="{Binding RemoveSelectedCommand}"
                         AutomationProperties.Name="移除选中蒙版层" />
             </WrapPanel>
 
-            <TextBlock Text="配置完成后，在混剪页开启「启用蒙版叠加到成片」并入队，蒙版将渲染到最终成片。"
+            <TextBlock Text="配置完成后，在混剪页开启「启用蒙版叠加到成片」（可选「随机套用素材库」）并入队，蒙版将渲染到最终成片。"
                        Style="{DynamicResource Text.Caption}"
                        Margin="0,16,0,0"
                        TextWrapping="Wrap" />

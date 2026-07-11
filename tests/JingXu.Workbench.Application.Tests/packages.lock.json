@@ -177,6 +177,13 @@
       },
       "jingxu.workbench.domain": {
         "type": "Project"
+      },
+      "jingxu.workbench.infrastructure": {
+        "type": "Project",
+        "dependencies": {
+          "JingXu.Workbench.Application": "[1.0.0, )",
+          "JingXu.Workbench.Domain": "[1.0.0, )"
+        }
       }
     }
   }

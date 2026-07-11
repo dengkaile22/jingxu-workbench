@@ -24,5 +24,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\JingXu.Workbench.Application\JingXu.Workbench.Application.csproj" />
     <ProjectReference Include="..\..\src\JingXu.Workbench.Domain\JingXu.Workbench.Domain.csproj" />
+    <ProjectReference Include="..\..\src\JingXu.Workbench.Infrastructure\JingXu.Workbench.Infrastructure.csproj" />
   </ItemGroup>
 </Project>

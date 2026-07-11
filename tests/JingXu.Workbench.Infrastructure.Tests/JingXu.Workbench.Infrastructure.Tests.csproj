@@ -26,4 +26,10 @@
     <ProjectReference Include="..\..\src\JingXu.Workbench.Application\JingXu.Workbench.Application.csproj" />
     <ProjectReference Include="..\..\src\JingXu.Workbench.Domain\JingXu.Workbench.Domain.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Media\Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Runtime\Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Subtitles\Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

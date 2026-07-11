@@ -18,6 +18,15 @@
           "Microsoft.TestPlatform.TestHost": "18.7.0"
         }
       },
+      "System.Drawing.Common": {
+        "type": "Direct",
+        "requested": "[9.0.0, )",
+        "resolved": "9.0.0",
+        "contentHash": "uoozjI3+dlgKh2onFJcz8aNLh6TRCPlLSh8Dbuljc8CdvqXrxHOVysJlrHvlsOCqceqGBR1wrMPxlnzzhynktw==",
+        "dependencies": {
+          "Microsoft.Win32.SystemEvents": "9.0.0"
+        }
+      },
       "xunit.runner.visualstudio": {
         "type": "Direct",
         "requested": "[3.1.5, )",
@@ -96,6 +105,11 @@
         "type": "Transitive",
         "resolved": "5.0.0",
         "contentHash": "dDoKi0PnDz31yAyETfRntsLArTlVAVzUzCIvvEDsDsucrl33Dl8pIJG06ePTJTI3tGpeyHS9Cq7Foc/s4EeKcg=="
+      },
+      "Microsoft.Win32.SystemEvents": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "z8FfGIaoeALdD+KF44A2uP8PZIQQtDGiXsOLuN8nohbKhkyKt7zGaZb+fKiCxTuBqG22Q7myIAioSWaIcOOrOw=="
       },
       "Newtonsoft.Json": {
         "type": "Transitive",

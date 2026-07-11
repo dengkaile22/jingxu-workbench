@@ -5,5 +5,7 @@
   </ItemGroup>
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <!-- Windows Job Object P/Invoke via LibraryImport requires unsafe blocks. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 </Project>

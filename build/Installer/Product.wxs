@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="JingXu Workbench"
+    Manufacturer="JingXu"
+    Version="1.0.0.0"
+    UpgradeCode="A7C4E2B1-9F3D-4E6A-8C5B-1D2E3F4A5B6C"
+    Scope="perMachine">
+
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version is already installed."
+      AllowSameVersionUpgrades="yes" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="MainFeature" Title="JingXu Workbench" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+    </Feature>
+
+    <Icon Id="AppIcon" SourceFile="$(var.PublishDir)\JingXu.Workbench.exe" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+  </Package>
+</Wix>

@@ -37,4 +37,22 @@ public sealed class WpfMediaFilePicker : IMediaFilePicker
             ? dialog.FileName
             : null;
     }
+
+    public string? PickImageFile()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择图片（贴纸 / PNG 遮罩）",
+            Filter = "图像文件|*.png;*.jpg;*.jpeg;*.webp;*.bmp|PNG 图像|*.png|所有文件|*.*",
+            Multiselect = false,
+            CheckFileExists = true
+        };
+
+        var owner = System.Windows.Application.Current?.MainWindow;
+        var accepted = owner is null
+            ? dialog.ShowDialog() == true
+            : dialog.ShowDialog(owner) == true;
+
+        return accepted ? dialog.FileName : null;
+    }
 }

@@ -41,4 +41,17 @@ public sealed class WpfUiDispatcher : IUiDispatcher
         var dispatcher = System.Windows.Application.Current?.Dispatcher;
         return dispatcher is null || dispatcher.CheckAccess();
     }
+
+    public void Post(Action action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null)
+        {
+            action();
+            return;
+        }
+
+        _ = dispatcher.BeginInvoke(action, DispatcherPriority.Loaded);
+    }
 }

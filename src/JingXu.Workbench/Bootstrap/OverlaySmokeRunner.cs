@@ -185,5 +185,7 @@ internal static class OverlaySmokeRunner
         public IReadOnlyList<string>? PickVideoFiles() => [path];
 
         public string? PickAudioFile() => path;
+
+        public string? PickImageFile() => path;
     }
 }

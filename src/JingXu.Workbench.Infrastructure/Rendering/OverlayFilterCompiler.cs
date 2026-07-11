@@ -70,18 +70,17 @@ public static class OverlayFilterCompiler
             builder.Append(CultureInfo.InvariantCulture,
                 $"pad={pw}:{ph}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba[{scaledLabel}];");
 
-            var opacity = layer.Mode == OverlayMode.FullFrameLowOpacity
-                ? OverlayLayer.FullFrameDefaultOpacity
-                : layer.Opacity;
+            // 全屏模式默认 0.2，但尊重用户在层上显式调整后的 Opacity。
+            var opacity = layer.Opacity;
 
             builder.Append(CultureInfo.InvariantCulture,
                 $"[{scaledLabel}]colorchannelmixer=aa={FormatDecimal(opacity)}[{alphaLabel}];");
 
             var overlaySource = alphaLabel;
-            if (layer.Mode == OverlayMode.ShapeMask && layer.Shape != ShapeKind.ImportedPng)
+            if (layer.Mode == OverlayMode.ShapeMask)
             {
                 var maskedLabel = $"{alphaLabel}m";
-                builder.Append(BuildShapeAlphaMask(layer, pw, ph, alphaLabel, maskedLabel));
+                builder.Append(BuildShapeAlphaMask(layer, pw, ph, index, alphaLabel, maskedLabel));
                 builder.Append(';');
                 overlaySource = maskedLabel;
             }
@@ -138,17 +137,42 @@ public static class OverlayFilterCompiler
         OverlayLayer layer,
         int width,
         int height,
+        int overlayIndex,
         string inputLabel,
-        string outputLabel) =>
-        layer.Shape switch
+        string outputLabel)
+    {
+        // rgba 输入必须改 a 通道；旧版 geq=lum 会毁掉 alpha，导致椭圆/圆角蒙版整层不可见。
+        return layer.Shape switch
         {
             ShapeKind.Ellipse =>
-                $"[{inputLabel}]geq=lum='if(lt(pow(X-{width / 2},2)+pow(Y-{height / 2},2),pow(min({width},{height})/2,2)),255,0)':cb='p(X,Y)':cr='p(X,Y)'[{outputLabel}]",
+                $"[{inputLabel}]geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(pow(X-{width / 2},2)+pow(Y-{height / 2},2),pow(min({width},{height})/2,2)),alpha(X,Y),0)'[{outputLabel}]",
             ShapeKind.RoundedRectangle =>
-                $"[{inputLabel}]geq=lum='if(gt(X,8)*gt(Y,8)*gt({width}-X,8)*gt({height}-Y,8),255,if(lt(pow(min(X,8)+min({width}-X,8)-8,2)+pow(min(Y,8)+min({height}-Y,8)-8,2),64),255,0))':cb='p(X,Y)':cr='p(X,Y)'[{outputLabel}]",
+                $"[{inputLabel}]geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(gt(X,8)*gt(Y,8)*gt({width}-X,8)*gt({height}-Y,8),alpha(X,Y),if(lt(pow(min(X,8)+min({width}-X,8)-8,2)+pow(min(Y,8)+min({height}-Y,8)-8,2),64),alpha(X,Y),0))'[{outputLabel}]",
+            ShapeKind.ImportedPng => BuildImportedPngAlphaMask(layer, width, height, overlayIndex, inputLabel, outputLabel),
             _ =>
                 $"[{inputLabel}]copy[{outputLabel}]"
         };
+    }
+
+    private static string BuildImportedPngAlphaMask(
+        OverlayLayer layer,
+        int width,
+        int height,
+        int overlayIndex,
+        string inputLabel,
+        string outputLabel)
+    {
+        if (string.IsNullOrWhiteSpace(layer.AlphaPngPath))
+        {
+            return $"[{inputLabel}]copy[{outputLabel}]";
+        }
+
+        var escaped = FfmpegFilterPathEscaper.EscapeForFilter(layer.AlphaPngPath);
+        var maskLabel = $"ovpng{overlayIndex}";
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"movie='{escaped}',scale={width}:{height},format=gray[{maskLabel}];[{inputLabel}][{maskLabel}]alphamerge[{outputLabel}]");
+    }
 
     private static string FormatDecimal(double value) =>
         value.ToString("0.######", CultureInfo.InvariantCulture);

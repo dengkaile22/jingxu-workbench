@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "components": [
+    {
+      "kind": "Ffmpeg",
+      "displayName": "FFmpeg",
+      "relativePath": "ffmpeg/ffmpeg.exe",
+      "required": true,
+      "versionArguments": ["-version"],
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "licenseId": "GPL-3.0-or-later",
+      "sourceUrl": "https://ffmpeg.org/download.html",
+      "sourceCodeUrl": "https://github.com/FFmpeg/FFmpeg"
+    },
+    {
+      "kind": "Ffprobe",
+      "displayName": "FFprobe",
+      "relativePath": "ffmpeg/ffprobe.exe",
+      "required": true,
+      "versionArguments": ["-version"],
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "licenseId": "GPL-3.0-or-later",
+      "sourceUrl": "https://ffmpeg.org/download.html",
+      "sourceCodeUrl": "https://github.com/FFmpeg/FFmpeg"
+    },
+    {
+      "kind": "WhisperCli",
+      "displayName": "Whisper.cpp",
+      "relativePath": "whisper/whisper-cli.exe",
+      "required": false,
+      "versionArguments": ["--help"],
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "licenseId": "MIT",
+      "sourceUrl": "https://github.com/ggerganov/whisper.cpp/releases",
+      "sourceCodeUrl": "https://github.com/ggerganov/whisper.cpp"
+    },
+    {
+      "kind": "WhisperModel",
+      "displayName": "Whisper 多语言 base 模型",
+      "relativePath": "whisper/models/ggml-base.bin",
+      "required": false,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "licenseId": "MIT",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp",
+      "sourceCodeUrl": "https://github.com/ggerganov/whisper.cpp"
+    },
+    {
+      "kind": "Tesseract",
+      "displayName": "Tesseract OCR",
+      "relativePath": "tesseract/tesseract.exe",
+      "required": false,
+      "versionArguments": ["--version"],
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "licenseId": "Apache-2.0",
+      "sourceUrl": "https://github.com/tesseract-ocr/tesseract",
+      "sourceCodeUrl": "https://github.com/tesseract-ocr/tesseract"
+    }
+  ]
+}

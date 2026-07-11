@@ -14,3 +14,8 @@ runtime/*
 *.user
 *.suo
 *.log
+
+# Customer / local media (keep on disk for acceptance; do not commit)
+*.rar
+/test-assets/**
+!/test-assets/README.md

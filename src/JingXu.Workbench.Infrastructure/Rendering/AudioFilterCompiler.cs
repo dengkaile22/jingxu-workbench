@@ -9,19 +9,21 @@ public sealed record AudioMixCompileRequest(
     TimeSpan OutputDuration,
     int? BgmInputIndex,
     BgmMixPlan? Bgm,
-    bool MainHasAudio);
+    bool MainHasAudio,
+    string OutputLabel = "aout");
 
-/// <summary>将主音轨与 BGM 编译为 FFmpeg 音频滤镜链。</summary>
+/// <summary>将主音轨与 BGM / 蒙版音轨编译为 FFmpeg 音频滤镜链。</summary>
 public static class AudioFilterCompiler
 {
-    /// <summary>编译音频滤镜后缀；无 BGM 时直通主音轨。</summary>
+    /// <summary>编译 BGM 混音滤镜后缀；无 BGM 时直通主音轨。</summary>
     public static string Compile(AudioMixCompileRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        var outputLabel = string.IsNullOrWhiteSpace(request.OutputLabel) ? "aout" : request.OutputLabel;
 
         if (request.Bgm is null || request.BgmInputIndex is null)
         {
-            return $"[{request.MainAudioLabel}]anull[aout]";
+            return $"[{request.MainAudioLabel}]anull[{outputLabel}]";
         }
 
         var durationSeconds = FormatSeconds(request.OutputDuration);
@@ -47,8 +49,45 @@ public static class AudioFilterCompiler
         builder.Append(CultureInfo.InvariantCulture,
             $"[{bgmInput}:a]aloop=loop=-1:size=2e+09,atrim=duration={durationSeconds},asetpts=PTS-STARTPTS,volume={FormatDecimal(bgm.BgmVolume)},afade=t=out:st={FormatSeconds(TimeSpan.FromSeconds(fadeStart))}:d={FormatDecimal(bgm.FadeOutSeconds)}[{bgmLabel}];");
         builder.Append(CultureInfo.InvariantCulture,
-            $"[{mainLabel}][{bgmLabel}]amix=duration=first:inputs=2:dropout_transition=0[aout]");
+            $"[{mainLabel}][{bgmLabel}]amix=duration=first:inputs=2:dropout_transition=0[{outputLabel}]");
 
+        return builder.ToString();
+    }
+
+    /// <summary>将需混入的蒙版音轨叠加到主音轨（按蒙版起始时间延迟并对齐成片时长）。</summary>
+    public static string CompileOverlayMix(
+        string mainAudioLabel,
+        IReadOnlyList<(int InputIndex, TimeSpan Start, TimeSpan ActiveDuration)> mixLayers,
+        TimeSpan planDuration,
+        string outputLabel = "aout")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(mainAudioLabel);
+        ArgumentNullException.ThrowIfNull(mixLayers);
+        if (mixLayers.Count == 0)
+        {
+            return $"[{mainAudioLabel}]anull[{outputLabel}]";
+        }
+
+        var builder = new System.Text.StringBuilder();
+        var planSeconds = FormatSeconds(planDuration);
+        var mixInputs = new System.Text.StringBuilder($"[{mainAudioLabel}]");
+
+        for (var i = 0; i < mixLayers.Count; i++)
+        {
+            var (inputIndex, start, active) = mixLayers[i];
+            var label = $"ova{i}";
+            var delayMs = Math.Max(0, (int)Math.Round(start.TotalMilliseconds));
+            var activeSeconds = FormatSeconds(active);
+            builder.Append(CultureInfo.InvariantCulture,
+                $"[{inputIndex}:a]aformat=sample_rates=48000:channel_layouts=stereo,aresample=48000," +
+                $"aloop=loop=-1:size=2e+09,atrim=duration={activeSeconds},asetpts=PTS-STARTPTS," +
+                $"adelay={delayMs}:all=1,apad=whole_dur={planSeconds}[{label}];");
+            mixInputs.Append(CultureInfo.InvariantCulture, $"[{label}]");
+        }
+
+        var inputCount = mixLayers.Count + 1;
+        builder.Append(CultureInfo.InvariantCulture,
+            $"{mixInputs}amix=duration=first:inputs={inputCount}:dropout_transition=0[{outputLabel}]");
         return builder.ToString();
     }
 

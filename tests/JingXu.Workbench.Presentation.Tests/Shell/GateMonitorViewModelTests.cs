@@ -25,8 +25,8 @@ public sealed class GateMonitorViewModelTests
     {
         var monitor = new GateMonitorViewModel(new FakeMediaFrameExtractor(), new DirectUiDispatcher());
         var material = new MaterialRowViewModel(
-            "片段_1.mp4",
-            @"C:\素材\片段_1.mp4",
+            "clip_1.mp4",
+            @"C:\media\clip_1.mp4",
             "1",
             TimeSpan.FromSeconds(12),
             "1080×1920",
@@ -39,8 +39,8 @@ public sealed class GateMonitorViewModelTests
         Assert.False(monitor.IsIdle);
         Assert.True(monitor.HasVideoPlayback);
         Assert.False(monitor.HasStaticFrame);
-        Assert.Equal(@"C:\素材\片段_1.mp4", monitor.PreviewVideoPath);
-        Assert.Contains("片段_1.mp4", monitor.MonitorCaption);
+        Assert.Equal(@"C:\media\clip_1.mp4", monitor.PreviewVideoPath);
+        Assert.Contains("clip_1.mp4", monitor.MonitorCaption);
         Assert.Contains("视频播放", monitor.MonitorHint);
     }
 
@@ -131,6 +131,49 @@ public sealed class GateMonitorViewModelTests
         Assert.False(monitor.HasStaticFrame);
         Assert.Contains("预览受限", monitor.MonitorCaption);
         Assert.Contains("未找到 FFmpeg", monitor.MonitorHint);
+    }
+
+    [Fact]
+    public async Task Unicode_path_prefers_static_frame_even_for_h264()
+    {
+        var extractor = new FakeMediaFrameExtractor(@"C:\temp\unicode-frame.jpg");
+        var monitor = new GateMonitorViewModel(extractor, new DirectUiDispatcher());
+        var material = new MaterialRowViewModel(
+            "1.mp4",
+            @"C:\素材\桌面风扇\1.mp4",
+            "1",
+            TimeSpan.FromSeconds(7),
+            "1080×1920",
+            null,
+            hasValidAsset: true,
+            videoCodec: "h264");
+
+        await monitor.LoadFromMaterialAsync(material);
+
+        Assert.False(monitor.HasVideoPlayback);
+        Assert.True(monitor.HasStaticFrame);
+        Assert.Equal(@"C:\temp\unicode-frame.jpg", monitor.PreviewImagePath);
+        Assert.Contains("首帧静图", monitor.MonitorHint);
+    }
+
+    [Fact]
+    public async Task Ascii_h264_path_still_uses_video_playback()
+    {
+        var monitor = new GateMonitorViewModel(new FakeMediaFrameExtractor(), new DirectUiDispatcher());
+        var material = new MaterialRowViewModel(
+            "clip.mp4",
+            @"C:\media\clip.mp4",
+            "1",
+            TimeSpan.FromSeconds(12),
+            "1080×1920",
+            null,
+            hasValidAsset: true,
+            videoCodec: "h264");
+
+        await monitor.LoadFromMaterialAsync(material);
+
+        Assert.True(monitor.HasVideoPlayback);
+        Assert.Equal(@"C:\media\clip.mp4", monitor.PreviewVideoPath);
     }
 }
 

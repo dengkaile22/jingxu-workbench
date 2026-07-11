@@ -160,9 +160,9 @@ public sealed class CompositionViewModelTests
         var store = new InMemoryRenderQueueStore();
         var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
         var vm = CompositionViewModelTestFactory.Create(coordinator);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
         vm.OutputDirectory = @"C:\输出\混剪";
         vm.OutputFileNamePrefix = "测试成片";
-        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
 
         vm.Mode = CompositionMode.CustomSequence;
         vm.SequenceExpression = "123456";
@@ -177,14 +177,126 @@ public sealed class CompositionViewModelTests
     }
 
     [Fact]
+    public async Task Enqueue_uses_selected_quality_profile()
+    {
+        var store = new InMemoryRenderQueueStore();
+        var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
+        var vm = CompositionViewModelTestFactory.Create(coordinator);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+
+        vm.SelectedQuality = QualityPreset.High;
+        vm.Mode = CompositionMode.CustomSequence;
+        vm.SequenceExpression = "123456";
+        await vm.EnqueueCommand.ExecuteAsync(null);
+
+        var job = Assert.Single(coordinator.Jobs);
+        Assert.Equal(RenderProfile.High, job.Request!.Profile);
+    }
+
+    [Fact]
+    public async Task Import_sets_default_output_to_source_storyboard_folder()
+    {
+        var vm = CompositionViewModelTestFactory.Create();
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+
+        Assert.Equal(@"C:\素材\分镜输出", vm.OutputDirectory);
+    }
+
+    [Fact]
+    public async Task Import_multi_source_uses_project_storyboard_folder()
+    {
+        var vm = CompositionViewModelTestFactory.Create();
+        await vm.ImportFilesCommand.ExecuteAsync(
+        [
+            @"C:\素材A\片段_1.mp4",
+            @"D:\素材B\片段_2.mp4"
+        ]);
+
+        Assert.Equal(
+            Path.Combine(RenderRequestFactory.DefaultProjectDirectory, "分镜输出"),
+            vm.OutputDirectory);
+    }
+
+    [Fact]
+    public async Task Browse_output_prevents_import_from_overwriting_directory()
+    {
+        var picker = new RecordingOutputFolderPicker { NextPick = @"E:\自定义输出" };
+        var vm = CompositionViewModelTestFactory.Create(outputFolderPicker: picker);
+        vm.PickOutputDirectoryCommand.Execute(null);
+
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+
+        Assert.Equal(@"E:\自定义输出", vm.OutputDirectory);
+    }
+
+    [Fact]
+    public async Task Enqueue_with_sticker_attaches_image_sticker()
+    {
+        var store = new InMemoryRenderQueueStore();
+        var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
+        var vm = CompositionViewModelTestFactory.Create(coordinator);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+
+        vm.Mode = CompositionMode.CustomSequence;
+        vm.SequenceExpression = "123456";
+        vm.EnableSticker = true;
+        vm.StickerPath = @"C:\贴纸\logo.png";
+        vm.StickerXPercent = 10;
+        vm.StickerYPercent = 20;
+        vm.StickerWidthPercent = 30;
+        vm.StickerHeightPercent = 25;
+        vm.StickerOpacityPercent = 80;
+        await vm.EnqueueCommand.ExecuteAsync(null);
+
+        var job = Assert.Single(coordinator.Jobs);
+        Assert.True(job.Request!.HasEffects);
+        Assert.NotNull(job.Request.Sticker);
+        Assert.Equal(@"C:\贴纸\logo.png", job.Request.Sticker!.Path);
+        Assert.Equal(0.1, job.Request.Sticker.Bounds.X);
+        Assert.Equal(0.8, job.Request.Sticker.Opacity);
+    }
+
+    [Fact]
+    public async Task Save_and_apply_effect_template_round_trips_sticker()
+    {
+        var templateService = CompositionViewModelTestFactory.CreateTemplateService();
+        var vm = CompositionViewModelTestFactory.Create(templateService: templateService);
+        await vm.LoadEffectTemplatesCommand.ExecuteAsync(null);
+
+        vm.EnableVariationEffects = true;
+        vm.EnableSticker = true;
+        vm.StickerPath = @"C:\贴纸\badge.png";
+        vm.StickerXPercent = 55;
+        vm.StickerYPercent = 60;
+        vm.StickerWidthPercent = 18;
+        vm.StickerHeightPercent = 12;
+        vm.StickerOpacityPercent = 90;
+        vm.NewTemplateName = "角标模板";
+        await vm.SaveEffectTemplateCommand.ExecuteAsync(null);
+
+        Assert.Contains(vm.EffectTemplatesList, t => t.DisplayName == "角标模板");
+
+        vm.EnableSticker = false;
+        vm.StickerPath = string.Empty;
+        vm.SelectedEffectTemplate = vm.EffectTemplatesList.First(t => t.DisplayName == "角标模板");
+        vm.ApplySelectedTemplateCommand.Execute(null);
+
+        Assert.True(vm.EnableSticker);
+        Assert.Equal(@"C:\贴纸\badge.png", vm.StickerPath);
+        Assert.Equal(55, vm.StickerXPercent);
+        Assert.Equal(90, vm.StickerOpacityPercent);
+        Assert.True(vm.EnableVariationEffects);
+    }
+
+    [Fact]
     public async Task Enqueue_batch_attaches_numbered_render_requests()
     {
         var store = new InMemoryRenderQueueStore();
         var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
         var vm = CompositionViewModelTestFactory.Create(coordinator);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
         vm.OutputDirectory = @"D:\成片";
         vm.OutputFileNamePrefix = "批量";
-        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
 
         vm.Mode = CompositionMode.Random;
         vm.BatchCount = 2;
@@ -370,9 +482,9 @@ public sealed class CompositionViewModelTests
         var store = new InMemoryRenderQueueStore();
         var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
         var vm = CompositionViewModelTestFactory.Create(coordinator);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
         vm.OutputDirectory = @"C:\输出\混剪";
         vm.OutputFileNamePrefix = "批量自定义";
-        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
 
         vm.Mode = CompositionMode.CustomSequence;
         vm.SequenceExpression = "123456; 654321";

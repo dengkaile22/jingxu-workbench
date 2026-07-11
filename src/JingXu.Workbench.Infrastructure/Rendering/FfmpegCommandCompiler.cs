@@ -108,6 +108,7 @@ public static class FfmpegCommandCompiler
 
         var overlayBaseLabel = ResolveOverlayBaseVideoLabel(request);
         OverlayFilterCompileResult? overlayResult = null;
+        var overlayInputBase = nextInputIndex;
         if (request.HasRenderableOverlays)
         {
             var resolved = OverlayTimelineResolver.ResolveAll(request.Plan, request.OverlayLayers);
@@ -118,7 +119,7 @@ public static class FfmpegCommandCompiler
 
             var overlayCompile = OverlayFilterCompiler.Compile(
                 resolved.Value!,
-                nextInputIndex,
+                overlayInputBase,
                 targetWidth,
                 targetHeight,
                 overlayBaseLabel);
@@ -139,6 +140,7 @@ public static class FfmpegCommandCompiler
             targetHeight,
             fpsText,
             overlayResult,
+            overlayInputBase,
             bgmInputIndex,
             stickerInputIndex);
         arguments.Add("-filter_complex");
@@ -193,13 +195,16 @@ public static class FfmpegCommandCompiler
         int targetHeight,
         string fpsText,
         OverlayFilterCompileResult? overlayResult,
+        int overlayInputBase,
         int? bgmInputIndex,
         int? stickerInputIndex)
     {
         var plan = request.Plan;
         var builder = new StringBuilder();
         var concatInputs = new StringBuilder();
-        var audioOutLabel = request.HasRenderableBgm ? "aout_raw" : "aout";
+        var mixOverlayLayers = CollectMixOverlayLayers(request, overlayInputBase);
+        var needsOverlayAudioMix = mixOverlayLayers.Count > 0;
+        var concatAudioLabel = request.HasRenderableBgm || needsOverlayAudioMix ? "a_base" : "aout";
 
         for (var index = 0; index < plan.Clips.Count; index++)
         {
@@ -229,7 +234,7 @@ public static class FfmpegCommandCompiler
         }
 
         builder.Append(CultureInfo.InvariantCulture,
-            $"{concatInputs}concat=n={plan.Clips.Count}:v=1:a=1[vbase][{audioOutLabel}]");
+            $"{concatInputs}concat=n={plan.Clips.Count}:v=1:a=1[vbase][{concatAudioLabel}]");
 
         AppendEffectAndStickerChain(builder, request, targetWidth, targetHeight, stickerInputIndex);
 
@@ -239,18 +244,61 @@ public static class FfmpegCommandCompiler
             builder.Append(overlayResult.FilterSuffix);
         }
 
+        var audioAfterBgm = concatAudioLabel;
         if (request.HasRenderableBgm)
         {
+            var bgmOutput = needsOverlayAudioMix ? "a_bgm" : "aout";
             builder.Append(';');
             builder.Append(AudioFilterCompiler.Compile(new AudioMixCompileRequest(
-                MainAudioLabel: audioOutLabel,
+                MainAudioLabel: concatAudioLabel,
                 OutputDuration: plan.Duration,
                 BgmInputIndex: bgmInputIndex,
                 Bgm: request.Bgm,
-                MainHasAudio: plan.Clips.Any(c => c.Asset.Info.HasAudio))));
+                MainHasAudio: plan.Clips.Any(c => c.Asset.Info.HasAudio),
+                OutputLabel: bgmOutput)));
+            audioAfterBgm = bgmOutput;
+        }
+
+        if (needsOverlayAudioMix)
+        {
+            builder.Append(';');
+            builder.Append(AudioFilterCompiler.CompileOverlayMix(
+                audioAfterBgm,
+                mixOverlayLayers,
+                plan.Duration));
         }
 
         return builder.ToString();
+    }
+
+    private static List<(int InputIndex, TimeSpan Start, TimeSpan ActiveDuration)> CollectMixOverlayLayers(
+        RenderRequest request,
+        int overlayInputBase)
+    {
+        if (!request.HasRenderableOverlays)
+        {
+            return [];
+        }
+
+        var resolved = OverlayTimelineResolver.ResolveAll(request.Plan, request.OverlayLayers);
+        if (!resolved.IsSuccess)
+        {
+            return [];
+        }
+
+        var mix = new List<(int InputIndex, TimeSpan Start, TimeSpan ActiveDuration)>();
+        for (var i = 0; i < resolved.Value!.Count; i++)
+        {
+            var layerResolved = resolved.Value[i];
+            if (layerResolved.Layer.AudioMode != OverlayAudioMode.Mix)
+            {
+                continue;
+            }
+
+            mix.Add((overlayInputBase + i, layerResolved.Start, layerResolved.ActiveDuration));
+        }
+
+        return mix;
     }
 
     private static void AppendEffectAndStickerChain(

@@ -195,7 +195,7 @@ public sealed class OverlayRenderTests
             overlayClip,
             overlayInfo.Duration,
             NormalizedRect.Create(0.25, 0.25, 0.5, 0.5).Value!,
-            ShapeKind.Rectangle) with
+            ShapeKind.Ellipse) with
         {
             Name = "形状遮罩",
             StartClipIndex = 2,

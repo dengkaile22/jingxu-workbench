@@ -242,9 +242,40 @@
                          VerticalContentAlignment="Center"
                          AutomationProperties.Name="成片文件名前缀" />
             </Grid>
-            <TextBlock Text="单条成片使用「前缀.mp4」；批量时自动追加 _001、_002 等序号。"
+            <TextBlock Text="单条成片使用「前缀.mp4」；批量时自动追加 _001、_002 等序号。导入后默认输出到源目录「分镜输出」（多来源则用项目目录）。"
                        Style="{DynamicResource Text.Caption}"
-                       Margin="0,6,0,0" />
+                       Margin="0,6,0,0"
+                       TextWrapping="Wrap" />
+
+            <TextBlock Text="输出质量" Style="{DynamicResource Text.SectionHeader}" Margin="0,20,0,8" />
+            <Border Style="{DynamicResource Segmented.Container}" HorizontalAlignment="Left">
+                <WrapPanel>
+                    <RadioButton Style="{DynamicResource Segmented.Item}"
+                                 GroupName="qualityPreset"
+                                 Content="无损直拷"
+                                 IsChecked="{Binding SelectedQuality, Converter={StaticResource EnumToBool}, ConverterParameter=Lossless}"
+                                 AutomationProperties.Name="输出质量无损直拷" />
+                    <RadioButton Style="{DynamicResource Segmented.Item}"
+                                 GroupName="qualityPreset"
+                                 Content="高质量"
+                                 IsChecked="{Binding SelectedQuality, Converter={StaticResource EnumToBool}, ConverterParameter=High}"
+                                 AutomationProperties.Name="输出质量高质量" />
+                    <RadioButton Style="{DynamicResource Segmented.Item}"
+                                 GroupName="qualityPreset"
+                                 Content="平衡"
+                                 IsChecked="{Binding SelectedQuality, Converter={StaticResource EnumToBool}, ConverterParameter=Balanced}"
+                                 AutomationProperties.Name="输出质量平衡" />
+                    <RadioButton Style="{DynamicResource Segmented.Item}"
+                                 GroupName="qualityPreset"
+                                 Content="小体积"
+                                 IsChecked="{Binding SelectedQuality, Converter={StaticResource EnumToBool}, ConverterParameter=Small}"
+                                 AutomationProperties.Name="输出质量小体积" />
+                </WrapPanel>
+            </Border>
+            <TextBlock Text="{Binding QualityHint}"
+                       Style="{DynamicResource Text.Caption}"
+                       Margin="0,8,0,0"
+                       TextWrapping="Wrap" />
 
             <TextBlock Text="统一比例" Style="{DynamicResource Text.SectionHeader}" Margin="0,20,0,8" />
             <Border Background="{DynamicResource Surface.PanelMuted}"
@@ -401,11 +432,152 @@
                 </StackPanel>
             </Border>
 
+            <TextBlock Text="效果模板" Style="{DynamicResource Text.SectionHeader}" Margin="0,20,0,8" />
+            <Border Background="{DynamicResource Surface.PanelMuted}"
+                    BorderBrush="{DynamicResource Line.Default}"
+                    BorderThickness="1"
+                    CornerRadius="{DynamicResource Radius.Standard}"
+                    Padding="14,12">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="命名模板" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                        <ComboBox Grid.Column="1"
+                                  ItemsSource="{Binding EffectTemplatesList}"
+                                  SelectedItem="{Binding SelectedEffectTemplate}"
+                                  DisplayMemberPath="DisplayName"
+                                  Margin="10,0,8,0"
+                                  Padding="8,6"
+                                  AutomationProperties.Name="效果模板列表" />
+                        <Button Grid.Column="2"
+                                Style="{DynamicResource Button.Secondary}"
+                                Content="应用"
+                                Command="{Binding ApplySelectedTemplateCommand}"
+                                AutomationProperties.Name="应用选中效果模板" />
+                    </Grid>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="另存为" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                        <TextBox Grid.Column="1"
+                                 Text="{Binding NewTemplateName, UpdateSourceTrigger=PropertyChanged}"
+                                 Margin="10,0,8,0"
+                                 Padding="8,6"
+                                 VerticalContentAlignment="Center"
+                                 AutomationProperties.Name="新效果模板名称" />
+                        <Button Grid.Column="2"
+                                Style="{DynamicResource Button.Secondary}"
+                                Content="保存模板"
+                                Command="{Binding SaveEffectTemplateCommand}"
+                                AutomationProperties.Name="保存当前效果为命名模板" />
+                    </Grid>
+                    <TextBlock Text="模板保存当前滤镜开关与贴纸参数；选择模板后可继续微调再入队。"
+                               Style="{DynamicResource Text.Caption}"
+                               Margin="0,8,0,0"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
             <TextBlock Text="效果与音频" Style="{DynamicResource Text.SectionHeader}" Margin="0,20,0,8" />
-            <CheckBox Content="启用标准差异化滤镜（镜像 / 轻裁切 / 调色 / 降噪）"
+            <CheckBox Content="启用差异化滤镜（镜像 / 轻裁切 / 调色 / 降噪）"
                       IsChecked="{Binding EnableVariationEffects}"
                       Margin="0,0,0,10"
                       AutomationProperties.Name="启用标准差异化滤镜" />
+
+            <CheckBox Content="叠加图片贴纸"
+                      IsChecked="{Binding EnableSticker}"
+                      Margin="0,0,0,10"
+                      AutomationProperties.Name="启用图片贴纸" />
+            <Grid Margin="0,0,0,0" IsEnabled="{Binding IsStickerSectionEnabled}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="贴纸图片" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                <TextBox Grid.Column="1"
+                         Text="{Binding StickerPath, UpdateSourceTrigger=PropertyChanged}"
+                         Margin="10,0,8,0"
+                         Padding="8,6"
+                         IsReadOnly="True"
+                         VerticalContentAlignment="Center"
+                         AutomationProperties.Name="贴纸图片路径" />
+                <Button Grid.Column="2"
+                        Style="{DynamicResource Button.Secondary}"
+                        Content="选择…"
+                        Command="{Binding PickStickerFileCommand}"
+                        Margin="0,0,8,0"
+                        AutomationProperties.Name="选择贴纸图片" />
+                <Button Grid.Column="3"
+                        Style="{DynamicResource Button.Secondary}"
+                        Content="清除"
+                        Command="{Binding ClearStickerCommand}"
+                        AutomationProperties.Name="清除贴纸" />
+            </Grid>
+            <Grid Margin="0,10,0,0" IsEnabled="{Binding IsStickerSectionEnabled}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="64" />
+                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="64" />
+                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="64" />
+                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="64" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="X%" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                <TextBox Grid.Column="1"
+                         Text="{Binding StickerXPercent, UpdateSourceTrigger=PropertyChanged}"
+                         Padding="6,6"
+                         VerticalContentAlignment="Center"
+                         AutomationProperties.Name="贴纸水平位置百分比" />
+                <TextBlock Grid.Column="3" Text="Y%" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                <TextBox Grid.Column="4"
+                         Text="{Binding StickerYPercent, UpdateSourceTrigger=PropertyChanged}"
+                         Padding="6,6"
+                         VerticalContentAlignment="Center"
+                         AutomationProperties.Name="贴纸垂直位置百分比" />
+                <TextBlock Grid.Column="6" Text="宽%" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                <TextBox Grid.Column="7"
+                         Text="{Binding StickerWidthPercent, UpdateSourceTrigger=PropertyChanged}"
+                         Padding="6,6"
+                         VerticalContentAlignment="Center"
+                         AutomationProperties.Name="贴纸宽度百分比" />
+                <TextBlock Grid.Column="9" Text="高%" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                <TextBox Grid.Column="10"
+                         Text="{Binding StickerHeightPercent, UpdateSourceTrigger=PropertyChanged}"
+                         Padding="6,6"
+                         VerticalContentAlignment="Center"
+                         AutomationProperties.Name="贴纸高度百分比" />
+            </Grid>
+            <Grid Margin="0,10,0,0" IsEnabled="{Binding IsStickerSectionEnabled}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="72" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="透明度 %" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                <TextBox Grid.Column="1"
+                         Text="{Binding StickerOpacityPercent, UpdateSourceTrigger=PropertyChanged}"
+                         Margin="10,0,0,0"
+                         Padding="8,6"
+                         VerticalContentAlignment="Center"
+                         AutomationProperties.Name="贴纸透明度百分比" />
+            </Grid>
+            <TextBlock Text="贴纸使用归一化坐标（相对成片宽高百分比）；开始/结束时点与 GIF 贴纸为后续里程碑。"
+                       Style="{DynamicResource Text.Caption}"
+                       Margin="0,6,0,10"
+                       TextWrapping="Wrap" />
 
             <CheckBox Content="混入背景音乐"
                       IsChecked="{Binding EnableBgm}"

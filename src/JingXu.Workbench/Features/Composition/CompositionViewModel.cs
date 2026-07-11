@@ -30,8 +30,15 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
     private readonly IUiDispatcher _uiDispatcher;
     private readonly OverlayWorkbenchState? _overlayState;
     private readonly OverlayLibraryService? _overlayLibraryService;
+    private readonly TemplateService? _templateService;
     private readonly List<MediaAsset> _assets = [];
     private IReadOnlyList<CompositionPlan> _executablePlans = [];
+    private bool _outputDirectoryUserOverride;
+    private bool _trackOutputDirectoryOverrides;
+    private bool _suppressOutputDirectoryOverrideTracking;
+    private EffectVariationTemplate _activeEffectTemplate = EffectTemplates.None;
+    private Dictionary<string, StickerTemplateDto> _stickersByTemplateId =
+        new(StringComparer.Ordinal);
 
     public CompositionViewModel(
         IMediaProbe probe,
@@ -40,7 +47,8 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         IOutputFolderPicker outputFolderPicker,
         IUiDispatcher uiDispatcher,
         OverlayWorkbenchState? overlayState = null,
-        OverlayLibraryService? overlayLibraryService = null)
+        OverlayLibraryService? overlayLibraryService = null,
+        TemplateService? templateService = null)
     {
         _probe = probe;
         _coordinator = coordinator;
@@ -49,6 +57,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         _uiDispatcher = uiDispatcher;
         _overlayState = overlayState;
         _overlayLibraryService = overlayLibraryService;
+        _templateService = templateService;
         if (_overlayState is not null)
         {
             EnableOverlayOnOutput = _overlayState.IsEnabled;
@@ -59,8 +68,18 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         OutputDirectory = RenderRequestFactory.DefaultOutputDirectory;
         OutputFileNamePrefix = "混剪成片";
         RandomSeed = Environment.TickCount;
+        SelectedQuality = QualityPreset.Balanced;
+        StickerXPercent = 72;
+        StickerYPercent = 78;
+        StickerWidthPercent = 22;
+        StickerHeightPercent = 16;
+        StickerOpacityPercent = 100;
+        NewTemplateName = string.Empty;
         RefreshOverlayStatus();
+        RefreshQualityHint();
         RefreshPreview();
+        _trackOutputDirectoryOverrides = true;
+        _ = LoadEffectTemplatesAsync();
     }
 
     public override WorkspaceModule ModuleKind => WorkspaceModule.Composition;
@@ -71,12 +90,21 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
 
     public ObservableCollection<PreviewPlanRowViewModel> PreviewPlans { get; } = [];
 
+    public ObservableCollection<EffectVariationTemplate> EffectTemplatesList { get; } = [];
+
     [ObservableProperty]
     private MaterialRowViewModel? _selectedMaterial;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SelectedTemplateDisplayName))]
+    private EffectVariationTemplate? _selectedEffectTemplate;
 
     public int MaterialCount => Materials.Count;
 
     public bool HasMaterials => MaterialCount > 0;
+
+    public string SelectedTemplateDisplayName =>
+        SelectedEffectTemplate?.DisplayName ?? "（未选择）";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(MaterialCount))]
@@ -125,9 +153,19 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
     private string _outputFileNamePrefix = string.Empty;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(QualityHint))]
+    [NotifyPropertyChangedFor(nameof(IsLosslessQuality))]
+    private QualityPreset _selectedQuality = QualityPreset.Balanced;
+
+    [ObservableProperty]
+    private string _qualityHint = string.Empty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(QualityHint))]
     private bool _enableVariationEffects;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(QualityHint))]
     private bool _enableBgm;
 
     [ObservableProperty]
@@ -141,13 +179,43 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
     private int _bgmVolumePercent = 18;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStickerPath))]
+    [NotifyPropertyChangedFor(nameof(IsStickerSectionEnabled))]
+    [NotifyPropertyChangedFor(nameof(QualityHint))]
+    private bool _enableSticker;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStickerPath))]
+    private string _stickerPath = string.Empty;
+
+    [ObservableProperty]
+    private double _stickerXPercent = 72;
+
+    [ObservableProperty]
+    private double _stickerYPercent = 78;
+
+    [ObservableProperty]
+    private double _stickerWidthPercent = 22;
+
+    [ObservableProperty]
+    private double _stickerHeightPercent = 16;
+
+    [ObservableProperty]
+    private int _stickerOpacityPercent = 100;
+
+    [ObservableProperty]
+    private string _newTemplateName = string.Empty;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(OverlayStatusLabel))]
     [NotifyPropertyChangedFor(nameof(IsOverlaySectionEnabled))]
+    [NotifyPropertyChangedFor(nameof(QualityHint))]
     private bool _enableOverlayOnOutput;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(UnifiedAspectPreviewDescription))]
     [NotifyPropertyChangedFor(nameof(IsCustomAspectPreset))]
+    [NotifyPropertyChangedFor(nameof(QualityHint))]
     [NotifyCanExecuteChangedFor(nameof(EnqueueCommand))]
     private bool _enableUnifiedAspect;
 
@@ -192,6 +260,12 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
 
     public bool HasBgmPath => !string.IsNullOrWhiteSpace(BgmPath);
 
+    public bool HasStickerPath => !string.IsNullOrWhiteSpace(StickerPath);
+
+    public bool IsStickerSectionEnabled => EnableSticker;
+
+    public bool IsLosslessQuality => SelectedQuality == QualityPreset.Lossless;
+
     public bool IsRandomMode => Mode == CompositionMode.Random;
 
     public bool IsCustomMode => Mode == CompositionMode.CustomSequence;
@@ -215,6 +289,27 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
 
     partial void OnRandomSeedChanged(int value) => RefreshPreview();
 
+    partial void OnSelectedQualityChanged(QualityPreset value) => RefreshQualityHint();
+
+    partial void OnEnableVariationEffectsChanged(bool value)
+    {
+        if (value && _activeEffectTemplate.Id == EffectTemplates.None.Id)
+        {
+            _activeEffectTemplate = EffectTemplates.StandardVariation();
+            if (SelectedEffectTemplate is null || SelectedEffectTemplate.Id == EffectTemplates.None.Id)
+            {
+                SelectedEffectTemplate = EffectTemplatesList.FirstOrDefault(t => t.Id == _activeEffectTemplate.Id)
+                    ?? _activeEffectTemplate;
+            }
+        }
+
+        RefreshQualityHint();
+    }
+
+    partial void OnEnableBgmChanged(bool value) => RefreshQualityHint();
+
+    partial void OnEnableStickerChanged(bool value) => RefreshQualityHint();
+
     partial void OnEnableOverlayOnOutputChanged(bool value)
     {
         if (_overlayState is not null && _overlayState.IsEnabled != value)
@@ -223,6 +318,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         }
 
         RefreshOverlayStatus();
+        RefreshQualityHint();
     }
 
     partial void OnUseRandomOverlayLibraryChanged(bool value)
@@ -235,7 +331,11 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         RefreshOverlayStatus();
     }
 
-    partial void OnEnableUnifiedAspectChanged(bool value) => RefreshUnifiedAspectPreview();
+    partial void OnEnableUnifiedAspectChanged(bool value)
+    {
+        RefreshUnifiedAspectPreview();
+        RefreshQualityHint();
+    }
 
     partial void OnAspectPresetChanged(OutputCanvasPreset value)
     {
@@ -250,6 +350,16 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
     partial void OnClipFitModeChanged(AspectFitMode value) => RefreshUnifiedAspectPreview();
 
     partial void OnOverlayFitModeChanged(OverlayFitMode value) => RefreshUnifiedAspectPreview();
+
+    partial void OnSelectedEffectTemplateChanged(EffectVariationTemplate? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        ApplyEffectTemplate(value, applySticker: true);
+    }
 
     private void RefreshUnifiedAspectPreview()
     {
@@ -298,6 +408,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         }
 
         RefreshOverlayStatus();
+        RefreshQualityHint();
     }
 
     private void RefreshOverlayStatus()
@@ -319,6 +430,51 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         OverlayStatusLabel = _overlayState.HasLayers
             ? $"已开启 · 将 {_overlayState.Layers.Count} 层蒙版叠加到成片"
             : "已开启 · 请先在蒙版页配置层，或开启随机套用素材库";
+    }
+
+    private void RefreshQualityHint()
+    {
+        if (SelectedQuality != QualityPreset.Lossless)
+        {
+            QualityHint = SelectedQuality switch
+            {
+                QualityPreset.High => "高质量：默认 CRF 18、AAC 192 kbps。",
+                QualityPreset.Balanced => "平衡：默认 CRF 22、AAC 160 kbps。",
+                QualityPreset.Small => "小体积：默认 CRF 27、AAC 128 kbps。",
+                _ => string.Empty
+            };
+            return;
+        }
+
+        var blockers = new List<string>();
+        if (EnableUnifiedAspect)
+        {
+            blockers.Add("统一比例");
+        }
+
+        if (EnableVariationEffects)
+        {
+            blockers.Add("差异化滤镜");
+        }
+
+        if (EnableSticker && HasStickerPath)
+        {
+            blockers.Add("贴纸");
+        }
+
+        if (EnableOverlayOnOutput)
+        {
+            blockers.Add("蒙版");
+        }
+
+        if (EnableBgm && HasBgmPath)
+        {
+            blockers.Add("BGM");
+        }
+
+        QualityHint = blockers.Count == 0
+            ? "无损直拷：仅在无画幅变化、滤镜、贴纸、蒙版、字幕或音频混合，且流结构兼容时可用。"
+            : $"已启用 {string.Join("、", blockers)}，将强制重新编码（无法无损直拷）。";
     }
 
     [RelayCommand]
@@ -390,9 +546,52 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         StatusMessage = successCount == requestedCount
             ? $"已导入 {requestedCount} 个文件。"
             : $"已处理 {requestedCount} 个文件，成功 {successCount} 个。";
-        SelectedMaterial ??= Materials.FirstOrDefault(m => m.HasValidAsset);
+
+        ApplyDefaultOutputDirectoryFromAssets();
+
+        // 先选中再通知壳层；ListBox 可能在布局后清掉选中，故再投递一次恢复。
+        var preferred = Materials.FirstOrDefault(m => m.HasValidAsset);
+        SelectedMaterial = preferred;
         RefreshUnifiedAspectPreview();
         RefreshPreview();
+
+        if (preferred is not null)
+        {
+            _uiDispatcher.Post(() =>
+            {
+                if (SelectedMaterial is null)
+                {
+                    SelectedMaterial = preferred;
+                }
+            });
+        }
+    }
+
+    partial void OnOutputDirectoryChanged(string value)
+    {
+        if (_trackOutputDirectoryOverrides && !_suppressOutputDirectoryOverrideTracking)
+        {
+            _outputDirectoryUserOverride = true;
+        }
+    }
+
+    private void ApplyDefaultOutputDirectoryFromAssets()
+    {
+        if (_outputDirectoryUserOverride || _assets.Count == 0)
+        {
+            return;
+        }
+
+        _suppressOutputDirectoryOverrideTracking = true;
+        try
+        {
+            OutputDirectory = RenderRequestFactory.ResolveDefaultOutputDirectory(
+                _assets.Select(a => a.Path));
+        }
+        finally
+        {
+            _suppressOutputDirectoryOverrideTracking = false;
+        }
     }
 
     [RelayCommand]
@@ -438,6 +637,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         {
             BgmPath = picked;
             EnableBgm = true;
+            RefreshQualityHint();
         }
     }
 
@@ -446,6 +646,266 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
     {
         BgmPath = string.Empty;
         EnableBgm = false;
+        RefreshQualityHint();
+    }
+
+    [RelayCommand]
+    private void PickStickerFile()
+    {
+        var picked = _filePicker.PickImageFile();
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            StickerPath = picked;
+            EnableSticker = true;
+            RefreshQualityHint();
+        }
+    }
+
+    [RelayCommand]
+    private void ClearSticker()
+    {
+        StickerPath = string.Empty;
+        EnableSticker = false;
+        RefreshQualityHint();
+    }
+
+    [RelayCommand]
+    private async Task LoadEffectTemplatesAsync()
+    {
+        if (_templateService is null)
+        {
+            SeedBuiltinTemplates();
+            return;
+        }
+
+        try
+        {
+            var document = await _templateService.LoadAsync(cancellationToken: CancellationToken.None)
+                .ConfigureAwait(false);
+            _uiDispatcher.Invoke(() => ApplyTemplateDocument(document));
+        }
+        catch (Exception ex)
+        {
+            _uiDispatcher.Invoke(() =>
+            {
+                SeedBuiltinTemplates();
+                StatusMessage = $"加载效果模板失败，已使用内置模板：{ex.GetBaseException().Message}";
+            });
+        }
+    }
+
+    [RelayCommand]
+    private void ApplySelectedTemplate()
+    {
+        if (SelectedEffectTemplate is null)
+        {
+            return;
+        }
+
+        ApplyEffectTemplate(SelectedEffectTemplate, applySticker: true);
+        StatusMessage = $"已应用效果模板「{SelectedEffectTemplate.DisplayName}」。";
+    }
+
+    [RelayCommand]
+    private async Task SaveEffectTemplateAsync()
+    {
+        var name = NewTemplateName.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            ValidationMessage = "请输入要保存的模板名称。";
+            return;
+        }
+
+        if (_templateService is null)
+        {
+            ValidationMessage = "效果模板服务未装配。";
+            return;
+        }
+
+        var id = "user-" + Guid.NewGuid().ToString("N")[..12];
+        var baseTemplate = EnableVariationEffects
+            ? (_activeEffectTemplate.Id == EffectTemplates.None.Id
+                ? EffectTemplates.StandardVariation()
+                : _activeEffectTemplate)
+            : EffectTemplates.None;
+
+        var created = EffectVariationTemplate.Create(
+            id,
+            name,
+            baseTemplate.EnableMirror,
+            baseTemplate.MinCropPercent,
+            baseTemplate.MaxCropPercent,
+            baseTemplate.MinBrightness,
+            baseTemplate.MaxBrightness,
+            baseTemplate.MinContrast,
+            baseTemplate.MaxContrast,
+            baseTemplate.MinSaturation,
+            baseTemplate.MaxSaturation,
+            baseTemplate.MinDenoise,
+            baseTemplate.MaxDenoise,
+            baseTemplate.EnableMetadataClearing);
+
+        if (!created.IsSuccess)
+        {
+            ValidationMessage = created.Error ?? "无法创建效果模板。";
+            return;
+        }
+
+        var stickerMap = new Dictionary<string, StickerTemplateDto>(
+            _stickersByTemplateId,
+            StringComparer.Ordinal);
+        if (EnableSticker && !string.IsNullOrWhiteSpace(StickerPath))
+        {
+            stickerMap[id] = new StickerTemplateDto
+            {
+                Path = StickerPath.Trim(),
+                X = StickerXPercent / 100.0,
+                Y = StickerYPercent / 100.0,
+                Width = StickerWidthPercent / 100.0,
+                Height = StickerHeightPercent / 100.0,
+                Opacity = StickerOpacityPercent / 100.0
+            };
+        }
+        else
+        {
+            stickerMap.Remove(id);
+        }
+
+        var userTemplates = EffectTemplatesList
+            .Where(t => t.Id is not ("none" or "standard-variation") && t.Id != id)
+            .Append(created.Value!)
+            .ToArray();
+
+        var document = new EffectTemplateDocument
+        {
+            Templates =
+            [
+                EffectTemplates.None,
+                EffectTemplates.StandardVariation(),
+                .. userTemplates
+            ],
+            StickersByTemplateId = stickerMap
+        };
+
+        try
+        {
+            await _templateService.SaveAsync(document, cancellationToken: CancellationToken.None)
+                .ConfigureAwait(true);
+            ApplyTemplateDocument(document);
+            SelectedEffectTemplate = EffectTemplatesList.FirstOrDefault(t => t.Id == id);
+            NewTemplateName = string.Empty;
+            StatusMessage = $"已保存效果模板「{name}」。";
+            ValidationMessage = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            ValidationMessage = $"保存效果模板失败：{ex.GetBaseException().Message}";
+        }
+    }
+
+    private void SeedBuiltinTemplates()
+    {
+        EffectTemplatesList.Clear();
+        EffectTemplatesList.Add(EffectTemplates.None);
+        EffectTemplatesList.Add(EffectTemplates.StandardVariation());
+        _stickersByTemplateId = new Dictionary<string, StickerTemplateDto>(StringComparer.Ordinal);
+        if (SelectedEffectTemplate is null)
+        {
+            SelectedEffectTemplate = EffectTemplates.None;
+        }
+    }
+
+    private void ApplyTemplateDocument(EffectTemplateDocument document)
+    {
+        EffectTemplatesList.Clear();
+        foreach (var template in document.Templates)
+        {
+            EffectTemplatesList.Add(template);
+        }
+
+        if (EffectTemplatesList.Count == 0)
+        {
+            SeedBuiltinTemplates();
+            return;
+        }
+
+        _stickersByTemplateId = document.StickersByTemplateId is { Count: > 0 } map
+            ? new Dictionary<string, StickerTemplateDto>(map, StringComparer.Ordinal)
+            : new Dictionary<string, StickerTemplateDto>(StringComparer.Ordinal);
+
+        var preferredId = SelectedEffectTemplate?.Id;
+        SelectedEffectTemplate = EffectTemplatesList.FirstOrDefault(t => t.Id == preferredId)
+            ?? EffectTemplatesList[0];
+    }
+
+    private void ApplyEffectTemplate(EffectVariationTemplate template, bool applySticker)
+    {
+        _activeEffectTemplate = template;
+        EnableVariationEffects = !IsEffectivelyNone(template);
+
+        if (!applySticker)
+        {
+            RefreshQualityHint();
+            return;
+        }
+
+        if (_stickersByTemplateId.TryGetValue(template.Id, out var sticker)
+            && !string.IsNullOrWhiteSpace(sticker.Path))
+        {
+            EnableSticker = true;
+            StickerPath = sticker.Path;
+            StickerXPercent = Math.Round(sticker.X * 100, 2);
+            StickerYPercent = Math.Round(sticker.Y * 100, 2);
+            StickerWidthPercent = Math.Round(sticker.Width * 100, 2);
+            StickerHeightPercent = Math.Round(sticker.Height * 100, 2);
+            StickerOpacityPercent = (int)Math.Round(sticker.Opacity * 100);
+        }
+
+        RefreshQualityHint();
+    }
+
+    private static bool IsEffectivelyNone(EffectVariationTemplate template) =>
+        template.Id == EffectTemplates.None.Id
+        || (!template.EnableMirror
+            && template.MaxCropPercent <= 0
+            && !template.EnableMetadataClearing
+            && Math.Abs(template.MinBrightness) < 0.0001
+            && Math.Abs(template.MaxBrightness) < 0.0001
+            && Math.Abs(template.MinContrast - 1) < 0.0001
+            && Math.Abs(template.MaxContrast - 1) < 0.0001
+            && Math.Abs(template.MinSaturation - 1) < 0.0001
+            && Math.Abs(template.MaxSaturation - 1) < 0.0001
+            && template.MaxDenoise <= 0);
+
+    private ImageSticker? TryBuildSticker(out string? error)
+    {
+        error = null;
+        if (!EnableSticker)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(StickerPath))
+        {
+            error = "已启用贴纸但未选择图片文件。";
+            return null;
+        }
+
+        var result = ImageSticker.Create(
+            StickerPath,
+            StickerXPercent / 100.0,
+            StickerYPercent / 100.0,
+            StickerWidthPercent / 100.0,
+            StickerHeightPercent / 100.0,
+            StickerOpacityPercent / 100.0);
+
+        if (!result.IsSuccess)
+        {
+            error = result.Error ?? "贴纸参数无效。";
+            return null;
+        }
+
+        return result.Value;
     }
 
     [RelayCommand(CanExecute = nameof(CanEnqueue))]
@@ -477,7 +937,12 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
             }
         }
 
-        var effectTemplate = EnableVariationEffects ? EffectTemplates.StandardVariation() : null;
+        var effectTemplate = EnableVariationEffects
+            ? (_activeEffectTemplate.Id == EffectTemplates.None.Id
+                ? EffectTemplates.StandardVariation()
+                : _activeEffectTemplate)
+            : null;
+
         BgmMixPlan? bgm = null;
         if (EnableBgm && !string.IsNullOrWhiteSpace(BgmPath))
         {
@@ -494,11 +959,30 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
             bgm = bgmResult.Value;
         }
 
-        var overlayLayersPerPlan = _executablePlans
-            .Select(plan => _overlayState is null
+        var sticker = TryBuildSticker(out var stickerError);
+        if (stickerError is not null)
+        {
+            ValidationMessage = stickerError;
+            return;
+        }
+
+        var overlayLayersPerPlan = new IReadOnlyList<OverlayLayer>[_executablePlans.Count];
+        for (var i = 0; i < _executablePlans.Count; i++)
+        {
+            var plan = _executablePlans[i];
+            var layers = _overlayState is null
                 ? Array.Empty<OverlayLayer>()
-                : OverlayEnqueueResolver.ResolveForPlan(_overlayState, libraryEntries, plan))
-            .ToArray();
+                : OverlayEnqueueResolver.ResolveForPlan(_overlayState, libraryEntries, plan);
+
+            if (layers.Count > 0 && _overlayState?.UseRandomLibrarySource == true)
+            {
+                layers = await OverlayEnqueueResolver
+                    .ProbeSourceDurationsAsync(layers, _probe, CancellationToken.None)
+                    .ConfigureAwait(true);
+            }
+
+            overlayLayersPerPlan[i] = layers;
+        }
 
         var aspectPolicy = BuildUnifiedAspectPolicy();
         var aspectResult = aspectPolicy.ToOutputAspect();
@@ -515,23 +999,25 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
                 .ToArray();
         }
 
+        var profile = RenderProfile.For(SelectedQuality);
         var requests = RenderRequestFactory.CreateForPlans(
             _executablePlans,
             OutputDirectory,
             OutputFileNamePrefix,
-            RenderProfile.Balanced,
+            profile,
             aspectResult.Value!,
             overlayLayersPerPlan,
             sharedOverlayLayers: null,
             effectTemplate,
-            bgm);
+            bgm,
+            sticker);
 
         var jobs = requests
             .Select(RenderJob.CreateQueued)
             .ToArray();
 
         await _coordinator.EnqueueAsync(jobs, CancellationToken.None).ConfigureAwait(true);
-        var hints = new List<string>();
+        var hints = new List<string> { DescribeQuality(SelectedQuality) };
         if (_overlayState?.IsEnabled == true && overlayLayersPerPlan.Any(layers => layers.Count > 0))
         {
             var layerCount = overlayLayersPerPlan.Max(layers => layers.Count);
@@ -544,6 +1030,11 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         if (EnableVariationEffects)
         {
             hints.Add("差异化滤镜");
+        }
+
+        if (sticker is not null)
+        {
+            hints.Add("贴纸");
         }
 
         if (bgm is not null)
@@ -559,6 +1050,16 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         var overlayHint = hints.Count > 0 ? $"（含 {string.Join("、", hints)}）" : string.Empty;
         StatusMessage = $"已将 {jobs.Length} 个任务加入队列{overlayHint}。";
     }
+
+    private static string DescribeQuality(QualityPreset quality) =>
+        quality switch
+        {
+            QualityPreset.Lossless => "无损直拷",
+            QualityPreset.High => "高质量",
+            QualityPreset.Balanced => "平衡",
+            QualityPreset.Small => "小体积",
+            _ => quality.ToString()
+        };
 
     private bool CanEnqueue() =>
         _executablePlans.Count > 0

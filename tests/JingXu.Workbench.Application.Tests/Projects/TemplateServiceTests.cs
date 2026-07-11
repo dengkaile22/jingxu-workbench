@@ -71,4 +71,37 @@ public sealed class TemplateServiceTests : IDisposable
 
         Assert.Equal(template.Materialize(264513), restored.Materialize(264513));
     }
+
+    [Fact]
+    public async Task Save_then_load_round_trips_sticker_snapshot()
+    {
+        var store = new AtomicJsonStore<EffectTemplateDocument>(EffectTemplateDocument.CurrentSchemaVersion);
+        var path = Path.Combine(_tempDir, "with-sticker.json");
+        var service = new TemplateService(store, path);
+        var template = EffectTemplates.StandardVariation();
+        var source = new EffectTemplateDocument
+        {
+            Templates = [template],
+            StickersByTemplateId = new Dictionary<string, StickerTemplateDto>
+            {
+                [template.Id] = new StickerTemplateDto
+                {
+                    Path = @"C:\贴纸\a.png",
+                    X = 0.1,
+                    Y = 0.2,
+                    Width = 0.3,
+                    Height = 0.25,
+                    Opacity = 0.8
+                }
+            }
+        };
+
+        await service.SaveAsync(source);
+        var loaded = await service.LoadAsync();
+
+        Assert.True(loaded.StickersByTemplateId.TryGetValue(template.Id, out var sticker));
+        Assert.Equal(@"C:\贴纸\a.png", sticker!.Path);
+        Assert.Equal(0.1, sticker.X);
+        Assert.Equal(0.8, sticker.Opacity);
+    }
 }

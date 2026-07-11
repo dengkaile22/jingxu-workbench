@@ -86,6 +86,35 @@ public sealed class OverlayEnqueueResolverTests
         Assert.Contains("素材库为空", message);
     }
 
+    [Fact]
+    public async Task Probe_source_durations_updates_random_library_layers()
+    {
+        var state = new OverlayWorkbenchState();
+        state.SetEnabled(true);
+        state.SetUseRandomLibrarySource(true);
+
+        var layers = OverlayEnqueueResolver.ResolveForPlan(state, TestLibrary(), TestPlan(seed: 7));
+        Assert.Equal(TimeSpan.FromSeconds(3), layers[0].SourceDuration);
+
+        var probe = new RecordingProbe(TimeSpan.FromSeconds(12.5));
+        var probed = await OverlayEnqueueResolver.ProbeSourceDurationsAsync(layers, probe);
+
+        Assert.Equal(TimeSpan.FromSeconds(12.5), probed[0].SourceDuration);
+        Assert.Equal(layers[0].SourcePath, probe.LastPath);
+    }
+
+    private sealed class RecordingProbe(TimeSpan duration) : JingXu.Workbench.Application.Abstractions.IMediaProbe
+    {
+        public string? LastPath { get; private set; }
+
+        public Task<JingXu.Workbench.Domain.Media.MediaInfo> ProbeAsync(string path, CancellationToken cancellationToken)
+        {
+            LastPath = path;
+            return Task.FromResult(new JingXu.Workbench.Domain.Media.MediaInfo(
+                duration, 1080, 1920, 30m, "h264", "aac", true, 0));
+        }
+    }
+
     private static OverlayWorkbenchState ConfiguredState(bool enabled, bool useRandom = false)
     {
         var state = new OverlayWorkbenchState();

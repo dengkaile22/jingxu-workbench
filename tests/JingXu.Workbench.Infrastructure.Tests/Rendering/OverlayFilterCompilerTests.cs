@@ -128,6 +128,72 @@ public sealed class OverlayFilterCompilerTests
         Assert.Contains("gblur=sigma=", result.FilterSuffix, StringComparison.Ordinal);
         Assert.Contains("alphamerge", result.FilterSuffix, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Ellipse_shape_mask_emits_rgba_alpha_geq_not_luma()
+    {
+        var layer = OverlayLayer.CreateShapeMask(
+            @"C:\overlay.mp4",
+            TimeSpan.FromSeconds(2),
+            NormalizedRect.Create(0.25, 0.25, 0.5, 0.5).Value!,
+            ShapeKind.Ellipse);
+        var resolved = OverlayTestSupport.ResolveSingle(layer, [4]);
+        var result = OverlayFilterCompiler.Compile(resolved, 1, 1080, 1920).Value!;
+
+        Assert.Contains("geq=r=", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Contains(":a='if(lt(pow(X-", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.DoesNotContain("geq=lum=", result.FilterSuffix, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Rounded_rectangle_shape_mask_preserves_existing_alpha()
+    {
+        var layer = OverlayLayer.CreateShapeMask(
+            @"C:\overlay.mp4",
+            TimeSpan.FromSeconds(2),
+            NormalizedRect.Create(0.1, 0.1, 0.8, 0.8).Value!,
+            ShapeKind.RoundedRectangle);
+        var resolved = OverlayTestSupport.ResolveSingle(layer, [4]);
+        var result = OverlayFilterCompiler.Compile(resolved, 1, 1080, 1920).Value!;
+
+        Assert.Contains("alpha(X,Y)", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.DoesNotContain("geq=lum=", result.FilterSuffix, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Imported_png_shape_mask_emits_movie_alphamerge()
+    {
+        var layer = OverlayLayer.CreateShapeMask(
+            @"C:\overlay.mp4",
+            TimeSpan.FromSeconds(2),
+            NormalizedRect.Create(0, 0, 1, 1).Value!,
+            ShapeKind.ImportedPng) with
+        {
+            AlphaPngPath = @"C:\masks\alpha.png"
+        };
+        var resolved = OverlayTestSupport.ResolveSingle(layer, [4]);
+        var result = OverlayFilterCompiler.Compile(resolved, 1, 1080, 1920).Value!;
+
+        Assert.Contains("movie=", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Contains("alphamerge", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Contains("C\\:/masks/alpha.png", result.FilterSuffix, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Overlay_audio_mix_emits_adelay_and_amix()
+    {
+        var layer = OverlayLayer.CreateScreenshotPreset(@"C:\overlay.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            AudioMode = OverlayAudioMode.Mix
+        };
+        var request = OverlayTestSupport.RequestWithOverlay(layer, clipCount: 2);
+        var compile = FfmpegCommandCompiler.Compile(@"C:\ffmpeg.exe", request, @"C:\out\temp.mp4");
+        var filter = compile.Command.Arguments[compile.Command.Arguments.ToList().IndexOf("-filter_complex") + 1];
+
+        Assert.Contains("adelay=", filter, StringComparison.Ordinal);
+        Assert.Contains("amix=duration=first:inputs=2", filter, StringComparison.Ordinal);
+        Assert.Contains("[a_base]", filter, StringComparison.Ordinal);
+    }
 }
 
 internal static class OverlayTestSupport

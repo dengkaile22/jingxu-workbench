@@ -83,7 +83,7 @@ public sealed partial class GateMonitorViewModel : ObservableObject
         _pendingResolution = material.ResolutionText;
         _pendingDuration = material.DurationText;
 
-        if (ShouldPreferStaticFrame(material.VideoCodec))
+        if (ShouldPreferStaticFrame(material.VideoCodec, material.SourcePath))
         {
             await LoadStaticFrameAsync(generation, material.SourcePath, cancellationToken).ConfigureAwait(false);
             return;
@@ -183,14 +183,22 @@ public sealed partial class GateMonitorViewModel : ObservableObject
         });
     }
 
-    private static bool ShouldPreferStaticFrame(string? videoCodec)
+    private static bool ShouldPreferStaticFrame(string? videoCodec, string sourcePath)
     {
+        // MediaElement / Media Foundation 对非 ASCII 路径与 HEVC 支持不可靠，优先走 FFmpeg 首帧。
+        if (sourcePath.Any(static c => c > 127))
+        {
+            return true;
+        }
+
         if (string.IsNullOrWhiteSpace(videoCodec))
         {
             return false;
         }
 
         return videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase)
-            || videoCodec.Contains("h265", StringComparison.OrdinalIgnoreCase);
+            || videoCodec.Contains("h265", StringComparison.OrdinalIgnoreCase)
+            || videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase)
+            || videoCodec.Contains("vp9", StringComparison.OrdinalIgnoreCase);
     }
 }

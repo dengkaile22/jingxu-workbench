@@ -10,7 +10,6 @@
 
     <Grid>
         <MediaElement x:Name="PreviewPlayer"
-                      Source="{Binding PreviewVideoPath}"
                       LoadedBehavior="Manual"
                       UnloadedBehavior="Stop"
                       Stretch="Uniform"
@@ -18,7 +17,7 @@
                       MediaOpened="PreviewPlayer_OnMediaOpened"
                       MediaFailed="PreviewPlayer_OnMediaFailed" />
 
-        <Image Source="{Binding PreviewImagePath}"
+        <Image x:Name="PreviewImage"
                Stretch="Uniform"
                Visibility="{Binding HasStaticFrame, Converter={StaticResource BoolToVis}}" />
 

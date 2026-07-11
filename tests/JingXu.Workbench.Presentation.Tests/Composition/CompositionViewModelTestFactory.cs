@@ -18,7 +18,8 @@ public static class CompositionViewModelTestFactory
         IMediaProbe? probe = null,
         IOutputFolderPicker? outputFolderPicker = null,
         OverlayWorkbenchState? overlayState = null,
-        OverlayLibraryService? overlayLibraryService = null) =>
+        OverlayLibraryService? overlayLibraryService = null,
+        TemplateService? templateService = null) =>
         new(
             probe ?? FakeMediaProbe.ForSixClips(),
             coordinator ?? RenderCoordinator.Create(
@@ -29,28 +30,33 @@ public static class CompositionViewModelTestFactory
             outputFolderPicker ?? new RecordingOutputFolderPicker(),
             new DirectUiDispatcher(),
             overlayState ?? new OverlayWorkbenchState(),
-            overlayLibraryService ?? CreateOverlayLibraryService());
+            overlayLibraryService ?? CreateOverlayLibraryService(),
+            templateService ?? CreateTemplateService());
 
     public static CompositionViewModel LoadedComposition(
         OverlayWorkbenchState? overlayState = null,
-        OverlayLibraryService? overlayLibraryService = null)
+        OverlayLibraryService? overlayLibraryService = null,
+        TemplateService? templateService = null)
     {
         var vm = Create(
             probe: FakeMediaProbe.ForSixClips(),
             overlayState: overlayState,
-            overlayLibraryService: overlayLibraryService);
+            overlayLibraryService: overlayLibraryService,
+            templateService: templateService);
         vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips).GetAwaiter().GetResult();
         return vm;
     }
 
     public static async Task<CompositionViewModel> LoadedCompositionAsync(
         OverlayWorkbenchState? overlayState = null,
-        OverlayLibraryService? overlayLibraryService = null)
+        OverlayLibraryService? overlayLibraryService = null,
+        TemplateService? templateService = null)
     {
         var vm = Create(
             probe: FakeMediaProbe.ForSixClips(),
             overlayState: overlayState,
-            overlayLibraryService: overlayLibraryService);
+            overlayLibraryService: overlayLibraryService,
+            templateService: templateService);
         await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips).ConfigureAwait(false);
         return vm;
     }
@@ -64,6 +70,18 @@ public static class CompositionViewModelTestFactory
 
         return new OverlayLibraryService(
             new AtomicJsonStore<OverlayLibraryDocument>(OverlayLibraryDocument.CurrentSchemaVersion),
+            path);
+    }
+
+    public static TemplateService CreateTemplateService(string? templatePath = null)
+    {
+        var path = templatePath ?? Path.Combine(
+            Path.GetTempPath(),
+            "jingxu-effect-tpl-" + Guid.NewGuid().ToString("N"),
+            "effect-templates.json");
+
+        return new TemplateService(
+            new AtomicJsonStore<EffectTemplateDocument>(EffectTemplateDocument.CurrentSchemaVersion),
             path);
     }
 
@@ -121,9 +139,13 @@ public sealed class RecordingMediaFilePicker : IMediaFilePicker
 
     public string? NextAudioPick { get; set; }
 
+    public string? NextImagePick { get; set; }
+
     public IReadOnlyList<string>? PickVideoFiles() => NextPick;
 
     public string? PickAudioFile() => NextAudioPick;
+
+    public string? PickImageFile() => NextImagePick;
 }
 
 public sealed class RecordingOutputFolderPicker : IOutputFolderPicker

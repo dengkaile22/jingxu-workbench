@@ -10,12 +10,55 @@ namespace JingXu.Workbench.Application.Rendering;
 /// </summary>
 public static class RenderRequestFactory
 {
-    /// <summary>默认成片输出目录（与设置页数据根目录下的 Output 子目录一致）。</summary>
-    public static string DefaultOutputDirectory =>
+    /// <summary>默认项目根目录（多来源任务的「分镜输出」父目录）。</summary>
+    public static string DefaultProjectDirectory =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu",
-            "Output");
+            "JingXu");
+
+    /// <summary>导入前的占位默认目录（多来源策略：项目根下的「分镜输出」）。</summary>
+    public static string DefaultOutputDirectory =>
+        Path.Combine(DefaultProjectDirectory, "分镜输出");
+
+    /// <summary>
+    /// 按素材路径推导默认输出目录：单一源文件夹 → <c>源\分镜输出</c>；
+    /// 多来源或无有效路径 → <c>项目\分镜输出</c>。
+    /// </summary>
+    public static string ResolveDefaultOutputDirectory(
+        IEnumerable<string> mediaPaths,
+        string? projectDirectory = null)
+    {
+        ArgumentNullException.ThrowIfNull(mediaPaths);
+
+        var folders = mediaPaths
+            .Where(static p => !string.IsNullOrWhiteSpace(p))
+            .Select(static p =>
+            {
+                try
+                {
+                    return Path.GetDirectoryName(Path.GetFullPath(p.Trim()));
+                }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    return Path.GetDirectoryName(p.Trim());
+                }
+            })
+            .Where(static d => !string.IsNullOrWhiteSpace(d))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToArray();
+
+        var project = string.IsNullOrWhiteSpace(projectDirectory)
+            ? DefaultProjectDirectory
+            : projectDirectory.Trim();
+
+        if (folders.Length == 1)
+        {
+            return Path.Combine(folders[0], "分镜输出");
+        }
+
+        return Path.Combine(project, "分镜输出");
+    }
 
     /// <summary>
     /// 为每条编排计划生成带唯一输出路径的请求快照。

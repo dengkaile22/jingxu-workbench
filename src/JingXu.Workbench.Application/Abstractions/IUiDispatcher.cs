@@ -14,4 +14,7 @@ public interface IUiDispatcher
 
     /// <summary>当前是否已在 UI 线程上。</summary>
     bool CheckAccess();
+
+    /// <summary>将操作投递到 UI 线程稍后执行（不阻塞当前调用）。</summary>
+    void Post(Action action);
 }

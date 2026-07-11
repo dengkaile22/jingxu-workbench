@@ -149,7 +149,8 @@ internal static class TestJobs
 {
     public static RenderJob To(string outputPath) =>
         RenderJob.CreateQueued(RequestFor([@"C:\media\1.mp4"], Path.GetDirectoryName(outputPath)!)
-            with { OutputPath = outputPath });
+            with
+        { OutputPath = outputPath });
 
     public static RenderRequest RequestFor(IReadOnlyList<string> clipPaths, string outputDirectory)
     {

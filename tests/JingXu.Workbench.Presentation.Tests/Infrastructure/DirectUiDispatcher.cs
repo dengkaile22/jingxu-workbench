@@ -21,4 +21,10 @@ public sealed class DirectUiDispatcher : IUiDispatcher
     }
 
     public bool CheckAccess() => true;
+
+    public void Post(Action action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        action();
+    }
 }

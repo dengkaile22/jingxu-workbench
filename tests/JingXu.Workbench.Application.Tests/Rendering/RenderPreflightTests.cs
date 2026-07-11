@@ -18,6 +18,11 @@ public sealed class RenderPreflightTests
     {
         Assert.Equal(@"C:\素材\分镜输出", OutputNamePolicy.DefaultDirectory([@"C:\素材"], @"C:\项目"));
         Assert.Equal(@"C:\项目\分镜输出", OutputNamePolicy.DefaultDirectory([@"C:\素材A", @"D:\素材B"], @"C:\项目"));
+        Assert.Equal(@"C:\素材\分镜输出", RenderRequestFactory.ResolveDefaultOutputDirectory([@"C:\素材\a.mp4"], @"C:\项目"));
+        Assert.Equal(@"C:\项目\分镜输出", RenderRequestFactory.ResolveDefaultOutputDirectory(
+            [@"C:\素材A\a.mp4", @"D:\素材B\b.mp4"],
+            @"C:\项目"));
+        Assert.EndsWith(Path.Combine("JingXu", "分镜输出"), RenderRequestFactory.DefaultOutputDirectory);
     }
 
     [Fact]

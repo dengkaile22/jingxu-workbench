@@ -1,3 +1,4 @@
+using JingXu.Workbench.Application.Abstractions;
 using JingXu.Workbench.Domain.Composition;
 using JingXu.Workbench.Domain.Overlays;
 
@@ -76,5 +77,41 @@ public static class OverlayEnqueueResolver
                 return layer with { SourcePath = entry.FilePath };
             })
             .ToArray();
+    }
+
+    /// <summary>
+    /// 对解析后的蒙版层探测真实素材时长（随机库换源后尤其重要）。
+    /// 探测失败时保留原时长。
+    /// </summary>
+    public static async Task<IReadOnlyList<OverlayLayer>> ProbeSourceDurationsAsync(
+        IReadOnlyList<OverlayLayer> layers,
+        IMediaProbe mediaProbe,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(layers);
+        ArgumentNullException.ThrowIfNull(mediaProbe);
+        if (layers.Count == 0)
+        {
+            return layers;
+        }
+
+        var probed = new OverlayLayer[layers.Count];
+        for (var i = 0; i < layers.Count; i++)
+        {
+            var layer = layers[i];
+            try
+            {
+                var info = await mediaProbe.ProbeAsync(layer.SourcePath, cancellationToken).ConfigureAwait(false);
+                probed[i] = info.Duration > TimeSpan.Zero
+                    ? layer with { SourceDuration = info.Duration }
+                    : layer;
+            }
+            catch
+            {
+                probed[i] = layer;
+            }
+        }
+
+        return probed;
     }
 }

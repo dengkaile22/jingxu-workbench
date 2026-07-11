@@ -103,7 +103,31 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
     private double _feather;
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ApplyBoundsCommand))]
+    private ShapeKind _selectedShape = ShapeKind.Rectangle;
+
+    [ObservableProperty]
+    private string? _alphaPngPath;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ApplyBoundsCommand))]
+    private bool _mixOverlayAudio;
+
+    [ObservableProperty]
     private int _libraryEntryCount;
+
+    /// <summary>形状遮罩可选几何类型（含导入 PNG）。</summary>
+    public IReadOnlyList<ShapeKind> AvailableShapes { get; } =
+    [
+        ShapeKind.Rectangle,
+        ShapeKind.RoundedRectangle,
+        ShapeKind.Ellipse,
+        ShapeKind.ImportedPng
+    ];
+
+    public bool IsShapeMaskSelected => Selected?.Layer.Mode == OverlayMode.ShapeMask;
+
+    public bool IsImportedPngShape => IsShapeMaskSelected && SelectedShape == ShapeKind.ImportedPng;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(AddFreeCoverCommand))]
@@ -140,6 +164,8 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
     partial void OnSelectedChanged(OverlayLayerRowViewModel? value)
     {
         OnPropertyChanged(nameof(HasSelected));
+        OnPropertyChanged(nameof(IsShapeMaskSelected));
+        OnPropertyChanged(nameof(IsImportedPngShape));
         if (value is null)
         {
             return;
@@ -157,8 +183,13 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
         OffsetY = value.Layer.OffsetY;
         RotationDegrees = value.Layer.RotationDegrees;
         Feather = value.Layer.Feather;
+        SelectedShape = value.Layer.Shape;
+        AlphaPngPath = value.Layer.AlphaPngPath;
+        MixOverlayAudio = value.Layer.AudioMode == OverlayAudioMode.Mix;
         _isLoadingSelection = false;
         NotifyPreviewChanged();
+        OnPropertyChanged(nameof(IsShapeMaskSelected));
+        OnPropertyChanged(nameof(IsImportedPngShape));
     }
 
     partial void OnBoundsXChanged(double value) => OnMaskFieldChanged();
@@ -182,6 +213,16 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
     partial void OnRotationDegreesChanged(double value) => OnMaskFieldChanged();
 
     partial void OnFeatherChanged(double value) => OnMaskFieldChanged();
+
+    partial void OnSelectedShapeChanged(ShapeKind value)
+    {
+        OnPropertyChanged(nameof(IsImportedPngShape));
+        OnMaskFieldChanged();
+    }
+
+    partial void OnAlphaPngPathChanged(string? value) => OnMaskFieldChanged();
+
+    partial void OnMixOverlayAudioChanged(bool value) => OnMaskFieldChanged();
 
     private bool CanAddLayer() => !IsAddingLayer;
 
@@ -251,6 +292,25 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
         }
     }
 
+    [RelayCommand(CanExecute = nameof(CanMutateSelected))]
+    private void PickAlphaPng()
+    {
+        if (Selected is null || Selected.Layer.Mode != OverlayMode.ShapeMask)
+        {
+            return;
+        }
+
+        var path = _filePicker.PickImageFile();
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        SelectedShape = ShapeKind.ImportedPng;
+        AlphaPngPath = path;
+        StatusMessage = $"已选择 PNG 遮罩：{Path.GetFileName(path)}";
+    }
+
     [RelayCommand]
     private async Task RefreshLibraryAsync() => await RefreshLibraryCountAsync().ConfigureAwait(true);
 
@@ -295,7 +355,12 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
             OffsetX = OffsetX,
             OffsetY = OffsetY,
             RotationDegrees = RotationDegrees,
-            Feather = Feather
+            Feather = Feather,
+            Shape = Selected.Layer.Mode == OverlayMode.ShapeMask ? SelectedShape : Selected.Layer.Shape,
+            AlphaPngPath = Selected.Layer.Mode == OverlayMode.ShapeMask && SelectedShape == ShapeKind.ImportedPng
+                ? AlphaPngPath
+                : null,
+            AudioMode = MixOverlayAudio ? OverlayAudioMode.Mix : OverlayAudioMode.Discard
         };
 
         return true;

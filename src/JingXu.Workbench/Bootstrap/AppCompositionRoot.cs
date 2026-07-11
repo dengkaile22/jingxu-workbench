@@ -74,6 +74,8 @@ public sealed class AppCompositionRoot
 
         var overlayLibrary = new OverlayLibraryService(
             new AtomicJsonStore<OverlayLibraryDocument>(OverlayLibraryDocument.CurrentSchemaVersion));
+        var templateService = new TemplateService(
+            new AtomicJsonStore<EffectTemplateDocument>(EffectTemplateDocument.CurrentSchemaVersion));
         var composition = new CompositionViewModel(
             _mediaProbe,
             RenderCoordinator,
@@ -81,7 +83,8 @@ public sealed class AppCompositionRoot
             _outputFolderPicker,
             UiDispatcher,
             _overlayState,
-            overlayLibrary);
+            overlayLibrary,
+            templateService);
         var overlays = new OverlayEditorViewModel(_mediaFilePicker, _overlayState, _mediaProbe, UiDispatcher, overlayLibrary);
         var workflow = new SubtitleWorkflow(
             new TesseractSubtitleOcrDetector(runner, resolver, mediaProbe),

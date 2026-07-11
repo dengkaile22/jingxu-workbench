@@ -76,7 +76,9 @@ public sealed partial class ShellViewModel : ObservableObject
         if (e.PropertyName is nameof(CompositionViewModel.SelectedMaterial)
             or nameof(CompositionViewModel.ImportGeneration))
         {
-            _ = Monitor.LoadFromMaterialAsync(CompositionModule.SelectedMaterial);
+            var material = CompositionModule.SelectedMaterial
+                ?? CompositionModule.Materials.FirstOrDefault(m => m.HasValidAsset);
+            _ = Monitor.LoadFromMaterialAsync(material);
         }
     }
 

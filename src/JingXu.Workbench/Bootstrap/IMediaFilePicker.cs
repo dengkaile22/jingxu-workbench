@@ -10,4 +10,7 @@ public interface IMediaFilePicker
 
     /// <summary>选择单个音频文件；用户取消时返回 <c>null</c>。</summary>
     string? PickAudioFile();
+
+    /// <summary>选择单个灰度/透明 PNG 遮罩图；用户取消时返回 <c>null</c>。</summary>
+    string? PickImageFile();
 }

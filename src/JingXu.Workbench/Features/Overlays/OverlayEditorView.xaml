@@ -138,6 +138,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,8,8">
@@ -165,7 +166,30 @@
                     <TextBox Text="{Binding StartClipIndex, UpdateSourceTrigger=PropertyChanged}" Padding="8,6" />
                 </StackPanel>
 
-                <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Margin="0,4,0,8">
+                <StackPanel Grid.Row="3"
+                            Grid.ColumnSpan="2"
+                            Margin="0,0,0,8"
+                            Visibility="{Binding IsShapeMaskSelected, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="形状" Style="{DynamicResource Text.Caption}" />
+                    <ComboBox ItemsSource="{Binding AvailableShapes}"
+                              SelectedItem="{Binding SelectedShape}"
+                              Margin="0,4,0,0"
+                              AutomationProperties.Name="形状遮罩类型" />
+                    <StackPanel Margin="0,8,0,0"
+                                Visibility="{Binding IsImportedPngShape, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding AlphaPngPath, TargetNullValue=未选择 PNG 遮罩}"
+                                   Style="{DynamicResource Text.Caption}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <Button Style="{DynamicResource Button.Secondary}"
+                                Content="选择 PNG 遮罩…"
+                                Command="{Binding PickAlphaPngCommand}"
+                                Margin="0,6,0,0"
+                                HorizontalAlignment="Left"
+                                AutomationProperties.Name="选择 PNG 形状遮罩" />
+                    </StackPanel>
+                </StackPanel>
+
+                <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Margin="0,4,0,8">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -188,7 +212,7 @@
                     </Grid>
                 </StackPanel>
 
-                <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Margin="0,0,0,8">
+                <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Margin="0,0,0,8">
                     <Grid Margin="0,0,0,8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -219,7 +243,7 @@
                     </Grid>
                 </StackPanel>
 
-                <StackPanel Grid.Row="5" Grid.ColumnSpan="2">
+                <StackPanel Grid.Row="6" Grid.ColumnSpan="2">
                     <Grid Margin="0,0,0,8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -252,10 +276,16 @@
             </Grid>
 
             <WrapPanel Margin="0,8,0,0">
+                <CheckBox Content="混入蒙版音轨"
+                          IsChecked="{Binding MixOverlayAudio}"
+                          IsEnabled="{Binding HasSelected}"
+                          Margin="0,0,16,8"
+                          VerticalAlignment="Center"
+                          AutomationProperties.Name="混入蒙版音轨到成片" />
                 <Button Style="{DynamicResource Button.Secondary}"
                         Content="应用参数"
                         Command="{Binding ApplyBoundsCommand}"
-                        Margin="0,0,8,0"
+                        Margin="0,0,8,8"
                         AutomationProperties.Name="应用蒙版参数到选中层" />
                 <Button Style="{DynamicResource Button.Secondary}"
                         Content="加入素材库"

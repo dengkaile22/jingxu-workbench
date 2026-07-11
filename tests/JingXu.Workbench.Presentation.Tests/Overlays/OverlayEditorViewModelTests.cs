@@ -59,6 +59,43 @@ public sealed class OverlayEditorViewModelTests
     }
 
     [Fact]
+    public async Task Shape_mask_can_switch_to_ellipse()
+    {
+        var maskPath = CreateTempMediaPath();
+        var state = new OverlayWorkbenchState();
+        var vm = CreateViewModel(new FakeMediaFilePicker(maskPath), state);
+
+        await vm.AddShapeMaskCommand.ExecuteAsync(null);
+        vm.SelectedShape = ShapeKind.Ellipse;
+
+        Assert.Equal(ShapeKind.Ellipse, state.Layers.Single().Shape);
+    }
+
+    [Fact]
+    public async Task Pick_alpha_png_sets_imported_shape()
+    {
+        var maskPath = CreateTempMediaPath();
+        var pngPath = Path.Combine(Path.GetTempPath(), $"mask-{Guid.NewGuid():N}.png");
+        await File.WriteAllBytesAsync(pngPath, [0x89, 0x50, 0x4E, 0x47]);
+        try
+        {
+            var state = new OverlayWorkbenchState();
+            var picker = new FakeMediaFilePicker(maskPath) { ImagePath = pngPath };
+            var vm = CreateViewModel(picker, state);
+            await vm.AddShapeMaskCommand.ExecuteAsync(null);
+
+            vm.PickAlphaPngCommand.Execute(null);
+
+            Assert.Equal(ShapeKind.ImportedPng, state.Layers.Single().Shape);
+            Assert.Equal(pngPath, state.Layers.Single().AlphaPngPath);
+        }
+        finally
+        {
+            File.Delete(pngPath);
+        }
+    }
+
+    [Fact]
     public async Task Transform_sliders_update_layer_state_in_real_time()
     {
         var maskPath = CreateTempMediaPath();
@@ -319,10 +356,14 @@ internal sealed class FakeMediaFilePicker : IMediaFilePicker
 
     public FakeMediaFilePicker(string? path) => _path = path;
 
+    public string? ImagePath { get; init; }
+
     public IReadOnlyList<string>? PickVideoFiles() =>
         _path is null ? null : [_path];
 
     public string? PickAudioFile() => _path;
+
+    public string? PickImageFile() => ImagePath ?? _path;
 }
 
 internal sealed class FakeMediaProbe : IMediaProbe

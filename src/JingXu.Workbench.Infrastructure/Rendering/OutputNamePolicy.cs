@@ -10,6 +10,7 @@ public static class OutputNamePolicy
     /// <summary>
     /// 单一源文件夹时使用 <c>&lt;source&gt;\分镜输出</c>；
     /// 多来源时使用 <c>&lt;project&gt;\分镜输出</c>。
+    /// 与 <see cref="JingXu.Workbench.Application.Rendering.RenderRequestFactory.ResolveDefaultOutputDirectory"/> 语义一致。
     /// </summary>
     public static string DefaultDirectory(IReadOnlyList<string> sourceFolders, string projectDirectory)
     {

@@ -17,15 +17,18 @@ public sealed partial class StickerEditorViewModel : WorkspaceModuleViewModel
     private readonly StickerLibraryService _libraryService;
     private readonly IMediaFilePicker _filePicker;
     private readonly IUiDispatcher _uiDispatcher;
+    private readonly IStickerLibraryClearConfirmation _clearConfirmation;
 
     public StickerEditorViewModel(
         StickerLibraryService libraryService,
         IMediaFilePicker filePicker,
-        IUiDispatcher uiDispatcher)
+        IUiDispatcher uiDispatcher,
+        IStickerLibraryClearConfirmation? clearConfirmation = null)
     {
         _libraryService = libraryService;
         _filePicker = filePicker;
         _uiDispatcher = uiDispatcher;
+        _clearConfirmation = clearConfirmation ?? new WpfStickerLibraryClearConfirmation();
 
         Tracks.CollectionChanged += (_, _) =>
         {
@@ -35,7 +38,11 @@ public sealed partial class StickerEditorViewModel : WorkspaceModuleViewModel
                 SelectedTrack = Tracks.FirstOrDefault();
             }
         };
-        LibraryEntries.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasLibraryEntries));
+        LibraryEntries.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HasLibraryEntries));
+            ClearStickerLibraryCommand.NotifyCanExecuteChanged();
+        };
     }
 
     public override string Title => "贴纸轨道";
@@ -208,6 +215,41 @@ public sealed partial class StickerEditorViewModel : WorkspaceModuleViewModel
                 StatusMessage = $"移除贴纸失败：{ex.GetBaseException().Message}");
         }
     }
+
+    [RelayCommand(CanExecute = nameof(CanClearStickerLibrary))]
+    private async Task ClearStickerLibraryAsync()
+    {
+        var entryCount = LibraryEntries.Count;
+        if (entryCount == 0)
+        {
+            return;
+        }
+
+        if (!_clearConfirmation.ConfirmClear(entryCount))
+        {
+            StatusMessage = "已取消清空贴纸素材库。";
+            return;
+        }
+
+        try
+        {
+            var (document, removed) = await _libraryService.ClearAllAsync().ConfigureAwait(false);
+            _uiDispatcher.Invoke(() =>
+            {
+                ApplyLibraryDocument(document);
+                StatusMessage = removed == 0
+                    ? "贴纸素材库已为空。"
+                    : $"已清空贴纸素材库（{removed} 条）；电脑中的原文件未删除，当前贴纸轨道未改动。";
+            });
+        }
+        catch (Exception ex)
+        {
+            _uiDispatcher.Invoke(() =>
+                StatusMessage = $"清空贴纸素材库失败：{ex.GetBaseException().Message}");
+        }
+    }
+
+    private bool CanClearStickerLibrary() => HasLibraryEntries;
 
     [RelayCommand]
     private void AddSticker(StickerLibraryEntryRowViewModel? entry)

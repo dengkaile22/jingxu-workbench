@@ -179,4 +179,100 @@ public sealed class StickerEditorViewModelTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task Clear_library_removes_all_records_but_keeps_source_files_and_active_tracks()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"jingxu-sticker-clear-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var firstPath = Path.Combine(root, "first.png");
+            var secondPath = Path.Combine(root, "second.gif");
+            await File.WriteAllBytesAsync(firstPath, [0x89, 0x50, 0x4E, 0x47]);
+            await File.WriteAllBytesAsync(secondPath, [0x47, 0x49, 0x46]);
+            var service = new StickerLibraryService(
+                new AtomicJsonStore<StickerLibraryDocument>(StickerLibraryDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-library.json"));
+            await service.RegisterAsync(firstPath);
+            await service.RegisterAsync(secondPath);
+            var confirmation = new StubStickerLibraryClearConfirmation(true);
+            var vm = new StickerEditorViewModel(
+                service,
+                new RecordingMediaFilePicker(),
+                new DirectUiDispatcher(),
+                confirmation);
+            await vm.EnsureLibraryLoadedAsync();
+            vm.AddStickerCommand.Execute(vm.LibraryEntries.Single(entry => entry.FilePath == firstPath));
+            Assert.True(vm.ClearStickerLibraryCommand.CanExecute(null));
+
+            await vm.ClearStickerLibraryCommand.ExecuteAsync(null);
+
+            Assert.Empty(vm.LibraryEntries);
+            Assert.False(vm.ClearStickerLibraryCommand.CanExecute(null));
+            Assert.Single(vm.Tracks);
+            Assert.True(File.Exists(firstPath));
+            Assert.True(File.Exists(secondPath));
+            Assert.Empty((await service.LoadAsync()).Entries);
+            Assert.Equal(1, confirmation.CallCount);
+            Assert.Equal(2, confirmation.LastEntryCount);
+            Assert.Contains("原文件未删除", vm.StatusMessage, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Cancelling_clear_keeps_library_and_does_not_touch_persistence()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"jingxu-sticker-clear-cancel-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var firstPath = Path.Combine(root, "first.png");
+            var secondPath = Path.Combine(root, "second.gif");
+            await File.WriteAllBytesAsync(firstPath, [0x89, 0x50, 0x4E, 0x47]);
+            await File.WriteAllBytesAsync(secondPath, [0x47, 0x49, 0x46]);
+            var service = new StickerLibraryService(
+                new AtomicJsonStore<StickerLibraryDocument>(StickerLibraryDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-library.json"));
+            await service.RegisterAsync(firstPath);
+            await service.RegisterAsync(secondPath);
+            var confirmation = new StubStickerLibraryClearConfirmation(false);
+            var vm = new StickerEditorViewModel(
+                service,
+                new RecordingMediaFilePicker(),
+                new DirectUiDispatcher(),
+                confirmation);
+            await vm.EnsureLibraryLoadedAsync();
+
+            await vm.ClearStickerLibraryCommand.ExecuteAsync(null);
+
+            Assert.Equal(2, vm.LibraryEntries.Count);
+            Assert.Equal(2, (await service.LoadAsync()).Entries.Count);
+            Assert.Equal(1, confirmation.CallCount);
+            Assert.Equal(2, confirmation.LastEntryCount);
+            Assert.Contains("已取消", vm.StatusMessage, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class StubStickerLibraryClearConfirmation(bool result) : IStickerLibraryClearConfirmation
+    {
+        public int CallCount { get; private set; }
+
+        public int LastEntryCount { get; private set; }
+
+        public bool ConfirmClear(int entryCount)
+        {
+            CallCount++;
+            LastEntryCount = entryCount;
+            return result;
+        }
+    }
 }

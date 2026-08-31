@@ -20,7 +20,9 @@ public sealed class RenderCoordinator : IAsyncDisposable
     private readonly IRenderQueueStore _store;
     private readonly Action<Action>? _marshalToUi;
     private readonly object _sync = new();
+    private readonly object _progressPersistSync = new();
     private readonly SemaphoreSlim _stateGate = new(1, 1);
+    private readonly SemaphoreSlim _progressPersistSignal = new(0);
     private readonly Dictionary<Guid, CancellationTokenSource> _jobTokens = new();
     private readonly HashSet<Guid> _inflightJobs = new();
     private readonly Dictionary<Guid, long> _lastProgressPublishedAt = new();
@@ -32,6 +34,8 @@ public sealed class RenderCoordinator : IAsyncDisposable
     private bool _paused;
     private bool _shutdownRequested;
     private Task _persistDrain = Task.CompletedTask;
+    private Task _progressPersistWorker;
+    private bool _progressPersistRequested;
 
     private RenderCoordinator(
         IRenderExecutor executor,
@@ -45,6 +49,8 @@ public sealed class RenderCoordinator : IAsyncDisposable
         _maxConcurrency = ClampConcurrency(maxConcurrency);
         _pendingConcurrency = _maxConcurrency;
         _jobs = store.Jobs.ToList();
+        _progressPersistWorker = Task.Run(PersistProgressLoopAsync);
+        _persistDrain = _progressPersistWorker;
     }
 
     /// <summary>
@@ -253,6 +259,7 @@ public sealed class RenderCoordinator : IAsyncDisposable
         }
 
         _shutdownRequested = true;
+        _progressPersistSignal.Release();
 
         CancellationTokenSource[] runningTokens;
         lock (_sync)
@@ -574,29 +581,63 @@ public sealed class RenderCoordinator : IAsyncDisposable
 
     private void QueueLatestStatePersistence()
     {
-        var persistTask = PersistLatestStateAsync();
-        lock (_sync)
+        var shouldSignal = false;
+        lock (_progressPersistSync)
         {
-            _persistDrain = Task.WhenAll(_persistDrain, persistTask);
+            if (!_progressPersistRequested)
+            {
+                _progressPersistRequested = true;
+                shouldSignal = true;
+            }
+        }
+
+        if (shouldSignal)
+        {
+            _progressPersistSignal.Release();
         }
     }
 
-    private async Task PersistLatestStateAsync()
+    private async Task PersistProgressLoopAsync()
     {
-        await _stateGate.WaitAsync().ConfigureAwait(false);
-        try
+        while (true)
         {
-            List<RenderJob> snapshot;
-            lock (_sync)
+            await _progressPersistSignal.WaitAsync().ConfigureAwait(false);
+            while (true)
             {
-                snapshot = _jobs.ToList();
+                lock (_progressPersistSync)
+                {
+                    if (!_progressPersistRequested)
+                    {
+                        break;
+                    }
+
+                    _progressPersistRequested = false;
+                }
+
+                await _stateGate.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    List<RenderJob> snapshot;
+                    lock (_sync)
+                    {
+                        snapshot = _jobs.ToList();
+                    }
+
+                    await RunPersistAsync(snapshot, CancellationToken.None).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _stateGate.Release();
+                }
             }
 
-            await RunPersistAsync(snapshot, CancellationToken.None).ConfigureAwait(false);
-        }
-        finally
-        {
-            _stateGate.Release();
+            lock (_sync)
+            {
+                if (_shutdownRequested)
+                {
+                    return;
+                }
+            }
         }
     }
 

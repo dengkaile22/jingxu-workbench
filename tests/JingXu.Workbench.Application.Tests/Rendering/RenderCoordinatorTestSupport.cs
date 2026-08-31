@@ -280,6 +280,23 @@ internal sealed class SlowQueueStore : IRenderQueueStore
     }
 }
 
+internal sealed class CountingSlowQueueStore(TimeSpan persistDelay) : IRenderQueueStore
+{
+    private IReadOnlyList<RenderJob> _jobs = [];
+    private int _persistCount;
+
+    public IReadOnlyList<RenderJob> Jobs => _jobs;
+
+    public int PersistCount => Volatile.Read(ref _persistCount);
+
+    public async Task PersistAsync(IReadOnlyList<RenderJob> jobs, CancellationToken cancellationToken)
+    {
+        await Task.Delay(persistDelay, cancellationToken).ConfigureAwait(false);
+        _jobs = jobs.ToList();
+        Interlocked.Increment(ref _persistCount);
+    }
+}
+
 internal static class RenderCoordinatorTestDriver
 {
     public static async Task<IReadOnlyList<RenderJob>> RunToIdleAsync(

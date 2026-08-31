@@ -180,4 +180,20 @@ public sealed class RenderCoordinatorTests
         await RenderCoordinatorTestDriver.WaitUntilIdleAsync(coordinator);
         await coordinator.ShutdownAsync(default);
     }
+
+    [Fact]
+    public async Task Bursty_progress_persistence_coalesces_full_queue_snapshots()
+    {
+        var executor = new BurstyProgressRenderExecutor(reportCount: 1001);
+        var store = new CountingSlowQueueStore(TimeSpan.FromMilliseconds(15));
+        var coordinator = RenderCoordinator.Create(executor, store, maxConcurrency: 1);
+
+        await coordinator.EnqueueAsync(RenderJobs.Create(1), default);
+        await executor.WaitUntilReportsIssuedAsync();
+        executor.Release();
+        await RenderCoordinatorTestDriver.WaitUntilIdleAsync(coordinator);
+        await coordinator.ShutdownAsync(default);
+
+        Assert.InRange(store.PersistCount, 1, 20);
+    }
 }

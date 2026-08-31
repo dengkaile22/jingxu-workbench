@@ -188,8 +188,14 @@ public sealed partial class CompositionViewModel
     [RelayCommand(CanExecute = nameof(CanManageSelectedEffectTemplate))]
     private async Task RenameSelectedEffectTemplateAsync()
     {
+        if (_templateService is null)
+        {
+            return;
+        }
+
+        await _initialEffectTemplateLoadTask.ConfigureAwait(false);
         var selected = SelectedEffectTemplate;
-        if (_templateService is null || selected is null || !IsUserEffectTemplate(selected))
+        if (selected is null || !IsUserEffectTemplate(selected))
         {
             return;
         }
@@ -230,8 +236,14 @@ public sealed partial class CompositionViewModel
     [RelayCommand(CanExecute = nameof(CanManageSelectedEffectTemplate))]
     private async Task DeleteSelectedEffectTemplateAsync()
     {
+        if (_templateService is null)
+        {
+            return;
+        }
+
+        await _initialEffectTemplateLoadTask.ConfigureAwait(false);
         var selected = SelectedEffectTemplate;
-        if (_templateService is null || selected is null || !IsUserEffectTemplate(selected))
+        if (selected is null || !IsUserEffectTemplate(selected))
         {
             return;
         }

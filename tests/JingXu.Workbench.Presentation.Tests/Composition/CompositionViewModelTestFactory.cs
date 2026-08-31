@@ -126,6 +126,51 @@ public static class CompositionTestPaths
     ];
 }
 
+public sealed class BlockingFirstLoadJsonStore<T>(IAtomicJsonStore<T> inner) : IAtomicJsonStore<T>
+    where T : class
+{
+    private readonly TaskCompletionSource _firstLoadStarted =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _releaseFirstLoad =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _firstLoadCompleted =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _loadCount;
+
+    public Task FirstLoadStarted => _firstLoadStarted.Task;
+
+    public Task FirstLoadCompleted => _firstLoadCompleted.Task;
+
+    public void ReleaseFirstLoad() => _releaseFirstLoad.TrySetResult();
+
+    public async Task<DocumentLoadResult<T>> LoadAsync(string path, CancellationToken cancellationToken)
+    {
+        var snapshot = await inner.LoadAsync(path, cancellationToken).ConfigureAwait(false);
+        if (Interlocked.Increment(ref _loadCount) != 1)
+        {
+            return snapshot;
+        }
+
+        _firstLoadStarted.TrySetResult();
+        try
+        {
+            await _releaseFirstLoad.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return snapshot;
+        }
+        finally
+        {
+            _firstLoadCompleted.TrySetResult();
+        }
+    }
+
+    public Task SaveAsync(
+        string path,
+        T document,
+        DocumentAccessMode accessMode,
+        CancellationToken cancellationToken) =>
+        inner.SaveAsync(path, document, accessMode, cancellationToken);
+}
+
 public sealed class FakeMediaProbe : IMediaProbe
 {
     private readonly Func<string, MediaInfo> _factory;

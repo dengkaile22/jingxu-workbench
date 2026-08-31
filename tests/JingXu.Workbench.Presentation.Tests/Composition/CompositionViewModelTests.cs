@@ -337,6 +337,10 @@ public sealed class CompositionViewModelTests
             vm.NewTemplateName = "双角标模板";
             await vm.SaveEffectTemplateCommand.ExecuteAsync(null);
 
+            Assert.True(File.Exists(templateService.StorePath), vm.ValidationMessage);
+            var persisted = await templateService.LoadAsync();
+            Assert.Contains(persisted.Templates, template => template.DisplayName == "双角标模板");
+
             var reloaded = CompositionViewModelTestFactory.Create(templateService: templateService);
             await reloaded.LoadEffectTemplatesCommand.ExecuteAsync(null);
             reloaded.VariationIntensityPercent = 20;
@@ -380,6 +384,41 @@ public sealed class CompositionViewModelTests
             {
                 File.Delete(path);
             }
+        }
+    }
+
+    [Fact]
+    public async Task Startup_template_load_does_not_overwrite_template_saved_while_loading()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"jingxu-template-startup-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var templatePath = Path.Combine(root, "effect-templates.json");
+
+        try
+        {
+            var seedService = new TemplateService(
+                new AtomicJsonStore<EffectTemplateDocument>(EffectTemplateDocument.CurrentSchemaVersion),
+                templatePath);
+            await seedService.SaveAsync(EffectTemplateDocument.WithDefaults);
+
+            var blockingStore = new BlockingFirstLoadJsonStore<EffectTemplateDocument>(
+                new AtomicJsonStore<EffectTemplateDocument>(EffectTemplateDocument.CurrentSchemaVersion));
+            var templateService = new TemplateService(blockingStore, templatePath);
+            var vm = CompositionViewModelTestFactory.Create(templateService: templateService);
+
+            await blockingStore.FirstLoadStarted.WaitAsync(TimeSpan.FromSeconds(5));
+            vm.NewTemplateName = "启动竞态模板";
+            var saveTask = vm.SaveEffectTemplateCommand.ExecuteAsync(null);
+
+            blockingStore.ReleaseFirstLoad();
+            await blockingStore.FirstLoadCompleted.WaitAsync(TimeSpan.FromSeconds(5));
+            await saveTask;
+
+            Assert.Contains(vm.EffectTemplatesList, template => template.DisplayName == "启动竞态模板");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
         }
     }
 

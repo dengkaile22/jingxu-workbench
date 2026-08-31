@@ -62,6 +62,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
     private const int OverlayPreviewDebounceMilliseconds = 150;
     private readonly object _overlayPreviewSync = new();
     private readonly string _overlayPreviewSessionId = Guid.NewGuid().ToString("N");
+    private readonly Task _initialEffectTemplateLoadTask;
     private CancellationTokenSource? _overlayPreviewCancellation;
     private int _overlayPreviewGeneration;
     private long _nextRandomMaskSelectionOrdinal;
@@ -135,7 +136,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         RefreshQualityHint();
         RefreshPreview();
         _trackOutputDirectoryOverrides = true;
-        _ = LoadEffectTemplatesAsync();
+        _initialEffectTemplateLoadTask = LoadEffectTemplatesCoreAsync();
         _ = LoadSequenceTemplatesAsync();
         _ = RefreshAudioLibraryCountAsync();
     }
@@ -1553,6 +1554,12 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
     [RelayCommand]
     private async Task LoadEffectTemplatesAsync()
     {
+        await _initialEffectTemplateLoadTask.ConfigureAwait(false);
+        await LoadEffectTemplatesCoreAsync().ConfigureAwait(false);
+    }
+
+    private async Task LoadEffectTemplatesCoreAsync()
+    {
         if (_templateService is null)
         {
             SeedBuiltinTemplates();
@@ -1602,6 +1609,8 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
             ValidationMessage = "效果模板服务未装配。";
             return;
         }
+
+        await _initialEffectTemplateLoadTask.ConfigureAwait(false);
 
         var id = "user-" + Guid.NewGuid().ToString("N")[..12];
         var baseTemplate = EnableVariationEffects

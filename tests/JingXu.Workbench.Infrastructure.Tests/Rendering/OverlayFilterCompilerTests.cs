@@ -56,11 +56,17 @@ public sealed class OverlayFilterCompilerTests
         var compile = FfmpegCommandCompiler.Compile(@"C:\ffmpeg.exe", request, @"C:\out\temp.mp4");
 
         var args = compile.Command.Arguments.ToList();
-        var firstOverlayInput = args.IndexOf(@"C:\overlay.mp4");
-        var lastMainInput = args.LastIndexOf(@"C:\media\2.mp4");
-        Assert.True(firstOverlayInput > lastMainInput);
+        // 主剪辑 i0/i1，蒙版随后为 i2（路径已别名）。
+        var mainAlias0 = args.IndexOf("i0.mp4");
+        var mainAlias1 = args.IndexOf("i1.mp4");
+        var overlayAlias = args.IndexOf("i2.mp4");
+        Assert.True(mainAlias0 > 0 && args[mainAlias0 - 1] == "-i");
+        Assert.True(mainAlias1 > mainAlias0 && args[mainAlias1 - 1] == "-i");
+        Assert.True(overlayAlias > mainAlias1 && args[overlayAlias - 1] == "-i");
+        Assert.Contains(compile.InputAliases, a => a.RelativePath == "i2.mp4" && a.AbsolutePath.Contains("overlay.mp4", StringComparison.OrdinalIgnoreCase));
 
-        var filter = args[args.IndexOf("-filter_complex") + 1];
+        var filter = compile.TryGetFilterComplex();
+        Assert.NotNull(filter);
         Assert.Contains("[vbase]", filter, StringComparison.Ordinal);
         Assert.Contains("overlay=", filter, StringComparison.Ordinal);
         Assert.Equal("[vov0]", args[args.IndexOf("-map") + 1]);
@@ -118,15 +124,39 @@ public sealed class OverlayFilterCompilerTests
     }
 
     [Fact]
-    public void Feather_transform_emits_alpha_gblur_chain()
+    public void Feather_transform_uses_one_alpha_plane_pass_with_bounded_edge_blur()
     {
-        var layer = OverlayTestSupport.LayerWithFit(OverlayFitMode.FillCrop) with { Feather = 0.5 };
+        var layer = OverlayTestSupport.LayerWithFit(OverlayFitMode.FillCrop) with
+        {
+            Feather = 1,
+            TopFade = 1
+        };
         var resolved = OverlayTestSupport.ResolveSingle(layer, [4]);
         var result = OverlayFilterCompiler.Compile(resolved, 1, 1080, 1920).Value!;
 
-        Assert.Contains("alphaextract", result.FilterSuffix, StringComparison.Ordinal);
-        Assert.Contains("gblur=sigma=", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Contains("alphaextract,geq=lum=", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Contains("Y/(H*1)", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Contains("(H-Y)/(H*1+0.000001)", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Contains("gblur=sigma=8", result.FilterSuffix, StringComparison.Ordinal);
         Assert.Contains("alphamerge", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(result.FilterSuffix, "geq="));
+        Assert.DoesNotContain(
+            "geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*",
+            result.FilterSuffix,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Imported_mask_preset_emits_split_feather_by_default()
+    {
+        var layer = OverlayLayer.CreateImportedMaskPreset(@"C:\蒙版\人物.mp4", TimeSpan.FromSeconds(2));
+        var resolved = OverlayTestSupport.ResolveSingle(layer, [4]);
+        var result = OverlayFilterCompiler.Compile(resolved, 1, 1080, 1920).Value!;
+
+        Assert.Contains("(H-Y)/(H*", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Contains("alphaextract,geq=lum=", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Contains("gblur=sigma=", result.FilterSuffix, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(result.FilterSuffix, "geq="));
     }
 
     [Fact]
@@ -188,11 +218,25 @@ public sealed class OverlayFilterCompilerTests
         };
         var request = OverlayTestSupport.RequestWithOverlay(layer, clipCount: 2);
         var compile = FfmpegCommandCompiler.Compile(@"C:\ffmpeg.exe", request, @"C:\out\temp.mp4");
-        var filter = compile.Command.Arguments[compile.Command.Arguments.ToList().IndexOf("-filter_complex") + 1];
+        var filter = compile.TryGetFilterComplex();
+        Assert.NotNull(filter);
 
         Assert.Contains("adelay=", filter, StringComparison.Ordinal);
         Assert.Contains("amix=duration=first:inputs=2", filter, StringComparison.Ordinal);
         Assert.Contains("[a_base]", filter, StringComparison.Ordinal);
+    }
+
+    private static int CountOccurrences(string value, string token)
+    {
+        var count = 0;
+        var start = 0;
+        while ((start = value.IndexOf(token, start, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            start += token.Length;
+        }
+
+        return count;
     }
 }
 

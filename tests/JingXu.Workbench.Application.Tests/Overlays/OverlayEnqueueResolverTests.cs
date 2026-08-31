@@ -1,5 +1,6 @@
 using JingXu.Workbench.Application.Composition;
 using JingXu.Workbench.Application.Overlays;
+using JingXu.Workbench.Domain.Common;
 using JingXu.Workbench.Domain.Composition;
 using JingXu.Workbench.Domain.Media;
 using JingXu.Workbench.Domain.Overlays;
@@ -50,6 +51,95 @@ public sealed class OverlayEnqueueResolverTests
     }
 
     [Fact]
+    public void Random_replacement_cycles_library_between_batch_outputs()
+    {
+        var state = ConfiguredState(enabled: true, useRandom: true);
+        var library = TestLibrary();
+        var plan = TestPlan(seed: 264513);
+
+        var first = OverlayEnqueueResolver.ResolveForPlan(state, library, plan, planOrdinal: 0);
+        var second = OverlayEnqueueResolver.ResolveForPlan(state, library, plan, planOrdinal: 1);
+
+        Assert.Single(first);
+        Assert.Single(second);
+        Assert.NotEqual(first[0].SourcePath, second[0].SourcePath);
+    }
+
+    [Fact]
+    public void Random_replacement_uses_only_one_mask_track_instead_of_stacking_all_tracks()
+    {
+        var firstBounds = new NormalizedRect(0.1, 0.2, 0.7, 0.35);
+        var state = new OverlayWorkbenchState();
+        state.Add(OverlayLayer.CreateScreenshotPreset(@"C:\masks\first.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Bounds = firstBounds,
+            Opacity = 0.55,
+            Feather = 0.4
+        });
+        state.Add(OverlayLayer.CreateScreenshotPreset(@"C:\masks\second.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            ZIndex = 2
+        });
+        state.SetEnabled(true);
+        state.SetUseRandomLibrarySource(true);
+
+        var layers = OverlayEnqueueResolver.ResolveForPlan(
+            state,
+            TestLibrary(),
+            TestPlan(seed: 42),
+            planOrdinal: 0);
+
+        var layer = Assert.Single(layers);
+        Assert.Contains(@"C:\library\", layer.SourcePath);
+        Assert.Equal(firstBounds, layer.Bounds);
+        Assert.Equal(0.55, layer.Opacity);
+        Assert.Equal(0.4, layer.Feather);
+    }
+
+    [Fact]
+    public void Additive_random_keeps_track_placement_when_library_has_visual_settings()
+    {
+        var trackBounds = new NormalizedRect(0.1, 0.2, 0.7, 0.35);
+        var state = new OverlayWorkbenchState();
+        state.Add(OverlayLayer.CreateScreenshotPreset(@"C:\masks\manual.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Bounds = trackBounds,
+            Opacity = 0.55,
+            Feather = 0.4
+        });
+        state.SetEnabled(true);
+        state.SetUseRandomLibrarySource(true);
+
+        var libraryBounds = new NormalizedRect(0, 0, 1, 1);
+        var library = new[]
+        {
+            new OverlayLibraryEntry(
+                Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                @"C:\library\a.mp4",
+                [],
+                null,
+                null,
+                new OverlayVisualSettings(libraryBounds, 0.1, OverlayFitMode.Stretch, Feather: 0)),
+            new OverlayLibraryEntry(
+                Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                @"C:\library\b.mp4",
+                [],
+                null,
+                null,
+                new OverlayVisualSettings(libraryBounds, 0.1, OverlayFitMode.Stretch, Feather: 0)),
+        };
+
+        var layers = OverlayEnqueueResolver.ResolveForPlan(state, library, TestPlan(seed: 42));
+
+        Assert.Single(layers);
+        Assert.Contains(@"C:\library\", layers[0].SourcePath);
+        Assert.Equal(trackBounds, layers[0].Bounds);
+        Assert.Equal(0.55, layers[0].Opacity);
+        Assert.Equal(0.4, layers[0].Feather);
+        Assert.Equal(OverlayFitMode.FillCrop, layers[0].Fit);
+    }
+
+    [Fact]
     public void Random_library_without_layers_creates_full_frame_preset()
     {
         var state = new OverlayWorkbenchState();
@@ -59,7 +149,7 @@ public sealed class OverlayEnqueueResolverTests
         var layers = OverlayEnqueueResolver.ResolveForPlan(state, TestLibrary(), TestPlan(seed: 7));
 
         Assert.Single(layers);
-        Assert.Equal(OverlayMode.FullFrameLowOpacity, layers[0].Mode);
+        Assert.Equal(OverlayMode.FreeCover, layers[0].Mode);
         Assert.Contains(@"C:\library\", layers[0].SourcePath);
     }
 

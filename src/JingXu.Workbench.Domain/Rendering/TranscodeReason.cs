@@ -25,5 +25,14 @@ public enum TranscodeReason
     Transition,
 
     /// <summary>用户选择了需重新编码的质量档。</summary>
-    QualityPreset
+    QualityPreset,
+
+    /// <summary>主轨拼接素材启用了音量调大或缩放增强。</summary>
+    MainMaterialBoost,
+
+    /// <summary>用户选择了显式导出分辨率。</summary>
+    OutputResolution,
+
+    /// <summary>用户选择了显式导出帧率。</summary>
+    OutputFrameRate
 }

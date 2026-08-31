@@ -28,12 +28,12 @@ function Copy-Tree([string] $Source, [string] $Destination) {
 
 $repoRoot = Resolve-RepoRoot
 $artifactsRoot = Join-Path $repoRoot 'artifacts'
-$publishDir = Join-Path (Join-Path (Join-Path $artifactsRoot 'publish') 'win-x64')
-$portableDir = Join-Path (Join-Path (Join-Path $artifactsRoot 'staging') 'portable')
+$publishDir = Join-Path (Join-Path $artifactsRoot 'publish') 'win-x64'
+$portableDir = Join-Path (Join-Path $artifactsRoot 'staging') 'portable'
 $releaseDir = Join-Path $artifactsRoot 'release'
-$zipPath = Join-Path $releaseDir 'JingXu-Workbench-Portable-win-x64.zip'
+$zipPath = Join-Path $releaseDir '炳恒快速混剪-Portable-win-x64.zip'
 $srcRoot = Join-Path $repoRoot 'src'
-$project = Join-Path (Join-Path (Join-Path $srcRoot 'JingXu.Workbench') 'JingXu.Workbench.csproj')
+$project = Join-Path (Join-Path $srcRoot 'JingXu.Workbench') 'JingXu.Workbench.csproj'
 
 if ([string]::IsNullOrWhiteSpace($RuntimeCacheDirectory)) {
     $RuntimeCacheDirectory = Join-Path $repoRoot 'runtime'
@@ -53,7 +53,7 @@ if ($BootstrapFromPath) { $resolveParams['BootstrapFromPath'] = $true }
 & $resolveScript @resolveParams
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$stagedRuntime = Join-Path (Join-Path (Join-Path $artifactsRoot 'staging') 'runtime')
+$stagedRuntime = Join-Path (Join-Path $artifactsRoot 'staging') 'runtime'
 $publishRuntime = Join-Path $publishDir 'runtime'
 if (Test-Path $publishRuntime) { Remove-Item $publishRuntime -Recurse -Force }
 Copy-Tree $stagedRuntime $publishRuntime
@@ -88,9 +88,9 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $sumsPath = Join-Path $releaseDir 'SHA256SUMS.txt'
-$line = "$hash  JingXu-Workbench-Portable-win-x64.zip"
+$line = "$hash  炳恒快速混剪-Portable-win-x64.zip"
 if (Test-Path $sumsPath) {
-    $existing = Get-Content $sumsPath | Where-Object { $_ -notmatch 'JingXu-Workbench-Portable-win-x64\.zip' }
+    $existing = Get-Content $sumsPath | Where-Object { $_ -notmatch '炳恒快速混剪-Portable-win-x64\.zip' }
     @($existing + $line) | Set-Content $sumsPath -Encoding UTF8
 }
 else {

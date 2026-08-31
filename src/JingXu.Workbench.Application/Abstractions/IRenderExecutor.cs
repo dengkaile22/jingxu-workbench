@@ -15,14 +15,19 @@ public sealed record RenderFailure(string Message);
 /// <summary>
 /// 渲染执行结果。
 /// </summary>
-public sealed record RenderExecutionResult(bool IsSuccess, RenderFailure? FailureInfo, bool IsCancelled)
+public sealed record RenderExecutionResult(
+    bool IsSuccess,
+    RenderFailure? FailureInfo,
+    bool IsCancelled,
+    string? Notice = null)
 {
-    public static RenderExecutionResult Success() => new(true, null, false);
+    public static RenderExecutionResult Success(string? notice = null) =>
+        new(true, null, false, notice);
 
     public static RenderExecutionResult Failed(string message) =>
-        new(false, new RenderFailure(message), false);
+        new(false, new RenderFailure(message), false, null);
 
-    public static RenderExecutionResult Cancelled() => new(false, null, true);
+    public static RenderExecutionResult Cancelled() => new(false, null, true, null);
 }
 
 /// <summary>

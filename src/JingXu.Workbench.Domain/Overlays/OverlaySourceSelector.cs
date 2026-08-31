@@ -31,6 +31,37 @@ public static class OverlaySourceSelector
         return library[index];
     }
 
+    /// <summary>
+    /// 为批量成片随机替换素材。先将素材库洗牌，再按全局成片序号逐项取用，
+    /// 因而一轮内每条素材只会出现一次，相邻成片不会继续得到同一条素材。
+    /// </summary>
+    public static OverlayLibraryEntry SelectReplacement(
+        IReadOnlyList<OverlayLibraryEntry> library,
+        int jobSeed,
+        long planOrdinal,
+        int branchIndex = 0)
+    {
+        ArgumentNullException.ThrowIfNull(library);
+        if (library.Count == 0)
+        {
+            throw new InvalidOperationException("蒙版素材库为空，无法随机选取。");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(planOrdinal);
+
+        if (library.Count == 1)
+        {
+            return library[0];
+        }
+
+        var index = DeterministicShuffleCycle.SelectIndex(
+            library.Count,
+            jobSeed,
+            planOrdinal,
+            branchIndex);
+        return library[index];
+    }
+
     /// <summary>批量选取多条不重复条目（库容量不足时允许重复）。</summary>
     public static IReadOnlyList<OverlayLibraryEntry> SelectMany(
         IReadOnlyList<OverlayLibraryEntry> library,

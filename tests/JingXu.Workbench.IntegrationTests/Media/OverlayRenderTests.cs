@@ -1,5 +1,6 @@
 using JingXu.Workbench.Domain.Common;
 using JingXu.Workbench.Domain.Composition;
+using JingXu.Workbench.Domain.Effects;
 using JingXu.Workbench.Domain.Overlays;
 using JingXu.Workbench.Domain.Rendering;
 using JingXu.Workbench.Infrastructure.Bootstrap;
@@ -88,6 +89,56 @@ public sealed class OverlayRenderTests
             outputPath,
             TimeSpan.FromMilliseconds(500));
         Assert.True(pixel.R > pixel.B, $"高层蒙版应覆盖低层，实际 RGB({pixel.R},{pixel.G},{pixel.B})。");
+    }
+
+    [Fact]
+    public async Task Sticker_is_visible_above_full_frame_mask()
+    {
+        var (ffmpegPath, ffprobePath) = MediaIntegrationHarness.RequireFfmpeg();
+        using var workspace = MediaIntegrationHarness.CreateWorkspace();
+        MediaIntegrationHarness.InstallBundledRuntime(workspace, ffmpegPath, ffprobePath);
+
+        var fixtureDir = Path.Combine(workspace.Root, "fixtures-sticker-top");
+        var assets = await MediaIntegrationHarness.GenerateFixtureClipsAsync(
+            ffmpegPath,
+            workspace.AppRoot,
+            fixtureDir,
+            TimeSpan.FromSeconds(1.5));
+        var plan = MediaIntegrationHarness.BuildCustomPlan(assets, [1]);
+
+        var maskClip = Path.Combine(fixtureDir, "mask-blue.mp4");
+        var stickerClip = Path.Combine(fixtureDir, "sticker-red.mp4");
+        await LavfiMediaFactory.GenerateColorClipAsync(ffmpegPath, maskClip, "blue", TimeSpan.FromSeconds(1));
+        await LavfiMediaFactory.GenerateColorClipAsync(ffmpegPath, stickerClip, "red", TimeSpan.FromSeconds(1));
+        var maskInfo = await RenderInfrastructure.CreateMediaProbe(workspace.AppRoot)
+            .ProbeAsync(maskClip, default);
+
+        var mask = OverlayLayer.CreateFullFramePreset(maskClip, maskInfo.Duration) with
+        {
+            Opacity = 1
+        };
+        var sticker = ImageSticker.Create(
+            stickerClip,
+            x: 0.25,
+            y: 0.25,
+            width: 0.5,
+            height: 0.5,
+            opacity: 1).Value!;
+
+        var outputPath = await MediaIntegrationHarness.RenderPlanAsync(
+            workspace,
+            plan,
+            "sticker-above-mask.mp4",
+            RenderProfile.Balanced,
+            OutputAspect.InheritFirst,
+            overlays: [mask],
+            stickers: [sticker]);
+
+        var sampleTime = TimeSpan.FromMilliseconds(500);
+        var center = await MediaSampleAnalyzer.SampleCenterPixelAsync(ffmpegPath, outputPath, sampleTime);
+        var corner = await MediaSampleAnalyzer.SamplePixelAsync(ffmpegPath, outputPath, sampleTime, x: 12, y: 12);
+        Assert.True(center.R > center.B, $"贴纸区域应为顶层红色，实际 RGB({center.R},{center.G},{center.B})。");
+        Assert.True(corner.B > corner.R, $"贴纸外应保留蓝色蒙版，实际 RGB({corner.R},{corner.G},{corner.B})。");
     }
 
     [Fact]

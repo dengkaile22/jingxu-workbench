@@ -33,7 +33,7 @@
 | UI 入口 | `src/JingXu.Workbench/App.xaml` + `App.xaml.cs` → `AppCompositionRoot.CreateShell()` → `ShellWindow` |
 | 组合根 | `src/JingXu.Workbench/Bootstrap/AppCompositionRoot.cs` |
 | 开发启动 | `dotnet run --project src/JingXu.Workbench/JingXu.Workbench.csproj` |
-| 便携启动 | 解压后双击 `JingXu.Workbench.exe`（自包含，无需安装 .NET） |
+| 便携启动 | 解压后双击 `炳恒快速混剪.exe`（自包含，无需安装 .NET） |
 | CLI（无 GUI 退出） | `--self-test`、`--import-smoke`、`--overlay-smoke`（见 `App.xaml.cs`） |
 
 **不存在** `backend/`、`frontend/`、HTTP API、`pipeline/` 与 `agent_pipeline/` 双轨。若其它项目审计提到这些名称，与本仓库无关；此处「管线」仅指 FFmpeg 媒体处理链路。
@@ -69,7 +69,7 @@ docs/                                # 本目录
 | 效果模板命名保存 | 低 | `TemplateService` 存在；**WPF 未引用** |
 | 交叉转场 | 低 | `TransitionDuration` 字段存在；UI/入队恒为 `TimeSpan.Zero` |
 | 运行时清单正式哈希 | 低 | `build/runtime-manifest.json` 仍为占位 `000…0` |
-| WiX Burn 引导安装包 | 中 | MSI 源存在；Burn 扩展依赖见验收报告 |
+| WiX MSI 安装包 | 中 | `Product.wxs`、`Package.wxs` 与 MSI 构建脚本存在；当前只交付 MSI |
 | 自动化测试 | 中高 | 验收报告：Release 下多数通过，仍有集成/打包失败项 |
 
 详细模块见 `docs/modules/*-status.md`；验收矩阵见 [acceptance-report.md](../acceptance-report.md)。

@@ -24,7 +24,8 @@ public sealed record MaterializedEffect(
     double Contrast,
     double Saturation,
     double DenoiseStrength,
-    bool ClearMetadata)
+    bool ClearMetadata,
+    double RotationDegrees = 0)
 {
     /// <summary>播放速率恒为 1.0，差异化处理不得改变业务时长。</summary>
     public const double PlaybackRate = 1.0;
@@ -37,7 +38,8 @@ public sealed record MaterializedEffect(
         Contrast: 1,
         Saturation: 1,
         DenoiseStrength: 0,
-        ClearMetadata: false);
+        ClearMetadata: false,
+        RotationDegrees: 0);
 
     /// <summary>是否包含需要重新编码的画面调整。</summary>
     public bool HasVisualAdjustments =>
@@ -46,7 +48,8 @@ public sealed record MaterializedEffect(
         || Math.Abs(Brightness) > 0.0001
         || Math.Abs(Contrast - 1.0) > 0.0001
         || Math.Abs(Saturation - 1.0) > 0.0001
-        || DenoiseStrength > 0;
+        || DenoiseStrength > 0
+        || Math.Abs(RotationDegrees) > 0.0001;
 }
 
 /// <summary>可保存、可复现的差异化效果模板。</summary>
@@ -64,8 +67,84 @@ public sealed record EffectVariationTemplate(
     double MaxSaturation,
     double MinDenoise,
     double MaxDenoise,
-    bool EnableMetadataClearing)
+    bool EnableMetadataClearing,
+    bool EnableRotate = false,
+    double MinRotationDegrees = 0,
+    double MaxRotationDegrees = 0)
 {
+    /// <summary>
+    /// 按强度系数缩放差异化区间（1.0 = 原强度；0 = 接近无效果；最大 2.0）。
+    /// 裁切钳制在 0%–3%；调色相对中性值缩放；降噪按比例缩放；旋转按比例缩放。
+    /// </summary>
+    public EffectVariationTemplate ScaleIntensity(double intensity)
+    {
+        var factor = Math.Clamp(intensity, 0, 2);
+        if (Math.Abs(factor - 1.0) < 0.0000001)
+        {
+            return this;
+        }
+
+        static double ScaleAround(double value, double center, double f) =>
+            center + (value - center) * f;
+
+        var minCrop = Math.Clamp(MinCropPercent * factor, 0, 3);
+        var maxCrop = Math.Clamp(MaxCropPercent * factor, 0, 3);
+        if (minCrop > maxCrop)
+        {
+            (minCrop, maxCrop) = (maxCrop, minCrop);
+        }
+
+        var minBrightness = ScaleAround(MinBrightness, 0, factor);
+        var maxBrightness = ScaleAround(MaxBrightness, 0, factor);
+        if (minBrightness > maxBrightness)
+        {
+            (minBrightness, maxBrightness) = (maxBrightness, minBrightness);
+        }
+
+        var minContrast = ScaleAround(MinContrast, 1, factor);
+        var maxContrast = ScaleAround(MaxContrast, 1, factor);
+        if (minContrast > maxContrast)
+        {
+            (minContrast, maxContrast) = (maxContrast, minContrast);
+        }
+
+        var minSaturation = ScaleAround(MinSaturation, 1, factor);
+        var maxSaturation = ScaleAround(MaxSaturation, 1, factor);
+        if (minSaturation > maxSaturation)
+        {
+            (minSaturation, maxSaturation) = (maxSaturation, minSaturation);
+        }
+
+        var minDenoise = Math.Max(0, MinDenoise * factor);
+        var maxDenoise = Math.Max(minDenoise, MaxDenoise * factor);
+
+        var minRotation = MinRotationDegrees * factor;
+        var maxRotation = MaxRotationDegrees * factor;
+        if (minRotation > maxRotation)
+        {
+            (minRotation, maxRotation) = (maxRotation, minRotation);
+        }
+
+        return this with
+        {
+            EnableMirror = EnableMirror && factor >= 0.35,
+            MinCropPercent = Math.Round(minCrop, 4),
+            MaxCropPercent = Math.Round(maxCrop, 4),
+            MinBrightness = Math.Round(minBrightness, 4),
+            MaxBrightness = Math.Round(maxBrightness, 4),
+            MinContrast = Math.Round(minContrast, 4),
+            MaxContrast = Math.Round(maxContrast, 4),
+            MinSaturation = Math.Round(minSaturation, 4),
+            MaxSaturation = Math.Round(maxSaturation, 4),
+            MinDenoise = Math.Round(minDenoise, 4),
+            MaxDenoise = Math.Round(maxDenoise, 4),
+            EnableMetadataClearing = EnableMetadataClearing && factor >= 0.5,
+            EnableRotate = EnableRotate && factor >= 0.35,
+            MinRotationDegrees = Math.Round(minRotation, 4),
+            MaxRotationDegrees = Math.Round(maxRotation, 4)
+        };
+    }
+
     /// <summary>从任务种子实例化效果参数。</summary>
     public MaterializedEffect Materialize(int seed)
     {
@@ -84,6 +163,10 @@ public sealed record EffectVariationTemplate(
         var clearMetadata = EnableMetadataClearing
             && DeterministicRandom.FromBranch(seed, branchIndex: 6).Next(2) == 1;
 
+        var rotation = EnableRotate
+            ? SampleRange(seed, branchIndex: 7, MinRotationDegrees, MaxRotationDegrees)
+            : 0;
+
         return new MaterializedEffect(
             mirror,
             Math.Round(cropPercent, 4),
@@ -91,7 +174,8 @@ public sealed record EffectVariationTemplate(
             Math.Round(contrast, 4),
             Math.Round(saturation, 4),
             Math.Round(denoise, 4),
-            clearMetadata);
+            clearMetadata,
+            Math.Round(rotation, 4));
     }
 
     /// <summary>创建并验证模板范围。</summary>
@@ -109,7 +193,10 @@ public sealed record EffectVariationTemplate(
         double maxSaturation,
         double minDenoise,
         double maxDenoise,
-        bool enableMetadataClearing)
+        bool enableMetadataClearing,
+        bool enableRotate = false,
+        double minRotationDegrees = 0,
+        double maxRotationDegrees = 0)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -136,6 +223,13 @@ public sealed record EffectVariationTemplate(
             return Result<EffectVariationTemplate>.Failure("降噪强度范围无效。");
         }
 
+        if (minRotationDegrees > maxRotationDegrees
+            || minRotationDegrees < -15
+            || maxRotationDegrees > 15)
+        {
+            return Result<EffectVariationTemplate>.Failure("旋转角度范围必须在 -15° 到 15° 之间，且最小值不大于最大值。");
+        }
+
         return Result<EffectVariationTemplate>.Success(
             new EffectVariationTemplate(
                 id.Trim(),
@@ -151,7 +245,10 @@ public sealed record EffectVariationTemplate(
                 maxSaturation,
                 minDenoise,
                 maxDenoise,
-                enableMetadataClearing));
+                enableMetadataClearing,
+                enableRotate,
+                minRotationDegrees,
+                maxRotationDegrees));
     }
 
     private static double SampleRange(int seed, int branchIndex, double min, double max)
@@ -169,7 +266,7 @@ public sealed record EffectVariationTemplate(
 /// <summary>内置效果模板集合。</summary>
 public static class EffectTemplates
 {
-    /// <summary>标准差异化模板：镜像、轻裁切、轻调色与轻降噪。</summary>
+    /// <summary>标准差异化模板：镜像、轻裁切、轻旋转、轻调色与轻降噪。</summary>
     public static EffectVariationTemplate StandardVariation() =>
         EffectVariationTemplate.Create(
             id: "standard-variation",
@@ -185,7 +282,10 @@ public static class EffectTemplates
             maxSaturation: 1.12,
             minDenoise: 0.5,
             maxDenoise: 2.5,
-            enableMetadataClearing: true).Value!;
+            enableMetadataClearing: true,
+            enableRotate: true,
+            minRotationDegrees: -2,
+            maxRotationDegrees: 2).Value!;
 
     /// <summary>无效果模板。</summary>
     public static EffectVariationTemplate None { get; } =
@@ -203,7 +303,10 @@ public static class EffectTemplates
             maxSaturation: 1,
             minDenoise: 0,
             maxDenoise: 0,
-            enableMetadataClearing: false).Value!;
+            enableMetadataClearing: false,
+            enableRotate: false,
+            minRotationDegrees: 0,
+            maxRotationDegrees: 0).Value!;
 }
 
 /// <summary>BGM 混音参数。</summary>
@@ -249,7 +352,8 @@ public sealed record BgmMixPlan(
 public sealed record ImageSticker(
     string Path,
     NormalizedRect Bounds,
-    double Opacity)
+    double Opacity,
+    double RotationDegrees = 0.0)
 {
     /// <summary>创建并验证图片贴纸。</summary>
     public static Result<ImageSticker> Create(
@@ -258,7 +362,8 @@ public sealed record ImageSticker(
         double y,
         double width,
         double height,
-        double opacity = 1.0)
+        double opacity = 1.0,
+        double rotationDegrees = 0.0)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -272,7 +377,7 @@ public sealed record ImageSticker(
 
         var bounds = NormalizedRect.Create(x, y, width, height);
         return bounds.IsSuccess
-            ? Result<ImageSticker>.Success(new ImageSticker(path.Trim(), bounds.Value, opacity))
+            ? Result<ImageSticker>.Success(new ImageSticker(path.Trim(), bounds.Value, opacity, rotationDegrees))
             : Result<ImageSticker>.Failure(bounds.Error!);
     }
 }

@@ -121,7 +121,7 @@ public sealed class FfprobeJsonParserTests
     }
 
     [Fact]
-    public void Rejects_json_without_video_stream()
+    public void Parses_audio_only_stream_with_zero_video_dimensions()
     {
         const string json = """
             {
@@ -132,7 +132,12 @@ public sealed class FfprobeJsonParserTests
             }
             """;
 
-        var ex = Assert.Throws<MediaProbeException>(() => FfprobeJsonParser.Parse(json));
-        Assert.Contains("视频流", ex.Message);
+        var info = FfprobeJsonParser.Parse(json);
+        Assert.Equal(0, info.Width);
+        Assert.Equal(0, info.Height);
+        Assert.Equal("none", info.VideoCodec);
+        Assert.Equal("aac", info.AudioCodec);
+        Assert.True(info.HasAudio);
+        Assert.Equal(1.0, info.Duration.TotalSeconds, 1);
     }
 }

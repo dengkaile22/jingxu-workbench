@@ -2,24 +2,24 @@
 
 ## 文档目的
 
-描述便携包与安装程序的目标产物与脚本。占位哈希、Burn 扩展等 **开发现状** 见 [modules/runtime-packaging-status.md](modules/runtime-packaging-status.md) 与 [acceptance-report.md](acceptance-report.md)。
+描述便携包与 MSI 安装程序的目标产物与脚本。运行时哈希等 **开发现状** 见 [modules/runtime-packaging-status.md](modules/runtime-packaging-status.md) 与 [acceptance-report.md](acceptance-report.md)。
 
 ## 目标设计
 
-交付自包含便携 ZIP 与 WiX 安装程序；运行时哈希可审计；未签名时 SmartScreen 警告不视为构建失败（规格 §14）。
+交付自包含便携 ZIP 与 WiX MSI 安装程序；运行时哈希可审计；未签名时 SmartScreen 警告不视为构建失败（规格 §14）。
 
 ## 开发现状（摘要）
 
 - 便携包脚本可用；开发机常用 `-AllowPlaceholderHash -BootstrapFromPath`。
 - `build/runtime-manifest.json` 当前多为占位 SHA-256，**不可**当作正式发布证据。
-- WiX 源在 `build/Installer/`；Burn 引导程序可能缺扩展（见验收报告）。
+- WiX MSI 源在 `build/Installer/`；当前只保留 MSI 安装方式，不生成 Burn/Setup EXE。
 
 ## 产物
 
 | 文件 | 说明 |
 |------|------|
-| `artifacts/release/JingXu-Workbench-Portable-win-x64.zip` | 自包含便携版 |
-| `artifacts/release/JingXu-Workbench-Setup-win-x64.exe` | WiX Burn 引导安装程序 |
+| `artifacts/release/炳恒快速混剪-Portable-win-x64.zip` | 自包含便携版 |
+| `artifacts/release/炳恒快速混剪-win-x64.msi` | WiX MSI 安装程序 |
 | `artifacts/release/SHA256SUMS.txt` | 产物 SHA-256 校验和 |
 
 ## 步骤
@@ -54,13 +54,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable.ps1
 
 开发机无完整运行时时可使用 `-AllowPlaceholderHash -BootstrapFromPath`（**不可用于正式发布**）。
 
-### 4. 安装程序
+### 4. MSI 安装程序
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer.ps1
 ```
 
-需要 **WiX Toolset 6.x**（`wix.exe` 在 PATH）。源文件位于 `build/Installer/`。
+需要 **WiX Toolset 6.x**（`wix.exe` 在 PATH）。源文件位于 `build/Installer/`。构建脚本只生成 MSI，不生成 Burn/Setup EXE。
 
 安装程序仅管理 `Program Files` 下的应用目录，**不**写入用户文档或 `分镜输出` 目录；卸载不删除用户项目与成片。
 

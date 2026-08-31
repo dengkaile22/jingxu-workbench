@@ -17,6 +17,16 @@ public sealed class OverlayLayerTransformTests
         Assert.Equal(0, layer.Feather);
     }
 
+    [Fact]
+    public void Imported_mask_preset_defaults_to_soft_split_feather()
+    {
+        var layer = OverlayLayer.CreateImportedMaskPreset(@"C:\mask.mp4", TimeSpan.FromSeconds(2));
+
+        Assert.Equal(OverlayLayer.GhostOverlayFeather, layer.Feather);
+        Assert.Equal(OverlayLayer.GhostOverlayTopFade, layer.TopFade);
+        Assert.True(layer.Feather > 0);
+    }
+
     [Theory]
     [InlineData(0.5)]
     [InlineData(2.0)]

@@ -86,7 +86,7 @@ public static class RenderPreflight
         if (estimatedCommandLineLength > MaxCommandLineLength)
         {
             return Result<Unit>.Failure(
-                $"FFmpeg 命令过长（约 {estimatedCommandLineLength} 字符），超过 {MaxCommandLineLength} 字符的安全上限。请减少素材数量或拆分任务。");
+                $"FFmpeg 命令过长（约 {estimatedCommandLineLength} 字符），超过 {MaxCommandLineLength} 字符的安全上限。滤镜图已外置为脚本、输入已缩短为 staging 相对路径后仍超限，请减少素材数量或拆分任务。");
         }
 
         return Result<Unit>.Success(default);

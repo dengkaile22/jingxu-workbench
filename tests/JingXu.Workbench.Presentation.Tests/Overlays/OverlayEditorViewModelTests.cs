@@ -1,3 +1,4 @@
+using CommunityToolkit.Mvvm.Input;
 using JingXu.Workbench.Application.Abstractions;
 using JingXu.Workbench.Application.Overlays;
 using JingXu.Workbench.Application.Projects;
@@ -56,6 +57,108 @@ public sealed class OverlayEditorViewModelTests
     }
 
     [Fact]
+    public void Apply_all_visual_settings_requires_two_layers_and_copies_selected_settings()
+    {
+        var state = new OverlayWorkbenchState();
+        var first = OverlayLayer.CreateScreenshotPreset(@"C:\mask-first.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Name = "蒙版 1",
+            Scale = 1.35,
+            OffsetX = 0.12,
+            Feather = 0.42
+        };
+        state.Add(first);
+        var vm = CreateViewModel(new FakeMediaFilePicker(@"C:\mask-first.mp4"), state);
+
+        Assert.False(vm.ApplyCurrentVisualSettingsToAllLayersCommand.CanExecute(null));
+
+        var second = OverlayLayer.CreateScreenshotPreset(@"C:\mask-second.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Name = "蒙版 2",
+            Scale = 0.75,
+            OffsetX = -0.1,
+            Feather = 0.05
+        };
+        state.Add(second);
+        vm.Selected = vm.Layers.Single(row => row.DisplayName == first.Name);
+
+        Assert.True(vm.ApplyCurrentVisualSettingsToAllLayersCommand.CanExecute(null));
+        vm.ApplyCurrentVisualSettingsToAllLayersCommand.Execute(null);
+
+        Assert.Equal(2, state.Layers.Count);
+        Assert.All(state.Layers, layer =>
+        {
+            Assert.Equal(first.Scale, layer.Scale);
+            Assert.Equal(first.OffsetX, layer.OffsetX);
+            Assert.Equal(first.Feather, layer.Feather);
+        });
+        Assert.Contains("其余 1 条", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Apply_all_parameters_copies_selected_start_clip_to_every_layer()
+    {
+        var state = new OverlayWorkbenchState();
+        var first = OverlayLayer.CreateScreenshotPreset(@"C:\mask-first.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Name = "蒙版 1",
+            StartClipIndex = 3
+        };
+        var second = OverlayLayer.CreateScreenshotPreset(@"C:\mask-second.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Name = "蒙版 2",
+            StartClipIndex = 1
+        };
+        state.Add(first);
+        state.Add(second);
+        var vm = CreateViewModel(new FakeMediaFilePicker(@"C:\mask-first.mp4"), state);
+        vm.Selected = vm.Layers.Single(row => row.DisplayName == first.Name);
+
+        vm.ApplyCurrentVisualSettingsToAllLayersCommand.Execute(null);
+
+        Assert.All(state.Layers, layer => Assert.Equal(3, layer.StartClipIndex));
+    }
+
+    [Fact]
+    public void Apply_start_clip_only_copies_start_clip_and_preserves_other_track_parameters()
+    {
+        var state = new OverlayWorkbenchState();
+        var first = OverlayLayer.CreateScreenshotPreset(@"C:\mask-first.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Name = "蒙版 1",
+            StartClipIndex = 3,
+            Scale = 1.35,
+            OffsetX = 0.12
+        };
+        var second = OverlayLayer.CreateScreenshotPreset(@"C:\mask-second.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Name = "蒙版 2",
+            StartClipIndex = 1,
+            Scale = 0.75,
+            OffsetX = -0.2,
+            Feather = 0.4
+        };
+        state.Add(first);
+        state.Add(second);
+        var vm = CreateViewModel(new FakeMediaFilePicker(@"C:\mask-first.mp4"), state);
+        vm.Selected = vm.Layers.Single(row => row.DisplayName == first.Name);
+
+        var commandProperty = typeof(OverlayEditorViewModel)
+            .GetProperty("ApplyStartClipIndexToAllLayersCommand");
+        Assert.NotNull(commandProperty);
+        var command = Assert.IsAssignableFrom<IRelayCommand>(commandProperty!.GetValue(vm));
+        Assert.True(command.CanExecute(null));
+        command.Execute(null);
+
+        var updatedSecond = state.Layers.Single(layer => layer.Name == second.Name);
+        Assert.Equal(3, updatedSecond.StartClipIndex);
+        Assert.Equal(second.Scale, updatedSecond.Scale);
+        Assert.Equal(second.OffsetX, updatedSecond.OffsetX);
+        Assert.Equal(second.Feather, updatedSecond.Feather);
+        Assert.Contains("起始片段 3", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Workbench_state_snapshot_is_shared_with_composition_enqueue()
     {
         var state = new OverlayWorkbenchState();
@@ -65,6 +168,37 @@ public sealed class OverlayEditorViewModelTests
         var snapshot = state.CreateSnapshot();
         Assert.Single(snapshot);
         Assert.Equal(OverlayMode.FreeCover, snapshot[0].Mode);
+    }
+
+    [Fact]
+    public void Random_replacement_from_editor_returns_one_mask_and_cycles_between_outputs()
+    {
+        var selectedBounds = new NormalizedRect(0.15, 0.25, 0.65, 0.3);
+        var state = new OverlayWorkbenchState();
+        state.Add(OverlayLayer.CreateScreenshotPreset(@"C:\mask-first.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Bounds = new NormalizedRect(0.1, 0.2, 0.7, 0.35)
+        });
+        state.Add(OverlayLayer.CreateScreenshotPreset(@"C:\mask-second.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Bounds = selectedBounds,
+            ZIndex = 2
+        });
+        var vm = CreateViewModel(new FakeMediaFilePicker(@"C:\mask-first.mp4"), state);
+        vm.UseRandomMaskLibrary = true;
+        var library = new[]
+        {
+            new OverlayLibraryEntry(Guid.NewGuid(), @"C:\library\a.mp4", [], null, null),
+            new OverlayLibraryEntry(Guid.NewGuid(), @"C:\library\b.mp4", [], null, null)
+        };
+
+        var first = vm.BuildLayersForPlan(seed: 264513, library, planOrdinal: 0);
+        var second = vm.BuildLayersForPlan(seed: 264513, library, planOrdinal: 1);
+
+        var firstLayer = Assert.Single(first);
+        var secondLayer = Assert.Single(second);
+        Assert.Equal(selectedBounds, firstLayer.Bounds);
+        Assert.NotEqual(firstLayer.SourcePath, secondLayer.SourcePath);
     }
 
     [Fact]
@@ -260,7 +394,7 @@ public sealed class OverlayEditorViewModelTests
     [Fact]
     public async Task Probe_failure_shows_chinese_status_with_stderr()
     {
-        var maskPath = ResolveZhaoyuMaskPath() ?? @"C:\素材\测试 (1).mp4";
+        var maskPath = CreateTempMediaPath();
         var state = new OverlayWorkbenchState();
         var probe = new ThrowingMediaProbe(new MediaProbeException(
             maskPath,
@@ -271,7 +405,7 @@ public sealed class OverlayEditorViewModelTests
         await vm.ImportMaskMaterialsCommand.ExecuteAsync(null);
 
         Assert.Empty(vm.Layers);
-        Assert.Contains("媒体探测失败", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("蒙版素材探测失败", vm.StatusMessage, StringComparison.Ordinal);
         Assert.Contains("Invalid data found", vm.StatusMessage, StringComparison.Ordinal);
     }
 
@@ -323,7 +457,7 @@ public sealed class OverlayEditorViewModelTests
         var row = new OverlayLayerRowViewModel(layer);
 
         Assert.Equal("蒙版 1", row.DisplayName);
-        Assert.Equal("自由覆盖", row.ModeLabel);
+        Assert.Equal("蒙版素材", row.ModeLabel);
 
         foreach (var propertyName in new[]
                  {
@@ -365,13 +499,29 @@ public sealed class OverlayEditorViewModelTests
         Assert.DoesNotContain("选择系统预制", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("{Binding Name}", xaml, StringComparison.Ordinal);
         Assert.Contains("{Binding DisplayName, Mode=OneWay}", xaml, StringComparison.Ordinal);
-        Assert.Contains("{Binding ModeLabel, Mode=OneWay}", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("{Binding ModeLabel", xaml, StringComparison.Ordinal);
         Assert.Contains("{Binding ZIndex, Mode=OneWay}", xaml, StringComparison.Ordinal);
         Assert.Contains("{Binding SourceFileName, Mode=OneWay}", xaml, StringComparison.Ordinal);
         Assert.Contains("{Binding BoundsText, Mode=OneWay}", xaml, StringComparison.Ordinal);
         Assert.Contains("{Binding TransformText, Mode=OneWay}", xaml, StringComparison.Ordinal);
-        Assert.DoesNotContain("{Binding ModeLabel}", xaml.Replace("{Binding ModeLabel, Mode=OneWay}", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
         Assert.DoesNotContain("{Binding ZIndex}", xaml.Replace("{Binding ZIndex, Mode=OneWay}", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Overlay_editor_view_exposes_dedicated_start_clip_apply_button()
+    {
+        var repoRoot = FindRepoRoot();
+        var xamlPath = Path.Combine(
+            repoRoot,
+            "src",
+            "JingXu.Workbench",
+            "Features",
+            "Overlays",
+            "OverlayEditorView.xaml");
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains("统一起始片段到全部轨道", xaml, StringComparison.Ordinal);
+        Assert.Contains("ApplyStartClipIndexToAllLayersCommand", xaml, StringComparison.Ordinal);
     }
 
     private static string? ResolveZhaoyuMaskPath()
@@ -383,8 +533,14 @@ public sealed class OverlayEditorViewModelTests
             return explicitPath;
         }
 
+        const string root = @"C:\Users\dengkaile\OneDrive\Desktop\project2026071001\test-assets";
+        if (!Directory.Exists(root))
+        {
+            return null;
+        }
+
         return Directory.EnumerateFiles(
-                @"C:\Users\dengkaile\OneDrive\Desktop\project2026071001\test-assets",
+                root,
                 "*.mp4",
                 SearchOption.AllDirectories)
             .FirstOrDefault(p => p.Contains("赵雨", StringComparison.Ordinal) && p.Contains("(8)", StringComparison.Ordinal));
@@ -439,8 +595,13 @@ public sealed class OverlayEditorViewModelTests
         FakeMediaFilePicker picker,
         OverlayWorkbenchState state,
         IMediaProbe? probe = null,
-        OverlayLibraryService? libraryService = null) =>
-        new(picker, state, probe ?? new FakeMediaProbe(), new DirectUiDispatcher(), libraryService);
+        OverlayLibraryService? libraryService = null)
+    {
+        var layersService = new OverlayLayersService(
+            new AtomicJsonStore<OverlayLayersDocument>(OverlayLayersDocument.CurrentSchemaVersion),
+            Path.Combine(Path.GetTempPath(), $"jingxu-overlay-layers-{Guid.NewGuid():N}.json"));
+        return new(picker, state, probe ?? new FakeMediaProbe(), new DirectUiDispatcher(), layersService, libraryService);
+    }
 
     private static string CreateTempMediaPath()
     {
@@ -474,6 +635,18 @@ internal sealed class FakeMediaFilePicker : IMediaFilePicker
     public string? PickAudioFile() => _paths is { Count: > 0 } ? _paths[0] : null;
 
     public string? PickImageFile() => ImagePath ?? (_paths is { Count: > 0 } ? _paths[0] : null);
+
+    public IReadOnlyList<string> PickImageFiles(string? dialogTitle = null)
+    {
+        LastDialogTitle = dialogTitle;
+        return _paths ?? [];
+    }
+
+    public IReadOnlyList<string>? PickAudioFiles(string? dialogTitle = null)
+    {
+        LastDialogTitle = dialogTitle;
+        return _paths ?? [];
+    }
 }
 
 internal sealed class FakeMediaProbe : IMediaProbe

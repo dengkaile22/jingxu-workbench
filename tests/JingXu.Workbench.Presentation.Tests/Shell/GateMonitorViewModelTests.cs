@@ -201,4 +201,14 @@ internal sealed class FakeMediaFrameExtractor : IMediaFrameExtractor
                 ? Result<string>.Success(_outputPath!)
                 : Result<string>.Failure(_error));
     }
+
+    public Task<Result<string>> ExtractOverlayCompositePreviewAsync(
+        OverlayCompositePreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(
+            _error is null
+                ? Result<string>.Success(_outputPath!)
+                : Result<string>.Failure(_error));
+    }
 }

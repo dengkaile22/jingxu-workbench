@@ -106,11 +106,11 @@ public sealed class RenderRequestFactoryTests
             "成片",
             RenderProfile.Balanced,
             OutputAspect.InheritFirst,
-            sticker: sticker));
+            stickers: [sticker]));
 
         Assert.True(request.HasEffects);
         Assert.Null(request.Effect);
-        Assert.Same(sticker, request.Sticker);
+        Assert.Same(sticker, request.Stickers[0]);
     }
 
     [Fact]
@@ -153,6 +153,22 @@ public sealed class RenderRequestFactoryTests
         var request = Assert.Single(requests);
         Assert.False(request.HasOverlays);
         Assert.Empty(request.OverlayLayers);
+    }
+
+    [Fact]
+    public void Processing_mode_is_copied_to_every_batch_request()
+    {
+        var requests = RenderRequestFactory.CreateForPlans(
+            [TestPlan(seed: 1), TestPlan(seed: 2)],
+            @"C:\输出",
+            "成片",
+            RenderProfile.Balanced,
+            OutputAspect.InheritFirst,
+            overlayLayersPerPlan: null,
+            sharedOverlayLayers: [],
+            processingMode: VideoProcessingMode.Gpu);
+
+        Assert.All(requests, request => Assert.Equal(VideoProcessingMode.Gpu, request.ProcessingMode));
     }
 
     private static CompositionPlan TestPlan(int seed = 0)

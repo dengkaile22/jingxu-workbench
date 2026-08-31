@@ -6,7 +6,8 @@ using JingXu.Workbench.Features.Composition;
 using JingXu.Workbench.Features.Overlays;
 using JingXu.Workbench.Features.Queue;
 using JingXu.Workbench.Features.Settings;
-using JingXu.Workbench.Features.Subtitles;
+using JingXu.Workbench.Features.Downloads;
+using JingXu.Workbench.Features.AudioLibrary;
 using System.ComponentModel;
 
 namespace JingXu.Workbench.Features.Shell;
@@ -24,9 +25,11 @@ public sealed partial class ShellViewModel : ObservableObject
     public ShellViewModel(
         CompositionViewModel composition,
         OverlayEditorViewModel overlays,
-        SubtitleLabViewModel subtitles,
+        Stickers.StickerEditorViewModel stickers,
+        DownloadViewModel downloads,
         RenderQueueViewModel queue,
         SettingsViewModel settings,
+        AudioLibraryViewModel audioLibrary,
         IFolderLauncher folderLauncher,
         IMediaFrameExtractor frameExtractor,
         IUiDispatcher uiDispatcher)
@@ -36,6 +39,7 @@ public sealed partial class ShellViewModel : ObservableObject
         QueueModule = queue;
         CompositionModule = composition;
         OverlayModule = overlays;
+        StickerModule = stickers;
         Monitor = new GateMonitorViewModel(frameExtractor, uiDispatcher);
 
         // 预创建并缓存模块实例；导航在实例之间切换，不重建，保留各模块状态。
@@ -43,17 +47,21 @@ public sealed partial class ShellViewModel : ObservableObject
         {
             [WorkspaceModule.Composition] = composition,
             [WorkspaceModule.Overlays] = overlays,
-            [WorkspaceModule.Subtitles] = subtitles,
+            [WorkspaceModule.Stickers] = stickers,
+            [WorkspaceModule.Downloads] = downloads,
             [WorkspaceModule.Queue] = queue,
-            [WorkspaceModule.Settings] = settings
+            [WorkspaceModule.Settings] = settings,
+            [WorkspaceModule.AudioLibrary] = audioLibrary
         };
 
-        // 左侧导航栏：全部五个条目按设计顺序排列。
+        // 左侧导航栏：全部条目按设计顺序排列。
         Modules =
         [
             new ShellModuleTab(WorkspaceModule.Composition, "混剪", "Icon.Module.Composition", "切换到批量混剪模块", isEnabled: true),
             new ShellModuleTab(WorkspaceModule.Overlays, "蒙版", "Icon.Module.Overlays", "切换到蒙版模板模块", isEnabled: true),
-            new ShellModuleTab(WorkspaceModule.Subtitles, "字幕", "Icon.Module.Subtitles", "切换到字幕处理模块", isEnabled: true),
+            new ShellModuleTab(WorkspaceModule.Stickers, "贴纸", "Icon.Module.Stickers", "切换到贴纸轨道模块", isEnabled: true),
+            new ShellModuleTab(WorkspaceModule.AudioLibrary, "音频", "Icon.Module.AudioLibrary", "切换到音频库模块", isEnabled: true),
+            new ShellModuleTab(WorkspaceModule.Downloads, "下载", "Icon.Module.Downloads", "切换到批量下载模块", isEnabled: true),
             new ShellModuleTab(WorkspaceModule.Queue, "队列", "Icon.Module.Queue", "切换到任务队列模块", isEnabled: true),
             new ShellModuleTab(WorkspaceModule.Settings, "设置", "Icon.Module.Settings", "切换到设置模块", isEnabled: true)
         ];
@@ -97,6 +105,9 @@ public sealed partial class ShellViewModel : ObservableObject
     /// <summary>蒙版模板模块实例。</summary>
     public OverlayEditorViewModel OverlayModule { get; }
 
+    /// <summary>贴纸轨道模块实例。</summary>
+    public Stickers.StickerEditorViewModel StickerModule { get; }
+
     /// <summary>当前激活的模块内容视图模型。</summary>
     [ObservableProperty]
     private WorkspaceModuleViewModel _currentModule;
@@ -111,8 +122,14 @@ public sealed partial class ShellViewModel : ObservableObject
         set => Navigate(value);
     }
 
-    partial void OnCurrentModuleChanged(WorkspaceModuleViewModel value) =>
+    partial void OnCurrentModuleChanged(WorkspaceModuleViewModel value)
+    {
         OnPropertyChanged(nameof(SelectedModule));
+        OnPropertyChanged(nameof(IsCompositionModule));
+    }
+
+    /// <summary>仅混剪模块保留壳层取景井；其他工具模块使用完整中央工作区。</summary>
+    public bool IsCompositionModule => CurrentModule.ModuleKind == WorkspaceModule.Composition;
 
     /// <summary>
     /// 导航到指定模块。仅当该模块已启用且存在缓存实例时切换；否则为 no-op。
@@ -130,6 +147,12 @@ public sealed partial class ShellViewModel : ObservableObject
         {
             CurrentModule = content;
         }
+
+        // 切换到混剪页时刷新音频库计数
+        if (target == WorkspaceModule.Composition)
+        {
+            _ = CompositionModule.RefreshAudioLibraryCountFromNavigationAsync();
+        }
     }
 
     /// <summary>在资源管理器中打开本地数据目录（检查器底部主操作）。</summary>
@@ -139,7 +162,7 @@ public sealed partial class ShellViewModel : ObservableObject
     // ── 标题栏 ────────────────────────────────────────────────────────────
     public string Wordmark { get; } = "镜序";
 
-    public string ProductLine { get; } = "JINGXU · 光学编排台";
+    public string ProductLine { get; } = "智能混剪工具";
 
     public string ProjectName { get; } = "未打开项目";
 

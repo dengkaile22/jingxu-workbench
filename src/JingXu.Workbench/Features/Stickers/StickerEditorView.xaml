@@ -59,9 +59,15 @@
                     Margin="0,8,0,0"
                     MaxHeight="220"
                     Visibility="{Binding HasLibraryEntries, Converter={StaticResource BoolToVis}}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <ItemsControl ItemsSource="{Binding LibraryEntries}">
-                        <ItemsControl.ItemTemplate>
+                <ListBox x:Name="StickerLibraryList"
+                         ItemsSource="{Binding LibraryEntries}"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         ScrollViewer.CanContentScroll="True"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling">
+                        <ListBox.ItemTemplate>
                             <DataTemplate DataType="{x:Type stickers:StickerLibraryEntryRowViewModel}">
                                 <Border Background="{DynamicResource Surface.Panel}"
                                         BorderBrush="{DynamicResource Line.Default}"
@@ -126,9 +132,8 @@
                                     </Grid>
                                 </Border>
                             </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </ScrollViewer>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
             </Border>
 
             <TextBlock Text="暂无贴纸素材。点「导入贴纸」添加 PNG/GIF 到素材库。"

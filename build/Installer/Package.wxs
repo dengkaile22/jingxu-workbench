@@ -1,19 +1,44 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>
-    <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="JingXu Workbench" />
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="炳恒快速混剪" />
     </StandardDirectory>
 
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="炳恒快速混剪" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
-      <Component Id="MainExecutable" Guid="B1C2D3E4-F5A6-7890-BCDE-F12345678901">
-        <File Id="JingXu.Workbench.exe" Source="$(var.PublishDir)\JingXu.Workbench.exe" KeyPath="yes" />
+      <Component Id="MainExecutableComponent" Guid="B1C2D3E4-F5A6-7890-BCDE-F12345678901">
+        <File Id="MainExecutableFile" Source="$(var.PublishDir)\炳恒快速混剪.exe" KeyPath="yes" />
       </Component>
-      <Component Id="Readme" Guid="C2D3E4F5-A6B7-8901-CDEF-123456789012">
-        <File Id="ReadmeFile" Source="$(var.PublishDir)\README.md" />
+      <Files Include="$(var.PublishDir)\**">
+        <Exclude Files="$(var.PublishDir)\炳恒快速混剪.exe" />
+      </Files>
+    </ComponentGroup>
+
+    <ComponentGroup Id="AppShortcuts">
+      <Component Id="ApplicationShortcut" Directory="ApplicationProgramsFolder" Guid="E1F2A3B4-C5D6-7890-EF01-234567890123">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="炳恒快速混剪"
+                  Description="完全离线的 Windows 桌面视频批处理混剪软件"
+                  Target="[INSTALLFOLDER]炳恒快速混剪.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RemoveFolder Id="CleanUpProgramMenuFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\BingHeng\JingXuWorkbench" Name="installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
-      <Component Id="Notices" Guid="D3E4F5A6-B7C8-9012-DEF0-234567890123">
-        <File Id="NoticesFile" Source="$(var.PublishDir)\THIRD_PARTY_NOTICES.md" />
+      <Component Id="DesktopShortcutComponent" Directory="DesktopFolder" Guid="F2A3B4C5-D6E7-8901-F012-345678901234">
+        <Shortcut Id="DesktopShortcut"
+                  Name="炳恒快速混剪"
+                  Description="完全离线的 Windows 桌面视频批处理混剪软件"
+                  Target="[INSTALLFOLDER]炳恒快速混剪.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RegistryValue Root="HKCU" Key="Software\BingHeng\JingXuWorkbench" Name="desktopShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

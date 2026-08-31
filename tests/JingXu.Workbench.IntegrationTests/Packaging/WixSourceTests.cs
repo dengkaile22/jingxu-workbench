@@ -12,13 +12,24 @@ public sealed class WixSourceTests
     }
 
     [Fact]
-    public void Installer_sources_exist()
+    public void Msi_installer_sources_exist_and_bundle_sources_are_absent()
     {
         var installerDir = Path.Combine(BuildPaths.RepoRoot, "build", "Installer");
         Assert.True(File.Exists(Path.Combine(installerDir, "Package.wxs")));
-        Assert.True(File.Exists(Path.Combine(installerDir, "Bundle.wxs")));
         Assert.True(File.Exists(Path.Combine(installerDir, "License.rtf")));
         Assert.True(File.Exists(Path.Combine(installerDir, "JingXu.Workbench.Msi.wixproj")));
-        Assert.True(File.Exists(Path.Combine(installerDir, "JingXu.Workbench.Bundle.wixproj")));
+        Assert.False(File.Exists(Path.Combine(installerDir, "Bundle.wxs")));
+        Assert.False(File.Exists(Path.Combine(installerDir, "JingXu.Workbench.Bundle.wixproj")));
+    }
+
+    [Fact]
+    public void Installer_shortcuts_use_explicit_user_registry_and_install_path()
+    {
+        var wix = File.ReadAllText(BuildPaths.InstallerPackageWxs);
+
+        Assert.DoesNotContain("Root=\"HKMU\"", wix, StringComparison.Ordinal);
+        Assert.Contains("Root=\"HKCU\"", wix, StringComparison.Ordinal);
+        Assert.Contains("Target=\"[INSTALLFOLDER]炳恒快速混剪.exe\"", wix, StringComparison.Ordinal);
+        Assert.DoesNotContain("Target=\"[#MainExecutableFile]\"", wix, StringComparison.Ordinal);
     }
 }

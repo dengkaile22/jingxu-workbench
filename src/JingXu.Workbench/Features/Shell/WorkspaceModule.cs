@@ -13,12 +13,18 @@ public enum WorkspaceModule
     /// <summary>蒙版模板（M2 启用）。</summary>
     Overlays,
 
-    /// <summary>字幕处理（M3 启用）。</summary>
-    Subtitles,
+    /// <summary>贴纸轨道。</summary>
+    Stickers,
+
+    /// <summary>批量下载。</summary>
+    Downloads,
 
     /// <summary>任务队列。</summary>
     Queue,
 
     /// <summary>设置。</summary>
-    Settings
+    Settings,
+
+    /// <summary>音频库。</summary>
+    AudioLibrary
 }

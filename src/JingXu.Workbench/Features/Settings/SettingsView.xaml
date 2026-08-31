@@ -43,6 +43,72 @@
                 <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding DataDirectory}" Style="{DynamicResource Text.Mono}" TextWrapping="Wrap" Margin="0,4" />
             </Grid>
 
+            <!-- 渲染并发 -->
+            <TextBlock Text="渲染并发" Style="{DynamicResource Text.SectionHeader}" Margin="0,20,0,8" />
+            <Border Background="{DynamicResource Surface.PanelMuted}"
+                    BorderBrush="{DynamicResource Line.Default}"
+                    BorderThickness="1"
+                    CornerRadius="{DynamicResource Radius.Standard}"
+                    Padding="14,12">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="120" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="同时渲染任务数"
+                                   Style="{DynamicResource Text.Caption}"
+                                   VerticalAlignment="Center" />
+                        <ComboBox Grid.Column="1"
+                                  ItemsSource="{Binding ConcurrencyOptions}"
+                                  SelectedItem="{Binding MaxRenderConcurrency}"
+                                  Margin="12,0,8,0"
+                                  Padding="8,6"
+                                  AutomationProperties.Name="渲染并发上限" />
+                        <Button Grid.Column="2"
+                                Style="{DynamicResource Button.Secondary}"
+                                Content="应用"
+                                Command="{Binding ApplyRenderConcurrencyCommand}"
+                                AutomationProperties.Name="应用渲染并发" />
+                    </Grid>
+                    <TextBlock Text="{Binding ConcurrencyHint}"
+                               Style="{DynamicResource Text.Caption}"
+                               Margin="0,8,0,0"
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding ConcurrencyStatusMessage}"
+                               Style="{DynamicResource Text.Caption}"
+                               Margin="0,6,0,0"
+                               Visibility="{Binding HasConcurrencyStatus, Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+            </Border>
+
+            <!-- 缓存清理 -->
+            <TextBlock Text="缓存与临时文件" Style="{DynamicResource Text.SectionHeader}" Margin="0,20,0,8" />
+            <Border Background="{DynamicResource Surface.PanelMuted}"
+                    BorderBrush="{DynamicResource Line.Default}"
+                    BorderThickness="1"
+                    CornerRadius="{DynamicResource Radius.Standard}"
+                    Padding="14,12">
+                <StackPanel>
+                    <TextBlock Text="清理 %TEMP%\jingxu-* 临时目录、输出目录下的 .jingxu-tmp 渲染暂存，以及数据目录中的 .tmp/.bak。不会删除素材库、效果模板或已生成成片。"
+                               Style="{DynamicResource Text.Caption}"
+                               TextWrapping="Wrap" />
+                    <Button Style="{DynamicResource Button.Secondary}"
+                            Content="清理工作台缓存"
+                            Command="{Binding ClearWorkbenchCacheCommand}"
+                            HorizontalAlignment="Left"
+                            Margin="0,10,0,0"
+                            AutomationProperties.Name="清理工作台缓存" />
+                    <TextBlock Text="{Binding CacheCleanupStatusMessage}"
+                               Style="{DynamicResource Text.Caption}"
+                               Margin="0,8,0,0"
+                               TextWrapping="Wrap"
+                               Visibility="{Binding HasCacheCleanupStatus, Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+            </Border>
+
             <!-- 运行时诊断 -->
             <TextBlock Text="运行时诊断" Style="{DynamicResource Text.SectionHeader}" Margin="0,20,0,8" />
             <TextBlock Text="检测 FFmpeg、FFprobe、Whisper 与 Tesseract 是否可用。完全离线，不会联网校验。"

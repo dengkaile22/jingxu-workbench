@@ -48,22 +48,24 @@ public sealed class ShellViewModelTests
     }
 
     [Fact]
-    public void Rail_lists_all_five_modules_with_composition_queue_and_settings_enabled()
+    public void Rail_lists_all_seven_modules_with_audio_library_enabled()
     {
         var shell = ShellViewModelTestFactory.Create();
 
         Assert.Equal(
             [
-                WorkspaceModule.Composition, WorkspaceModule.Overlays, WorkspaceModule.Subtitles,
-                WorkspaceModule.Queue, WorkspaceModule.Settings
+                WorkspaceModule.Composition, WorkspaceModule.Overlays, WorkspaceModule.Stickers,
+                WorkspaceModule.AudioLibrary,
+                WorkspaceModule.Downloads, WorkspaceModule.Queue, WorkspaceModule.Settings
             ],
             shell.Modules.Select(m => m.ModuleKind));
 
         var enabled = shell.Modules.Where(m => m.IsEnabled).Select(m => m.ModuleKind).ToArray();
         Assert.Equal(
             [
-                WorkspaceModule.Composition, WorkspaceModule.Overlays, WorkspaceModule.Subtitles,
-                WorkspaceModule.Queue, WorkspaceModule.Settings
+                WorkspaceModule.Composition, WorkspaceModule.Overlays, WorkspaceModule.Stickers,
+                WorkspaceModule.AudioLibrary,
+                WorkspaceModule.Downloads, WorkspaceModule.Queue, WorkspaceModule.Settings
             ],
             enabled);
     }
@@ -98,6 +100,14 @@ public sealed class ShellViewModelTests
         var shell = ShellViewModelTestFactory.Create();
         shell.SelectedModule = WorkspaceModule.Settings;
         Assert.Equal(WorkspaceModule.Settings, shell.CurrentModule.ModuleKind);
+    }
+
+    [Fact]
+    public void Sticker_module_and_composition_share_the_same_editor_state()
+    {
+        var shell = ShellViewModelTestFactory.Create();
+
+        Assert.Same(shell.StickerModule, shell.CompositionModule.StickerEditor);
     }
 
     [Fact]

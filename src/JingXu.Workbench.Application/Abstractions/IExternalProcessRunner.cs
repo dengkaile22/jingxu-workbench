@@ -1,5 +1,15 @@
 namespace JingXu.Workbench.Application.Abstractions;
 
+/// <summary>外部进程的桌面调度优先级。</summary>
+public enum ExternalProcessPriority
+{
+    /// <summary>继承常规桌面进程优先级。</summary>
+    Normal,
+
+    /// <summary>低于桌面 UI；适合长时间占满 CPU 的编码进程。</summary>
+    BelowNormal
+}
+
 /// <summary>
 /// 外部进程请求的只读契约。参数以独立列表暴露，绝不接受预拼接命令行字符串。
 /// </summary>
@@ -16,6 +26,9 @@ public interface IProcessRequest
 
     /// <summary>环境变量覆盖。</summary>
     IReadOnlyDictionary<string, string> EnvironmentOverrides { get; }
+
+    /// <summary>子进程的调度优先级。</summary>
+    ExternalProcessPriority Priority { get; }
 }
 
 /// <summary>

@@ -1,0 +1,37 @@
+using System.Globalization;
+using System.Windows.Data;
+
+namespace JingXu.Workbench.Themes.Converters;
+
+/// <summary>把 0–100 的百分比转换为 0–canvasSize 的绝对长度。ConverterParameter 为 canvasSize。</summary>
+public sealed class PercentageToCanvasLengthConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is null || parameter is null)
+        {
+            return 0.0;
+        }
+
+        var doubleValue = value is double d ? d : System.Convert.ToDouble(value, culture);
+        var canvasSize = parameter is double size ? size : System.Convert.ToDouble(parameter, culture);
+        return Math.Clamp(doubleValue / 100.0, 0.0, 100.0) * canvasSize;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is null || parameter is null)
+        {
+            return 0.0;
+        }
+
+        var doubleValue = value is double d ? d : System.Convert.ToDouble(value, culture);
+        var canvasSize = parameter is double size ? size : System.Convert.ToDouble(parameter, culture);
+        if (Math.Abs(canvasSize) < double.Epsilon)
+        {
+            return 0.0;
+        }
+
+        return Math.Clamp(doubleValue / canvasSize * 100.0, 0.0, 100.0);
+    }
+}

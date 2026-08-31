@@ -335,8 +335,8 @@ Draft → Queued → Preparing → Running → Finalizing → Completed
 
 最终交付：
 
-1. `JingXu-Workbench-Portable-win-x64.zip`：自包含便携版。
-2. `JingXu-Workbench-Setup-win-x64.exe`：WiX 安装程序。
+1. `炳恒快速混剪-Portable-win-x64.zip`：自包含便携版。
+2. `炳恒快速混剪-win-x64.msi`：WiX MSI 安装程序。
 3. `README.md`：安装、快速开始、模型与 FFmpeg 设置、常见错误。
 4. `docs/`：需求、架构、开发标准、测试和许可证说明。
 5. `THIRD_PARTY_NOTICES.md`：FFmpeg、Whisper、Tesseract、模型和字体许可。

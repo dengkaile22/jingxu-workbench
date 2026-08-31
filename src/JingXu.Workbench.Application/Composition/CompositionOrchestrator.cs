@@ -47,7 +47,8 @@ public static class CompositionOrchestrator
         CompositionMode mode,
         string sequenceExpression,
         int batchCount,
-        int randomSeed)
+        int randomSeed,
+        int? clipsPerPlan = null)
     {
         if (assets.Count == 0)
         {
@@ -69,7 +70,7 @@ public static class CompositionOrchestrator
 
         return mode switch
         {
-            CompositionMode.Random => BuildRandomPreview(assets, batchCount, randomSeed),
+            CompositionMode.Random => BuildRandomPreview(assets, batchCount, randomSeed, clipsPerPlan),
             CompositionMode.CustomSequence => BuildCustomPreview(assets, sequenceExpression),
             _ => new CompositionPreviewResult(false, "未知编排模式。", [], [])
         };
@@ -151,7 +152,8 @@ public static class CompositionOrchestrator
     private static CompositionPreviewResult BuildRandomPreview(
         IReadOnlyList<MediaAsset> assets,
         int batchCount,
-        int randomSeed)
+        int randomSeed,
+        int? clipsPerPlan = null)
     {
         if (batchCount <= 0)
         {
@@ -162,7 +164,16 @@ public static class CompositionOrchestrator
                 []);
         }
 
-        var result = CompositionPlanner.PlanRandomBatch(assets, batchCount, randomSeed);
+        if (clipsPerPlan is < 1)
+        {
+            return new CompositionPreviewResult(
+                false,
+                "每片素材数必须为正整数。",
+                [],
+                []);
+        }
+
+        var result = CompositionPlanner.PlanRandomBatch(assets, batchCount, randomSeed, clipsPerPlan: clipsPerPlan);
         if (!result.IsSuccess)
         {
             return new CompositionPreviewResult(false, result.Error!, [], []);

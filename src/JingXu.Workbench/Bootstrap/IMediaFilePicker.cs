@@ -16,4 +16,10 @@ public interface IMediaFilePicker
 
     /// <summary>选择单个灰度/透明 PNG 遮罩图；用户取消时返回 <c>null</c>。</summary>
     string? PickImageFile();
+
+    /// <summary>弹出多选图片文件对话框；用户取消时返回 <c>null</c>。</summary>
+    IReadOnlyList<string>? PickImageFiles(string? dialogTitle = null);
+
+    /// <summary>弹出多选音频文件对话框；用户取消时返回 <c>null</c>。</summary>
+    IReadOnlyList<string>? PickAudioFiles(string? dialogTitle = null);
 }

@@ -1,14 +1,14 @@
-# 镜序工作台（JingXu Workbench）
+# 炳恒快速混剪
 
 完全离线的 Windows 桌面视频批处理软件：随机/自定义序号拼接、画幅适配、滤镜贴纸 BGM、三类视频蒙版、离线字幕实验室与可恢复渲染队列。
 
 **平台：** Windows 10/11 x64  
-**分发：** 便携 ZIP + WiX 安装程序（均未签名时可能触发 SmartScreen，见下文）
+**分发：** Windows 标准 MSI 安装包（`dist/炳恒快速混剪-win-x64.msi`，未签名时可能触发 SmartScreen，见下文）
 
 ## 快速开始
 
-1. 解压 `JingXu-Workbench-Portable-win-x64.zip` 到任意目录（路径尽量避免中文空格以外的特殊字符）。
-2. 双击 `JingXu.Workbench.exe` 启动。本包为 **自包含** 发布，目标机器 **无需** 安装 .NET 运行时。
+1. 双击运行 `dist/炳恒快速混剪-win-x64.msi`（或从发布页下载的 MSI 安装包）。
+2. 安装完成后从桌面或开始菜单启动「炳恒快速混剪」。本包为 **自包含** 发布，目标机器 **无需** 安装 .NET 运行时。
 3. 拖入 MP4/MOV/MKV 等素材，确认左侧序号与缩略图。
 4. 在中央编排区选择 **随机拼接** 或 **自定义序号**（紧凑输入 `264513` 或逗号输入 `2,6,4,5,1,3`）。
 5. 在右侧设置画幅、质量与输出目录，点击 **入队渲染**；在底部队列查看进度、日志与打开输出目录。
@@ -25,7 +25,7 @@
 
 应用按以下顺序解析工具：
 
-1. 应用目录 `runtime/`（与 `JingXu.Workbench.exe` 同级）
+1. 应用目录 `runtime/`（与 `炳恒快速混剪.exe` 同级）
 2. 设置页中用户指定的绝对路径目录
 3. 系统 `PATH`
 
@@ -44,7 +44,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Resolve-Runtimes.ps1
 | 模块 | 说明 |
 |------|------|
 | 批量混剪 | 随机种子可复现、批量差异化、滤镜/贴纸/BGM、封面 |
-| 蒙版模板 | 自由覆盖层、全屏低透明度、形状遮罩，多层叠加 |
+| 蒙版模板 | 自行导入蒙版视频素材、列表编辑参数、多层叠加到成片 |
 | 字幕实验室 | 手动框选去除、OCR 自动定位、Whisper 离线识别、SRT/ASS 烧录 |
 | 任务队列 | 可暂停调度、单任务取消（进程树终止）、失败隔离与重试 |
 
@@ -54,13 +54,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Resolve-Runtimes.ps1
 - 多来源任务默认输出到项目目录下 `分镜输出`。
 - 同名文件自动追加三位序号，不静默覆盖。
 
-## 构建发布（开发者）
+## 构建发布 MSI（开发者）
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable.ps1 -AllowPlaceholderHash -BootstrapFromPath
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Verify-Release.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-Msi.ps1 -AllowPlaceholderHash -BootstrapFromPath
 ```
+
+执行后将自动完成编译发布、依赖打包与 WiX 6 构建，并输出至 `dist/炳恒快速混剪-win-x64.msi`。
 
 详见 [docs/release.md](docs/release.md)。
 

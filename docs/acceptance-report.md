@@ -33,7 +33,7 @@
 | 18 字幕实验室 UI/烧录 | ✅ | `SubtitleWorkflowTests`、`SubtitleLabViewModelTests`、`PreviewCoordinateMapperTests` |
 | 19 运行时清单/设置 | ✅ | `RuntimeManifestValidatorTests`、`SettingsViewModelTests`、`SelfTestRunner --self-test` |
 | 20 文档/运行时 staging | 🟡 | `README.md`、`THIRD_PARTY_NOTICES.md`、`docs/*`；清单仍为占位 SHA-256（开发模式） |
-| 21 便携包/安装器 | 🟡 | 便携 ZIP ✅；MSI 已构建；Burn 引导程序缺 `WixToolset.BootstrapperApplications` 扩展 |
+| 21 便携包/安装器 | 🟡 | 便携 ZIP ✅；MSI 已构建并作为唯一安装器；不再交付 Burn 引导程序 |
 | 22 发布验收 | 🟡 | 本报告；`Verify-Release.ps1` 占位哈希/2 项集成失败时非零退出 |
 
 ---
@@ -46,7 +46,7 @@ dotnet test JingXu.Workbench.sln -c Release   → 235 通过 / 2 失败 / 0 跳�
   Domain 52 + Application 38 + Infrastructure 83 + Presentation 47 + Integration 15 = 235
   失败：RuntimePackageTests（占位 sha256）、OverlayRenderTests.Three_overlay_modes_*
 dotnet publish → artifacts/publish/win-x64/
-便携 ZIP     → artifacts/release/JingXu-Workbench-Portable-win-x64.zip
+便携 ZIP     → artifacts/release/炳恒快速混剪-Portable-win-x64.zip
 ```
 
 ---
@@ -61,13 +61,12 @@ dotnet publish → artifacts/publish/win-x64/
 | 8–11 数据/队列/错误 | ✅ | 状态机、预检、中文诊断 |
 | 12 开发标准 | ✅ | 分析器即错误；无占位按钮 |
 | 13 测试 | 🟡 | 237 项自动化；2 项集成待修 |
-| 14 发布 | 🟡 | 便携包可交付；正式安装包需 WiX Burn 扩展 + 固定运行时哈希 |
+| 14 发布 | 🟡 | 便携包与 MSI 可交付；发布前仍需固定运行时哈希 |
 
 ---
 
 ## 阻塞项（需用户/发布前处理）
 
 1. 更新 `build/runtime-manifest.json` 中各组件真实 SHA-256（`Resolve-Runtimes.ps1 -PrintHashes`）
-2. 安装 WiX `WixToolset.BootstrapperApplications` 扩展或改用 MSI 分发
-3. 将 FFmpeg/Whisper/Tesseract/模型/字体放入 `runtime/` 或设置页指定路径
-4. 手动 UI 冒烟（1920×1080 / 125% / 150%）并附截图
+2. 将 FFmpeg/Whisper/Tesseract/模型/字体放入 `runtime/` 或设置页指定路径
+3. 手动 UI 冒烟（1920×1080 / 125% / 150%）并附截图

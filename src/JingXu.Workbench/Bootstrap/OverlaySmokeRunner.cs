@@ -1,9 +1,11 @@
 using System.IO;
 using System.Text.Json;
 using JingXu.Workbench.Application.Overlays;
+using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Domain.Overlays;
 using JingXu.Workbench.Features.Overlays;
 using JingXu.Workbench.Infrastructure.Media;
+using JingXu.Workbench.Infrastructure.Persistence;
 using JingXu.Workbench.Infrastructure.Processes;
 using JingXu.Workbench.Infrastructure.Runtime;
 
@@ -22,7 +24,7 @@ internal static class OverlaySmokeRunner
         var pathIndex = Array.FindIndex(args, a => string.Equals(a, "--overlay-smoke", StringComparison.OrdinalIgnoreCase));
         if (pathIndex < 0 || pathIndex + 1 >= args.Length)
         {
-            Console.Error.WriteLine("用法: JingXu.Workbench.exe --overlay-smoke <蒙版视频路径> [free|full|shape]");
+            Console.Error.WriteLine("用法: 炳恒快速混剪.exe --overlay-smoke <蒙版视频路径> [free|full|shape]");
             return 2;
         }
 
@@ -81,7 +83,9 @@ internal static class OverlaySmokeRunner
 
             var state = new OverlayWorkbenchState();
             var picker = new FixedMediaFilePicker(mediaPath);
-            var vm = new OverlayEditorViewModel(picker, state, probe, new WpfUiDispatcher());
+            var layersService = new OverlayLayersService(
+                new AtomicJsonStore<OverlayLayersDocument>(OverlayLayersDocument.CurrentSchemaVersion));
+            var vm = new OverlayEditorViewModel(picker, state, probe, new WpfUiDispatcher(), layersService);
 
             if (mode == OverlayMode.FreeCover)
             {
@@ -189,5 +193,9 @@ internal static class OverlaySmokeRunner
         public string? PickAudioFile() => path;
 
         public string? PickImageFile() => path;
+
+        public IReadOnlyList<string> PickImageFiles(string? dialogTitle = null) => [path];
+
+        public IReadOnlyList<string>? PickAudioFiles(string? dialogTitle = null) => [path];
     }
 }

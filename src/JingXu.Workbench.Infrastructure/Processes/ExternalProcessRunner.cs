@@ -66,6 +66,8 @@ public sealed class ExternalProcessRunner : IExternalProcessRunner
                 ex);
         }
 
+        ApplyPriority(process, request.Priority);
+
         using var jobObject = AssociateJobObject(process);
 
         // 在等待退出前即开始排空双流，避免管道缓冲区写满导致的死锁。
@@ -84,6 +86,31 @@ public sealed class ExternalProcessRunner : IExternalProcessRunner
             TerminateProcessTree(process, jobObject);
             await ObserveAsync(standardOutputTask, standardErrorTask).ConfigureAwait(false);
             throw;
+        }
+    }
+
+    private static void ApplyPriority(Process process, ExternalProcessPriority priority)
+    {
+        if (!OperatingSystem.IsWindows() || priority == ExternalProcessPriority.Normal)
+        {
+            return;
+        }
+
+        try
+        {
+            process.PriorityClass = priority switch
+            {
+                ExternalProcessPriority.BelowNormal => ProcessPriorityClass.BelowNormal,
+                _ => ProcessPriorityClass.Normal
+            };
+        }
+        catch (Win32Exception)
+        {
+            // 某些受限 Windows 环境不允许调整优先级；继续执行比渲染失败更重要。
+        }
+        catch (InvalidOperationException)
+        {
+            // 极短命进程可能在设置优先级前已经退出。
         }
     }
 

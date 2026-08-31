@@ -6,6 +6,8 @@ using JingXu.Workbench.Bootstrap;
 using JingXu.Workbench.Domain.Media;
 using JingXu.Workbench.Domain.Overlays;
 using JingXu.Workbench.Features.Composition;
+using JingXu.Workbench.Features.Overlays;
+using JingXu.Workbench.Features.Stickers;
 using JingXu.Workbench.Infrastructure.Persistence;
 using JingXu.Workbench.Presentation.Tests.Infrastructure;
 
@@ -19,8 +21,20 @@ public static class CompositionViewModelTestFactory
         IOutputFolderPicker? outputFolderPicker = null,
         OverlayWorkbenchState? overlayState = null,
         OverlayLibraryService? overlayLibraryService = null,
-        TemplateService? templateService = null) =>
-        new(
+        TemplateService? templateService = null,
+        StickerEditorViewModel? stickerEditor = null,
+        OverlayEditorViewModel? overlayEditor = null)
+    {
+        stickerEditor ??= new StickerEditorViewModel(
+            new StickerLibraryService(
+                new AtomicJsonStore<StickerLibraryDocument>(StickerLibraryDocument.CurrentSchemaVersion),
+                Path.Combine(Path.GetTempPath(), "jingxu-test-sticker-lib-" + Guid.NewGuid().ToString("N") + ".json")),
+            new StickerTracksService(
+                new AtomicJsonStore<StickerTracksDocument>(StickerTracksDocument.CurrentSchemaVersion),
+                Path.Combine(Path.GetTempPath(), "jingxu-test-sticker-tracks-" + Guid.NewGuid().ToString("N") + ".json")),
+            new RecordingMediaFilePicker(),
+            new DirectUiDispatcher());
+        return new(
             probe ?? FakeMediaProbe.ForSixClips(),
             coordinator ?? RenderCoordinator.Create(
                 new NoOpRenderExecutor(),
@@ -31,7 +45,10 @@ public static class CompositionViewModelTestFactory
             new DirectUiDispatcher(),
             overlayState ?? new OverlayWorkbenchState(),
             overlayLibraryService ?? CreateOverlayLibraryService(),
-            templateService ?? CreateTemplateService());
+            templateService ?? CreateTemplateService(),
+            stickerEditor: stickerEditor,
+            overlayEditor: overlayEditor);
+    }
 
     public static CompositionViewModel LoadedComposition(
         OverlayWorkbenchState? overlayState = null,
@@ -152,6 +169,18 @@ public sealed class RecordingMediaFilePicker : IMediaFilePicker
     public string? PickAudioFile() => NextAudioPick;
 
     public string? PickImageFile() => NextImagePick;
+
+    public IReadOnlyList<string> PickImageFiles(string? dialogTitle = null)
+    {
+        LastVideoDialogTitle = dialogTitle;
+        return NextImagePick is not null ? [NextImagePick] : (NextPick ?? []);
+    }
+
+    public IReadOnlyList<string>? PickAudioFiles(string? dialogTitle = null)
+    {
+        LastVideoDialogTitle = dialogTitle;
+        return NextAudioPick is not null ? [NextAudioPick] : (NextPick ?? []);
+    }
 }
 
 public sealed class RecordingOutputFolderPicker : IOutputFolderPicker

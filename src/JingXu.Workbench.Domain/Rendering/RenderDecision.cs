@@ -32,9 +32,24 @@ public sealed record RenderDecision(bool CanStreamCopy, IReadOnlyList<TranscodeR
             reasons.Add(TranscodeReason.Bgm);
         }
 
+        if (request.HasRenderableMainMaterialBoost)
+        {
+            reasons.Add(TranscodeReason.MainMaterialBoost);
+        }
+
         if (!request.Aspect.InheritFromFirstClip)
         {
             reasons.Add(TranscodeReason.AspectChange);
+        }
+
+        if (!request.OutputVideoSettings.IsOriginalResolution)
+        {
+            reasons.Add(TranscodeReason.OutputResolution);
+        }
+
+        if (!request.OutputVideoSettings.IsOriginalFrameRate)
+        {
+            reasons.Add(TranscodeReason.OutputFrameRate);
         }
 
         if (request.Plan.TransitionDuration > TimeSpan.Zero)

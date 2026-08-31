@@ -104,4 +104,80 @@ public sealed class RenderCoordinatorTests
         await coordinator.ShutdownAsync(default);
         Assert.True(store.LastPersistCompleted);
     }
+
+    [Fact]
+    public async Task Successful_executor_notice_is_persisted_on_completed_job()
+    {
+        var coordinator = RenderCoordinator.Create(
+            new NoticeRenderExecutor("使用 Intel GPU（QSV）完成。"),
+            new InMemoryQueueStore(),
+            maxConcurrency: 1);
+        var job = RenderJob.CreateQueued();
+
+        await coordinator.EnqueueAsync([job], default);
+        await RenderCoordinatorTestDriver.WaitUntilIdleAsync(coordinator);
+
+        var completed = Assert.Single(coordinator.Jobs);
+        Assert.Equal(JobState.Completed, completed.State);
+        Assert.Equal("使用 Intel GPU（QSV）完成。", completed.Notice);
+        await coordinator.ShutdownAsync(default);
+    }
+
+    [Fact]
+    public async Task Configured_concurrency_supports_four_for_upgraded_computers()
+    {
+        var executor = new GateRenderExecutor();
+        var coordinator = RenderCoordinator.Create(executor, new InMemoryQueueStore(), maxConcurrency: 4);
+
+        await coordinator.EnqueueAsync(RenderJobs.Create(4), default);
+        await executor.WaitUntilStartedAsync(4);
+        await Task.Delay(150);
+
+        Assert.Equal(4, coordinator.MaxConcurrency);
+        Assert.Equal(4, executor.StartedCount);
+        Assert.Equal(4, executor.MaxObservedConcurrency);
+        await coordinator.ShutdownAsync(default);
+    }
+
+    [Fact]
+    public async Task Concurrent_state_transitions_do_not_revert_another_job()
+    {
+        var store = new OutOfOrderQueueStore();
+        var executor = new CountingImmediateRenderExecutor();
+        var coordinator = RenderCoordinator.Create(executor, store, maxConcurrency: 2);
+        var jobs = RenderJobs.Create(2);
+
+        await coordinator.EnqueueAsync(jobs, default);
+        await store.WaitUntilFirstTransitionAsync();
+        await Task.Delay(100);
+        store.ReleaseFirstTransition();
+        await RenderCoordinatorTestDriver.WaitUntilIdleAsync(coordinator);
+        await coordinator.ShutdownAsync(default);
+
+        Assert.Equal(2, executor.StartedCount);
+        Assert.All(coordinator.Jobs, job =>
+        {
+            Assert.Equal(JobState.Completed, job.State);
+            Assert.Equal(1, job.AttemptCount);
+        });
+    }
+
+    [Fact]
+    public async Task Bursty_progress_is_coalesced_instead_of_flooding_the_ui_queue()
+    {
+        var executor = new BurstyProgressRenderExecutor(reportCount: 101);
+        var coordinator = RenderCoordinator.Create(executor, new InMemoryQueueStore(), maxConcurrency: 1);
+        var notificationCount = 0;
+        coordinator.JobsChanged += () => Interlocked.Increment(ref notificationCount);
+
+        await coordinator.EnqueueAsync(RenderJobs.Create(1), default);
+        await executor.WaitUntilReportsIssuedAsync();
+        await Task.Delay(300);
+
+        Assert.InRange(Volatile.Read(ref notificationCount), 1, 20);
+
+        executor.Release();
+        await RenderCoordinatorTestDriver.WaitUntilIdleAsync(coordinator);
+        await coordinator.ShutdownAsync(default);
+    }
 }

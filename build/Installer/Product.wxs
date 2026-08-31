@@ -1,24 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
-    Name="JingXu Workbench"
-    Manufacturer="JingXu"
+    Name="炳恒快速混剪"
+    Manufacturer="炳恒"
     Version="1.0.0.0"
     UpgradeCode="A7C4E2B1-9F3D-4E6A-8C5B-1D2E3F4A5B6C"
-    Scope="perMachine">
+    Scope="perUserOrMachine"
+    Language="2052"
+    Codepage="936">
 
     <MajorUpgrade
-      DowngradeErrorMessage="A newer version is already installed."
+      DowngradeErrorMessage="已安装更新版本的炳恒快速混剪。"
       AllowSameVersionUpgrades="yes" />
 
     <MediaTemplate EmbedCab="yes" />
 
-    <Feature Id="MainFeature" Title="JingXu Workbench" Level="1">
+    <ui:WixUI
+      Id="WixUI_InstallDir"
+      InstallDirectory="INSTALLFOLDER" />
+
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+    <Feature Id="MainFeature" Title="炳恒快速混剪" Level="1">
       <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="AppShortcuts" />
     </Feature>
 
-    <Icon Id="AppIcon" SourceFile="$(var.PublishDir)\JingXu.Workbench.exe" />
+    <Icon Id="AppIcon" SourceFile="$(var.PublishDir)\炳恒快速混剪.exe" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
-    <Property Id="ARPNOMODIFY" Value="1" />
   </Package>
 </Wix>

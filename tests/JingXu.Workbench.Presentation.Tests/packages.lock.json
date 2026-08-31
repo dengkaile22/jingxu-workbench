@@ -169,15 +169,6 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
-      "jingxu.workbench": {
-        "type": "Project",
-        "dependencies": {
-          "CommunityToolkit.Mvvm": "[8.4.2, )",
-          "JingXu.Workbench.Application": "[1.0.0, )",
-          "JingXu.Workbench.Domain": "[1.0.0, )",
-          "JingXu.Workbench.Infrastructure": "[1.0.0, )"
-        }
-      },
       "jingxu.workbench.application": {
         "type": "Project",
         "dependencies": {
@@ -192,6 +183,15 @@
         "dependencies": {
           "JingXu.Workbench.Application": "[1.0.0, )",
           "JingXu.Workbench.Domain": "[1.0.0, )"
+        }
+      },
+      "炳恒快速混剪": {
+        "type": "Project",
+        "dependencies": {
+          "CommunityToolkit.Mvvm": "[8.4.2, )",
+          "JingXu.Workbench.Application": "[1.0.0, )",
+          "JingXu.Workbench.Domain": "[1.0.0, )",
+          "JingXu.Workbench.Infrastructure": "[1.0.0, )"
         }
       },
       "CommunityToolkit.Mvvm": {

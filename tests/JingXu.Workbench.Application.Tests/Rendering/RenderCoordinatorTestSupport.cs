@@ -124,6 +124,105 @@ internal sealed class ScriptedRenderExecutor : IRenderExecutor
     }
 }
 
+internal sealed class BurstyProgressRenderExecutor(int reportCount) : IRenderExecutor
+{
+    private readonly TaskCompletionSource _reportsIssued =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _release =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public async Task<RenderExecutionResult> ExecuteAsync(
+        RenderJob job,
+        IProgress<RenderProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        for (var index = 0; index < reportCount; index++)
+        {
+            var percent = index / 10.0;
+            progress?.Report(new RenderProgress(TimeSpan.FromMilliseconds(index), 1.0, percent));
+        }
+
+        _reportsIssued.TrySetResult();
+        using var registration = cancellationToken.Register(() => _release.TrySetCanceled(cancellationToken));
+        try
+        {
+            await _release.Task.ConfigureAwait(false);
+            return RenderExecutionResult.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            return RenderExecutionResult.Cancelled();
+        }
+    }
+
+    public async Task WaitUntilReportsIssuedAsync() =>
+        await _reportsIssued.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+    public void Release() => _release.TrySetResult();
+}
+
+internal sealed class NoticeRenderExecutor(string notice) : IRenderExecutor
+{
+    public Task<RenderExecutionResult> ExecuteAsync(
+        RenderJob job,
+        IProgress<RenderProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(RenderExecutionResult.Success(notice));
+    }
+}
+
+internal sealed class CountingImmediateRenderExecutor : IRenderExecutor
+{
+    private int _startedCount;
+
+    public int StartedCount => Volatile.Read(ref _startedCount);
+
+    public Task<RenderExecutionResult> ExecuteAsync(
+        RenderJob job,
+        IProgress<RenderProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _startedCount);
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(RenderExecutionResult.Success());
+    }
+}
+
+internal sealed class OutOfOrderQueueStore : IRenderQueueStore
+{
+    private readonly object _sync = new();
+    private readonly TaskCompletionSource _firstTransitionEntered =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _releaseFirstTransition =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private IReadOnlyList<RenderJob> _jobs = [];
+    private int _persistCount;
+
+    public IReadOnlyList<RenderJob> Jobs => _jobs;
+
+    public async Task PersistAsync(IReadOnlyList<RenderJob> jobs, CancellationToken cancellationToken)
+    {
+        var persistNumber = Interlocked.Increment(ref _persistCount);
+        if (persistNumber == 2)
+        {
+            _firstTransitionEntered.TrySetResult();
+            await _releaseFirstTransition.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        lock (_sync)
+        {
+            _jobs = jobs.ToList();
+        }
+    }
+
+    public async Task WaitUntilFirstTransitionAsync() =>
+        await _firstTransitionEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+    public void ReleaseFirstTransition() => _releaseFirstTransition.TrySetResult();
+}
+
 internal sealed class InMemoryQueueStore : IRenderQueueStore
 {
     private IReadOnlyList<RenderJob> _jobs = [];

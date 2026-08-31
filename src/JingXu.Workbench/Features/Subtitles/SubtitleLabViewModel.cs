@@ -36,7 +36,7 @@ public sealed partial class SubtitleLabViewModel : WorkspaceModuleViewModel
         _ = codecs;
     }
 
-    public override WorkspaceModule ModuleKind => WorkspaceModule.Subtitles;
+    public override WorkspaceModule ModuleKind => WorkspaceModule.Downloads;
 
     public override string Title => "字幕实验室";
 

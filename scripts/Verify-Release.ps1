@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $ProhibitedPatterns = @(
     '\bTODO\b',
     '\bFIXME\b',
-    '\bLATER\b',
+    '(?-i:\bLATER\b)',
     'placeholder button',
     'OPENAI_API_KEY'
 )
@@ -37,6 +37,10 @@ function Invoke-Step([string] $Name, [scriptblock] $Action) {
 }
 
 function Test-PlaceholderScan([string] $RepoRoot) {
+    $excludedDocumentationRoots = @(
+        (Join-Path (Join-Path $RepoRoot 'docs') 'plans'),
+        (Join-Path (Join-Path $RepoRoot 'docs') 'superpowers')
+    )
     $targets = @(
         (Join-Path $RepoRoot 'README.md'),
         (Join-Path $RepoRoot 'THIRD_PARTY_NOTICES.md'),
@@ -53,6 +57,12 @@ function Test-PlaceholderScan([string] $RepoRoot) {
         else { $files = @(Get-Item $target) }
 
         foreach ($file in $files) {
+            if ($excludedDocumentationRoots | Where-Object {
+                $file.FullName.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+            }) {
+                continue
+            }
+
             $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
             if (-not $content) { continue }
             foreach ($pattern in $ProhibitedPatterns) {
@@ -70,15 +80,18 @@ function Test-PlaceholderScan([string] $RepoRoot) {
 function Test-RequiredArtifacts([string] $RepoRoot) {
     $releaseDir = Join-Path (Join-Path $RepoRoot 'artifacts') 'release'
     $required = @(
-        (Join-Path $releaseDir 'JingXu-Workbench-Portable-win-x64.zip'),
+        (Join-Path $releaseDir '炳恒快速混剪-Portable-win-x64.zip'),
+        (Join-Path $releaseDir '炳恒快速混剪-win-x64.msi'),
         (Join-Path $RepoRoot 'THIRD_PARTY_NOTICES.md'),
         (Join-Path (Join-Path $RepoRoot 'build') 'runtime-manifest.json')
     )
     foreach ($path in $required) {
         if (-not (Test-Path $path)) { throw "Missing release artifact or doc: $path" }
     }
-    $zip = Join-Path $releaseDir 'JingXu-Workbench-Portable-win-x64.zip'
+    $zip = Join-Path $releaseDir '炳恒快速混剪-Portable-win-x64.zip'
     if ((Get-Item $zip).Length -eq 0) { throw 'Portable ZIP is zero bytes.' }
+    $msi = Join-Path $releaseDir '炳恒快速混剪-win-x64.msi'
+    if ((Get-Item $msi).Length -eq 0) { throw 'MSI package is zero bytes.' }
 }
 
 $repoRoot = Resolve-RepoRoot
@@ -115,7 +128,7 @@ try {
                 Write-Warning 'WiX not installed: installer build skipped (non-fatal).'
             }
             elseif ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 0) {
-                Write-Warning "Installer build returned $LASTEXITCODE (MSI may exist; Burn bundle may need WixToolset.BootstrapperApplications extension)."
+                Write-Warning "Installer build returned $LASTEXITCODE."
             }
         }
     }

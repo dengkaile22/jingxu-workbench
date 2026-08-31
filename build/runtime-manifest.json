@@ -7,7 +7,7 @@
       "relativePath": "ffmpeg/ffmpeg.exe",
       "required": true,
       "versionArguments": ["-version"],
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sha256": "09948d4cdd0650da6ff5a87577469f2a218dc2615ae379f8f734d24c49de0f73",
       "licenseId": "GPL-3.0-or-later",
       "sourceUrl": "https://ffmpeg.org/download.html",
       "sourceCodeUrl": "https://github.com/FFmpeg/FFmpeg"
@@ -18,7 +18,7 @@
       "relativePath": "ffmpeg/ffprobe.exe",
       "required": true,
       "versionArguments": ["-version"],
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sha256": "a6618e99bb58869ded3c6f37b53aa1a8d701c3591dbb7b5b317d47369c112be2",
       "licenseId": "GPL-3.0-or-later",
       "sourceUrl": "https://ffmpeg.org/download.html",
       "sourceCodeUrl": "https://github.com/FFmpeg/FFmpeg"
@@ -29,7 +29,7 @@
       "relativePath": "whisper/whisper-cli.exe",
       "required": false,
       "versionArguments": ["--help"],
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
       "licenseId": "MIT",
       "sourceUrl": "https://github.com/ggerganov/whisper.cpp/releases",
       "sourceCodeUrl": "https://github.com/ggerganov/whisper.cpp"
@@ -39,7 +39,7 @@
       "displayName": "Whisper 多语言 base 模型",
       "relativePath": "whisper/models/ggml-base.bin",
       "required": false,
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
       "licenseId": "MIT",
       "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp",
       "sourceCodeUrl": "https://github.com/ggerganov/whisper.cpp"
@@ -50,7 +50,7 @@
       "relativePath": "tesseract/tesseract.exe",
       "required": false,
       "versionArguments": ["--version"],
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
       "licenseId": "Apache-2.0",
       "sourceUrl": "https://github.com/tesseract-ocr/tesseract",
       "sourceCodeUrl": "https://github.com/tesseract-ocr/tesseract"

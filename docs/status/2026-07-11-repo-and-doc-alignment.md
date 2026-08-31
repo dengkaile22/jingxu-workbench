@@ -23,7 +23,7 @@
 | README / 架构与入口不一致 | 有过时层图（已修正 `architecture.md`）；真实入口 `App.xaml.cs` → `AppCompositionRoot` |
 | pipeline vs agent_pipeline | **不存在**；非本产品结构 |
 | API 路径 / 环境变量过时 | **无 HTTP API**；仅 CLI `--self-test` 等与 `PATH`/runtime 解析 |
-| 文档承诺 vs 未实现 | 有：内存队列、项目存档 UI、硬件编码、贴纸 UI、转场、正式哈希/Burn 等 — 见 `docs/modules/` |
+| 文档承诺 vs 未实现 | 有：内存队列、项目存档 UI、硬件编码、贴纸 UI、转场、正式哈希等 — 见 `docs/modules/` |
 | 废弃模块名 | 规格名与代码名有演变 — 见 `docs/status/2026-07-11-design-vs-code-names.md` |
 
 ### 媒体与大文件（git 边界）

@@ -1,10 +1,10 @@
 using System.Globalization;
+using System.IO;
 using System.Text;
 using JingXu.Workbench.Application.Rendering;
 using JingXu.Workbench.Domain.Common;
 using JingXu.Workbench.Domain.Composition;
 using JingXu.Workbench.Domain.Effects;
-using JingXu.Workbench.Domain.Media;
 using JingXu.Workbench.Domain.Overlays;
 using JingXu.Workbench.Domain.Rendering;
 
@@ -16,7 +16,32 @@ public sealed record FfmpegAuxiliaryFile(string FileName, string Content);
 /// <summary>FFmpeg 命令编译结果。</summary>
 public sealed record FfmpegCompileResult(
     FfmpegCommand Command,
-    IReadOnlyList<FfmpegAuxiliaryFile> AuxiliaryFiles);
+    IReadOnlyList<FfmpegAuxiliaryFile> AuxiliaryFiles,
+    IReadOnlyList<FfmpegInputAlias> InputAliases)
+{
+    /// <summary>读取内联 <c>-filter_complex</c> 或脚本辅助文件中的滤镜图。</summary>
+    public string? TryGetFilterComplex()
+    {
+        var args = Command.Arguments;
+        for (var index = 0; index < args.Count - 1; index++)
+        {
+            if (args[index] == "-filter_complex")
+            {
+                return args[index + 1];
+            }
+
+            if (args[index] == "-filter_complex_script")
+            {
+                var fileName = args[index + 1];
+                return AuxiliaryFiles
+                    .FirstOrDefault(file => file.FileName.Equals(fileName, StringComparison.OrdinalIgnoreCase))
+                    ?.Content;
+            }
+        }
+
+        return null;
+    }
+}
 
 /// <summary>
 /// 将组合计划与输出配置编译为 FFmpeg 参数列表。
@@ -24,8 +49,15 @@ public sealed record FfmpegCompileResult(
 /// </summary>
 public static class FfmpegCommandCompiler
 {
+    /// <summary>写入 staging 的滤镜图脚本文件名（配合 <c>-filter_complex_script</c>）。</summary>
+    public const string FilterComplexScriptFileName = "filter_complex.txt";
+
     /// <summary>编译主渲染命令。</summary>
-    public static FfmpegCompileResult Compile(string ffmpegExecutable, RenderRequest request, string tempOutputPath)
+    public static FfmpegCompileResult Compile(
+        string ffmpegExecutable,
+        RenderRequest request,
+        string tempOutputPath,
+        VideoEncoderKind encoder = VideoEncoderKind.Libx264)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ffmpegExecutable);
         ArgumentNullException.ThrowIfNull(request);
@@ -39,14 +71,14 @@ public static class FfmpegCommandCompiler
         var decision = RenderDecision.For(request);
         return decision.CanStreamCopy
             ? CompileStreamCopy(ffmpegExecutable, request, tempOutputPath)
-            : CompileTranscode(ffmpegExecutable, request, tempOutputPath);
+            : CompileTranscode(ffmpegExecutable, request, tempOutputPath, encoder);
     }
 
     /// <summary>验证命令行长度是否在 Windows 保守预算内。</summary>
     public static Result<Unit> ValidateCommandBudget(FfmpegCommand command) =>
         command.EstimatedCommandLineLength > RenderPreflight.MaxCommandLineLength
             ? Result<Unit>.Failure(
-                $"FFmpeg 命令过长（约 {command.EstimatedCommandLineLength} 字符），超过 {RenderPreflight.MaxCommandLineLength} 字符的安全上限。请减少素材数量或拆分任务。")
+                $"FFmpeg 命令过长（约 {command.EstimatedCommandLineLength} 字符），超过 {RenderPreflight.MaxCommandLineLength} 字符的安全上限。滤镜图已外置为脚本、输入已缩短为 staging 相对路径后仍超限，请减少素材数量或拆分任务。")
             : Result<Unit>.Success(default);
 
     private static FfmpegCompileResult CompileStreamCopy(
@@ -54,6 +86,7 @@ public static class FfmpegCommandCompiler
         RenderRequest request,
         string tempOutputPath)
     {
+        // concat 列表写入辅助文件，长路径不占 argv；输出用 staging 相对名。
         var listContent = BuildConcatList(request.Plan);
         var arguments = new List<string>
         {
@@ -64,46 +97,60 @@ public static class FfmpegCommandCompiler
             "-c", "copy",
             "-progress", "pipe:1",
             "-nostats",
-            tempOutputPath
+            Path.GetFileName(tempOutputPath)
         };
 
         return new FfmpegCompileResult(
             new FfmpegCommand(ffmpegExecutable, arguments),
-            [new FfmpegAuxiliaryFile("concat.txt", listContent)]);
+            [new FfmpegAuxiliaryFile("concat.txt", listContent)],
+            []);
     }
 
     private static FfmpegCompileResult CompileTranscode(
         string ffmpegExecutable,
         RenderRequest request,
-        string tempOutputPath)
+        string tempOutputPath,
+        VideoEncoderKind encoder)
     {
-        var (targetWidth, targetHeight) = ResolveTargetSize(request);
-        var targetFps = request.Plan.Clips[0].Asset.Info.FrameRate;
+        var (canvasWidth, canvasHeight) = OutputCanvasResolver.Resolve(request);
+        var (targetWidth, targetHeight) = request.OutputVideoSettings.ResolveTargetSize(canvasWidth, canvasHeight);
+        var targetFps = request.OutputVideoSettings.ResolveFrameRate(
+            request.Plan.Clips[0].Asset.Info.FrameRate);
         var fpsText = FormatDecimal(targetFps);
+        var profile = ResolveTranscodeProfile(request.Profile);
+        var aliaser = new FfmpegPathAliaser();
 
+        // 这里使用 libx264 + 软件 filter_complex。不要强制自动硬解，否则部分驱动会输出
+        // 无法直接进入 scale/crop/overlay 等软件滤镜的硬件帧，导致渲染初始化失败。
+        // 所有 -i 使用 staging 短相对路径，避免深目录/中文长路径撑爆 CreateProcess argv。
         var arguments = new List<string> { "-y" };
+
         foreach (var clip in request.Plan.Clips)
         {
             arguments.Add("-i");
-            arguments.Add(clip.Asset.Path);
+            arguments.Add(aliaser.Alias(clip.Asset.Path));
         }
 
         var nextInputIndex = request.Plan.Clips.Count;
         int? bgmInputIndex = null;
-        int? stickerInputIndex = null;
+        var stickerInputIndices = new List<int>();
 
         if (request.HasRenderableBgm && request.Bgm is not null)
         {
             arguments.Add("-i");
-            arguments.Add(request.Bgm.Path);
+            arguments.Add(aliaser.Alias(request.Bgm.Path));
             bgmInputIndex = nextInputIndex++;
         }
 
-        if (request.Sticker is not null)
+        foreach (var sticker in request.Stickers ?? [])
         {
-            arguments.Add("-i");
-            arguments.Add(request.Sticker.Path);
-            stickerInputIndex = nextInputIndex++;
+            if (string.IsNullOrWhiteSpace(sticker.Path))
+            {
+                continue;
+            }
+
+            AppendLoopedStickerInput(arguments, aliaser.Alias(sticker.Path));
+            stickerInputIndices.Add(nextInputIndex++);
         }
 
         var overlayBaseLabel = ResolveOverlayBaseVideoLabel(request);
@@ -130,10 +177,11 @@ public static class FfmpegCommandCompiler
             }
 
             overlayResult = overlayCompile.Value!;
-            arguments.AddRange(overlayResult!.PreInputArguments);
+            arguments.AddRange(aliaser.RewriteDashIArguments(overlayResult!.PreInputArguments));
         }
 
-        var videoOutLabel = overlayResult?.FinalVideoLabel ?? overlayBaseLabel;
+        var stickerBaseLabel = overlayResult?.FinalVideoLabel ?? overlayBaseLabel;
+        var videoOutLabel = stickerInputIndices.Count > 0 ? "vstk" : stickerBaseLabel;
         var filter = BuildFilterGraph(
             request,
             targetWidth,
@@ -142,23 +190,23 @@ public static class FfmpegCommandCompiler
             overlayResult,
             overlayInputBase,
             bgmInputIndex,
-            stickerInputIndex);
-        arguments.Add("-filter_complex");
-        arguments.Add(filter);
+            stickerInputIndices,
+            stickerBaseLabel);
+        // 将滤镜图写入 sidecar，避免 Windows CreateProcess ~32K 命令行上限
+        // （蒙版/贴纸/特效叠加后 filter_complex 常达数万字符）。
+        arguments.Add("-filter_complex_script");
+        arguments.Add(FilterComplexScriptFileName);
         arguments.Add("-map");
         arguments.Add($"[{videoOutLabel}]");
         arguments.Add("-map");
         arguments.Add("[aout]");
-        arguments.Add("-c:v");
-        arguments.Add("libx264");
-        arguments.Add("-crf");
-        arguments.Add((request.Profile.Crf ?? 22).ToString(CultureInfo.InvariantCulture));
+        arguments.AddRange(VideoEncoderArguments.Build(encoder, profile));
         arguments.Add("-pix_fmt");
         arguments.Add("yuv420p");
         arguments.Add("-c:a");
         arguments.Add("aac");
         arguments.Add("-b:a");
-        arguments.Add($"{request.Profile.AudioKbps}k");
+        arguments.Add($"{profile.AudioKbps}k");
         if (request.Effect?.ClearMetadata == true)
         {
             arguments.Add("-map_metadata");
@@ -168,25 +216,24 @@ public static class FfmpegCommandCompiler
         arguments.Add("-progress");
         arguments.Add("pipe:1");
         arguments.Add("-nostats");
-        arguments.Add(tempOutputPath);
+        arguments.Add(Path.GetFileName(tempOutputPath));
 
-        return new FfmpegCompileResult(new FfmpegCommand(ffmpegExecutable, arguments), []);
+        return new FfmpegCompileResult(
+            new FfmpegCommand(ffmpegExecutable, arguments),
+            [new FfmpegAuxiliaryFile(FilterComplexScriptFileName, filter)],
+            aliaser.Aliases);
     }
+
+    /// <summary>
+    /// Lossless is only valid for the stream-copy path. When rendering enters the
+    /// transcode path, use a compatible profile instead of emitting zero-bitrate AAC.
+    /// </summary>
+    private static RenderProfile ResolveTranscodeProfile(RenderProfile profile) =>
+        profile.Quality == QualityPreset.Lossless ? RenderProfile.Balanced : profile;
 
     private static string ResolveOverlayBaseVideoLabel(RenderRequest request)
     {
-        var label = "vbase";
-        if (request.Effect?.HasVisualAdjustments == true)
-        {
-            label = "vfx";
-        }
-
-        if (request.Sticker is not null)
-        {
-            label = "vstk";
-        }
-
-        return label;
+        return request.Effect?.HasVisualAdjustments == true ? "vfx" : "vbase";
     }
 
     private static string BuildFilterGraph(
@@ -197,7 +244,8 @@ public static class FfmpegCommandCompiler
         OverlayFilterCompileResult? overlayResult,
         int overlayInputBase,
         int? bgmInputIndex,
-        int? stickerInputIndex)
+        IReadOnlyList<int> stickerInputIndices,
+        string stickerBaseLabel)
     {
         var plan = request.Plan;
         var builder = new StringBuilder();
@@ -217,12 +265,27 @@ public static class FfmpegCommandCompiler
                 index);
 
             builder.Append(fitFilter);
-            builder.Append(CultureInfo.InvariantCulture, $"fps={fpsText},setsar=1,format=yuv420p[v{index}];");
+
+            var scaleFactor = ResolveClipScaleFactor(request, index);
+            if (scaleFactor > 1.000001)
+            {
+                builder.Append(BuildMainClipScaleFilter(scaleFactor, targetWidth, targetHeight));
+            }
+
+            var doubleScreenApplies = request.DoubleScreen?.AppliesTo(index) == true;
+            var fittedVideoLabel = doubleScreenApplies ? $"v{index}fit" : $"v{index}";
+            builder.Append(
+                CultureInfo.InvariantCulture,
+                $"fps={fpsText},setsar=1,format=yuv420p[{fittedVideoLabel}];");
+
+            if (doubleScreenApplies)
+            {
+                builder.Append(BuildDoubleScreenFilter(index, targetWidth, targetHeight));
+            }
 
             if (clip.Asset.Info.HasAudio)
             {
-                builder.Append(CultureInfo.InvariantCulture,
-                    $"[{index}:a]aformat=sample_rates=48000:channel_layouts=stereo,aresample=48000[a{index}];");
+                builder.Append(BuildMainClipAudioFilter(request, index, clip.Duration));
             }
             else
             {
@@ -236,13 +299,21 @@ public static class FfmpegCommandCompiler
         builder.Append(CultureInfo.InvariantCulture,
             $"{concatInputs}concat=n={plan.Clips.Count}:v=1:a=1[vbase][{concatAudioLabel}]");
 
-        AppendEffectAndStickerChain(builder, request, targetWidth, targetHeight, stickerInputIndex);
+        AppendEffectChain(builder, request, targetWidth, targetHeight);
 
         if (overlayResult is not null)
         {
             builder.Append(';');
             builder.Append(overlayResult.FilterSuffix);
         }
+
+        AppendStickerChain(
+            builder,
+            request,
+            targetWidth,
+            targetHeight,
+            stickerInputIndices,
+            stickerBaseLabel);
 
         var audioAfterBgm = concatAudioLabel;
         if (request.HasRenderableBgm)
@@ -271,11 +342,70 @@ public static class FfmpegCommandCompiler
         return builder.ToString();
     }
 
+    /// <summary>双屏中缝默认羽化带宽（像素）；实际还会按半高收紧，并取偶数以兼容 yuv420。</summary>
+    internal const int DefaultDoubleScreenBlendPixels = 48;
+
+    /// <summary>
+    /// 上下双屏：各半高放大裁切后，在中缝用垂直 alpha 渐变软过渡（避免硬切缝）。
+    /// 奇数总高时上半 <c>H/2</c>、下半 <c>H-H/2</c>，保证拼回原画布高度。
+    /// </summary>
+    internal static string BuildDoubleScreenFilter(int clipIndex, int targetWidth, int targetHeight)
+    {
+        // 奇数高度时不能简单除以 2，否则上下叠完会少 1 像素，导致 concat 尺寸不匹配。
+        var topHeight = targetHeight / 2;
+        var bottomHeight = targetHeight - topHeight;
+        var blend = ResolveDoubleScreenBlendPixels(topHeight, bottomHeight);
+        if (blend < 2)
+        {
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"[v{clipIndex}fit]split=2[v{clipIndex}top_src][v{clipIndex}bottom_src];" +
+                $"[v{clipIndex}top_src]scale={targetWidth}:{topHeight}:force_original_aspect_ratio=increase," +
+                $"crop={targetWidth}:{topHeight}:(iw-ow)/2:(ih-oh)/2[v{clipIndex}top];" +
+                $"[v{clipIndex}bottom_src]scale={targetWidth}:{bottomHeight}:force_original_aspect_ratio=increase," +
+                $"crop={targetWidth}:{bottomHeight}:(iw-ow)/2:(ih-oh)/2[v{clipIndex}bottom];" +
+                $"[v{clipIndex}top][v{clipIndex}bottom]vstack=inputs=2[v{clipIndex}];");
+        }
+
+        // 上下各多裁 blend 像素重叠，顶层在重叠带内 alpha 线性降到 0，露出下层 → 中缝渐变过渡。
+        var topCropHeight = topHeight + blend;
+        var bottomCropHeight = bottomHeight + blend;
+        var fadeStart = topHeight - blend;
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"[v{clipIndex}fit]split=2[v{clipIndex}top_src][v{clipIndex}bottom_src];" +
+            $"[v{clipIndex}top_src]scale={targetWidth}:{topCropHeight}:force_original_aspect_ratio=increase," +
+            $"crop={targetWidth}:{topCropHeight}:(iw-ow)/2:(ih-oh)/2,format=rgba," +
+            $"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(Y,{fadeStart}),255,if(gte(Y,{topHeight}),0,255*({topHeight}-Y)/{blend}))'[v{clipIndex}top];" +
+            $"[v{clipIndex}bottom_src]scale={targetWidth}:{bottomCropHeight}:force_original_aspect_ratio=increase," +
+            $"crop={targetWidth}:{bottomCropHeight}:(iw-ow)/2:(ih-oh)/2[v{clipIndex}bottom];" +
+            $"[v{clipIndex}bottom]pad={targetWidth}:{targetHeight}:0:{fadeStart}:black[v{clipIndex}base];" +
+            $"[v{clipIndex}base][v{clipIndex}top]overlay=0:0,format=yuv420p[v{clipIndex}];");
+    }
+
+    /// <summary>按半高收紧中缝羽化带宽；过矮时返回 0，调用方回退硬切 vstack。</summary>
+    internal static int ResolveDoubleScreenBlendPixels(int topHeight, int bottomHeight)
+    {
+        var maxBand = Math.Min(topHeight, bottomHeight) / 3;
+        if (maxBand < 2)
+        {
+            return 0;
+        }
+
+        var blend = Math.Clamp(DefaultDoubleScreenBlendPixels, 2, maxBand);
+        if ((blend & 1) != 0)
+        {
+            blend--;
+        }
+
+        return blend < 2 ? 0 : blend;
+    }
+
     private static List<(int InputIndex, TimeSpan Start, TimeSpan ActiveDuration)> CollectMixOverlayLayers(
         RenderRequest request,
         int overlayInputBase)
     {
-        if (!request.HasRenderableOverlays)
+        if (!request.HasRenderableOverlays || request.OverlayLayers is null || request.OverlayLayers.Count == 0)
         {
             return [];
         }
@@ -287,48 +417,83 @@ public static class FfmpegCommandCompiler
         }
 
         var mix = new List<(int InputIndex, TimeSpan Start, TimeSpan ActiveDuration)>();
-        for (var i = 0; i < resolved.Value!.Count; i++)
+        var nextInputIndex = overlayInputBase;
+        foreach (var layerResolved in resolved.Value!)
         {
-            var layerResolved = resolved.Value[i];
+            if (layerResolved.Layer.IsSelfSource)
+            {
+                // 自叠影无外部输入、无独立音轨。
+                continue;
+            }
+
+            var inputIndex = nextInputIndex++;
             if (layerResolved.Layer.AudioMode != OverlayAudioMode.Mix)
             {
                 continue;
             }
 
-            mix.Add((overlayInputBase + i, layerResolved.Start, layerResolved.ActiveDuration));
+            mix.Add((inputIndex, layerResolved.Start, layerResolved.ActiveDuration));
         }
 
         return mix;
     }
 
-    private static void AppendEffectAndStickerChain(
+    private static void AppendEffectChain(
+        StringBuilder builder,
+        RenderRequest request,
+        int targetWidth,
+        int targetHeight)
+    {
+        if (request.Effect?.HasVisualAdjustments != true)
+        {
+            return;
+        }
+
+        builder.Append(';');
+        builder.Append(EffectFilterCompiler.Compile(
+            request.Effect,
+            "vbase",
+            "vfx",
+            outputWidth: targetWidth,
+            outputHeight: targetHeight));
+    }
+
+    private static void AppendStickerChain(
         StringBuilder builder,
         RenderRequest request,
         int targetWidth,
         int targetHeight,
-        int? stickerInputIndex)
+        IReadOnlyList<int> stickerInputIndices,
+        string inputVideoLabel)
     {
-        var currentLabel = "vbase";
-        var wroteSegment = false;
+        var stickers = (request.Stickers ?? [])
+            .Where(s => !string.IsNullOrWhiteSpace(s.Path))
+            .ToList();
 
-        if (request.Effect?.HasVisualAdjustments == true)
+        if (stickers.Count > 0 && stickerInputIndices.Count > 0)
         {
-            builder.Append(';');
-            builder.Append(EffectFilterCompiler.Compile(request.Effect, currentLabel, "vfx"));
-            currentLabel = "vfx";
-            wroteSegment = true;
-        }
+            var validCount = Math.Min(stickers.Count, stickerInputIndices.Count);
+            if (validCount > 0)
+            {
+                var validStickers = stickers.Take(validCount).ToList();
+                var validIndices = stickerInputIndices.Take(validCount).ToList();
 
-        if (request.Sticker is not null && stickerInputIndex is not null)
-        {
-            builder.Append(wroteSegment ? ';' : ';');
-            builder.Append(EffectFilterCompiler.CompileStickerForFrame(
-                request.Sticker,
-                currentLabel,
-                stickerInputIndex.Value,
-                targetWidth,
-                targetHeight,
-                "vstk"));
+                if (builder.Length > 0)
+                {
+                    builder.Append(';');
+                }
+
+                var chain = EffectFilterCompiler.CompileChain(
+                    effect: null,
+                    validStickers,
+                    inputVideoLabel,
+                    outputVideoLabel: "vfx",
+                    stickerOutputLabel: "vstk",
+                    validIndices,
+                    frameWidth: targetWidth,
+                    frameHeight: targetHeight);
+                builder.Append(chain.FilterSuffix);
+            }
         }
     }
 
@@ -356,23 +521,98 @@ public static class FfmpegCommandCompiler
         };
     }
 
-    private static (int Width, int Height) ResolveTargetSize(RenderRequest request)
+    /// <summary>
+    /// 主轨缩放：适配画幅后放大再中心裁回目标尺寸（仅主素材；蒙版层不走此路径）。
+    /// </summary>
+    internal static string BuildMainClipScaleFilter(double scaleFactor, int targetWidth, int targetHeight)
     {
-        if (!request.Aspect.InheritFromFirstClip &&
-            request.Aspect.TargetWidth is > 0 &&
-            request.Aspect.TargetHeight is > 0)
-        {
-            return (request.Aspect.TargetWidth.Value, request.Aspect.TargetHeight.Value);
-        }
-
-        var first = request.Plan.Clips[0].Asset.Info;
-        return NormalizeDimensions(first);
+        var factor = FormatDouble(scaleFactor);
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"scale=iw*{factor}:ih*{factor},crop={targetWidth}:{targetHeight}:(iw-ow)/2:(ih-oh)/2,");
     }
 
-    internal static (int Width, int Height) NormalizeDimensions(MediaInfo info) =>
-        info.RotationDegrees is 90 or 270
-            ? (info.Height, info.Width)
-            : (info.Width, info.Height);
+    /// <summary>
+    /// 主轨音频：格式统一 →（可选）loudnorm 响度归一 →（可选）volume 增益 →
+    /// 按分镜时长 atrim（loudnorm 单遍会改变样本长度，不裁切会导致成片时长校验失败）。
+    /// </summary>
+    internal static string BuildMainClipAudioFilter(RenderRequest request, int clipIndex, TimeSpan clipDuration)
+    {
+        var boost = request.HasRenderableMainMaterialBoost ? request.MainMaterialBoost : null;
+        var durationSeconds = FormatSeconds(clipDuration);
+        var builder = new StringBuilder();
+        builder.Append(CultureInfo.InvariantCulture,
+            $"[{clipIndex}:a]aformat=sample_rates=48000:channel_layouts=stereo,aresample=48000");
+
+        if (boost?.NormalizeLoudness == true)
+        {
+            // 单遍 loudnorm：统一各拼接素材响度后再调大（非双遍测量，短片段可能略偏）。
+            builder.Append(",loudnorm=I=-16:TP=-1.5:LRA=11");
+        }
+
+        if (boost?.EnableVolume == true)
+        {
+            var factor = ResolveClipVolumeFactor(boost, clipIndex);
+            if (Math.Abs(factor - 1.0) > 0.000001)
+            {
+                builder.Append(CultureInfo.InvariantCulture, $",volume={FormatDouble(factor)}");
+            }
+        }
+
+        // 始终对齐到分镜时长，避免 loudnorm/重采样导致音轨略长于视频。
+        builder.Append(CultureInfo.InvariantCulture,
+            $",atrim=duration={durationSeconds},asetpts=PTS-STARTPTS[a{clipIndex}];");
+        return builder.ToString();
+    }
+
+    private static double ResolveClipScaleFactor(RenderRequest request, int clipIndex)
+    {
+        if (!request.HasRenderableMainMaterialBoost ||
+            request.MainMaterialBoost?.EnableScale != true)
+        {
+            return 1.0;
+        }
+
+        var factors = request.MainMaterialBoost.ScaleFactors;
+        return clipIndex >= 0 && clipIndex < factors.Count ? factors[clipIndex] : 1.0;
+    }
+
+    private static double ResolveClipVolumeFactor(MaterializedMainMaterialBoost boost, int clipIndex)
+    {
+        var factors = boost.VolumeFactors;
+        return clipIndex >= 0 && clipIndex < factors.Count ? factors[clipIndex] : 1.0;
+    }
+
+    /// <summary>
+    /// 贴纸输入循环到主片结束：静图用 <c>-loop 1</c>，GIF/视频用 <c>-stream_loop -1</c>，
+    /// 配合 overlay 的 <c>shortest=1</c> 覆盖整段拼接时长。
+    /// </summary>
+    private static void AppendLoopedStickerInput(List<string> arguments, string path)
+    {
+        if (IsStaticImageSticker(path))
+        {
+            arguments.Add("-loop");
+            arguments.Add("1");
+        }
+        else
+        {
+            arguments.Add("-stream_loop");
+            arguments.Add("-1");
+        }
+
+        arguments.Add("-i");
+        arguments.Add(path);
+    }
+
+    private static bool IsStaticImageSticker(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".bmp", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".webp", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string BuildConcatList(CompositionPlan plan)
     {
@@ -391,6 +631,9 @@ public static class FfmpegCommandCompiler
 
     private static string FormatDecimal(decimal value) =>
         value.ToString(CultureInfo.InvariantCulture);
+
+    private static string FormatDouble(double value) =>
+        value.ToString("0.######", CultureInfo.InvariantCulture);
 
     private static string FormatSeconds(TimeSpan duration) =>
         duration.TotalSeconds.ToString("0.######", CultureInfo.InvariantCulture);

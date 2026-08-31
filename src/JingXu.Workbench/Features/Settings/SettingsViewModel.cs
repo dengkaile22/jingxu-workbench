@@ -3,6 +3,8 @@ using System.IO;
 using System.Reflection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using JingXu.Workbench.Application.Projects;
+using JingXu.Workbench.Application.Rendering;
 using JingXu.Workbench.Features.Shell;
 using JingXu.Workbench.Infrastructure.Processes;
 using JingXu.Workbench.Infrastructure.Runtime;
@@ -24,6 +26,7 @@ public sealed record RuntimeSearchEntry(string Order, string Location, string De
 public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
 {
     private readonly RuntimeDiagnosticService _runtimeDiagnostics;
+    private readonly RenderCoordinator? _renderCoordinator;
 
     public override WorkspaceModule ModuleKind => WorkspaceModule.Settings;
 
@@ -45,6 +48,9 @@ public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
     /// <summary>各运行时组件的诊断状态。</summary>
     public ObservableCollection<RuntimeComponentStatus> RuntimeStatuses { get; } = [];
 
+    /// <summary>可选并发上限（1–4）；高并发适合升级后的多核 CPU / 多显卡电脑。</summary>
+    public IReadOnlyList<int> ConcurrencyOptions { get; } = [1, 2, 3, 4];
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(DataDirectoryStatusText))]
     private bool _dataDirectoryExists;
@@ -52,18 +58,44 @@ public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
     [ObservableProperty]
     private bool _isRefreshingRuntimeStatus;
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ConcurrencyHint))]
+    private int _maxRenderConcurrency = 2;
+
+    [ObservableProperty]
+    private string _concurrencyStatusMessage = string.Empty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasCacheCleanupStatus))]
+    private string _cacheCleanupStatusMessage = string.Empty;
+
     /// <summary>数据目录状态的中文描述。</summary>
     public string DataDirectoryStatusText => DataDirectoryExists ? "已创建" : "尚未创建（首次保存项目时自动生成）";
 
+    /// <summary>并发说明。</summary>
+    public string ConcurrencyHint =>
+        MaxRenderConcurrency <= 1
+            ? "串行渲染：一次只跑 1 个任务，适合 CPU 编码和低配置电脑。"
+            : MaxRenderConcurrency <= 2
+                ? "最多同时渲染 2 个任务；适合当前电脑并兼顾界面响应。"
+                : $"最多同时渲染 {MaxRenderConcurrency} 个任务；适合升级后的高配置电脑。";
+
+    public bool HasConcurrencyStatus => !string.IsNullOrWhiteSpace(ConcurrencyStatusMessage);
+
+    public bool HasCacheCleanupStatus => !string.IsNullOrWhiteSpace(CacheCleanupStatusMessage);
+
     public SettingsViewModel()
-        : this(CreateDefaultDiagnostics())
+        : this(CreateDefaultDiagnostics(), renderCoordinator: null)
     {
     }
 
-    internal SettingsViewModel(RuntimeDiagnosticService runtimeDiagnostics)
+    internal SettingsViewModel(
+        RuntimeDiagnosticService runtimeDiagnostics,
+        RenderCoordinator? renderCoordinator = null)
     {
         ArgumentNullException.ThrowIfNull(runtimeDiagnostics);
         _runtimeDiagnostics = runtimeDiagnostics;
+        _renderCoordinator = renderCoordinator;
 
         var version = Assembly.GetExecutingAssembly().GetName().Version;
         AppVersion = version is null ? "1.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
@@ -79,8 +111,51 @@ public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
             new("3", "系统 PATH", "回退到系统环境变量中的可执行文件。")
         ];
 
+        if (_renderCoordinator is not null)
+        {
+            MaxRenderConcurrency = _renderCoordinator.MaxConcurrency;
+        }
+
         RefreshDataDirectoryState();
         _ = RefreshRuntimeStatusAsync();
+    }
+
+    /// <summary>应用渲染并发上限（1–4）；进行中任务结束后生效。</summary>
+    [RelayCommand]
+    private async Task ApplyRenderConcurrencyAsync()
+    {
+        if (_renderCoordinator is null)
+        {
+            ConcurrencyStatusMessage = "渲染协调器未装配，无法调整并发。";
+            OnPropertyChanged(nameof(HasConcurrencyStatus));
+            return;
+        }
+
+        var value = Math.Clamp(MaxRenderConcurrency, 1, RenderCoordinator.SafeMaxConcurrency);
+        MaxRenderConcurrency = value;
+        await _renderCoordinator.SetMaxConcurrencyAsync(value, CancellationToken.None).ConfigureAwait(true);
+        ConcurrencyStatusMessage = value == _renderCoordinator.MaxConcurrency
+            ? $"已应用：同时最多 {value} 个渲染任务。"
+            : $"已预约并发 {value}（当前活跃任务结束后生效；当前仍为 {_renderCoordinator.MaxConcurrency}）。";
+        OnPropertyChanged(nameof(HasConcurrencyStatus));
+    }
+
+    /// <summary>清理工作台缓存与临时目录（%TEMP%\jingxu-*、.jingxu-tmp 等）。</summary>
+    [RelayCommand]
+    private void ClearWorkbenchCache()
+    {
+        try
+        {
+            var result = WorkbenchCacheCleanup.Cleanup(DataDirectory);
+            CacheCleanupStatusMessage = result.SummaryText;
+        }
+        catch (Exception ex)
+        {
+            CacheCleanupStatusMessage = $"清理失败：{ex.GetBaseException().Message}";
+        }
+
+        RefreshDataDirectoryState();
+        OnPropertyChanged(nameof(HasCacheCleanupStatus));
     }
 
     private void RefreshDataDirectoryState() =>
@@ -104,18 +179,40 @@ public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
         }
 
         IsRefreshingRuntimeStatus = true;
+        var sync = SynchronizationContext.Current;
         try
         {
-            var statuses = await _runtimeDiagnostics.DiagnoseAsync().ConfigureAwait(true);
-            RuntimeStatuses.Clear();
-            foreach (var status in statuses)
+            var statuses = await _runtimeDiagnostics.DiagnoseAsync().ConfigureAwait(false);
+            void Apply() => ReplaceRuntimeStatuses(statuses);
+            if (sync is null)
             {
-                RuntimeStatuses.Add(status);
+                Apply();
+            }
+            else
+            {
+                sync.Send(_ => Apply(), null);
             }
         }
         finally
         {
-            IsRefreshingRuntimeStatus = false;
+            void ClearFlag() => IsRefreshingRuntimeStatus = false;
+            if (sync is null)
+            {
+                ClearFlag();
+            }
+            else
+            {
+                sync.Send(_ => ClearFlag(), null);
+            }
+        }
+    }
+
+    private void ReplaceRuntimeStatuses(IReadOnlyList<RuntimeComponentStatus> statuses)
+    {
+        RuntimeStatuses.Clear();
+        foreach (var status in statuses)
+        {
+            RuntimeStatuses.Add(status);
         }
     }
 

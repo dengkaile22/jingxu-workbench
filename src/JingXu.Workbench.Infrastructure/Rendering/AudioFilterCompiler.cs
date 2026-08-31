@@ -47,7 +47,7 @@ public static class AudioFilterCompiler
         }
 
         builder.Append(CultureInfo.InvariantCulture,
-            $"[{bgmInput}:a]aloop=loop=-1:size=2e+09,atrim=duration={durationSeconds},asetpts=PTS-STARTPTS,volume={FormatDecimal(bgm.BgmVolume)},afade=t=out:st={FormatSeconds(TimeSpan.FromSeconds(fadeStart))}:d={FormatDecimal(bgm.FadeOutSeconds)}[{bgmLabel}];");
+            $"[{bgmInput}:a]aloop=loop=-1,atrim=duration={durationSeconds},asetpts=PTS-STARTPTS,volume={FormatDecimal(bgm.BgmVolume)},afade=t=out:st={FormatSeconds(TimeSpan.FromSeconds(fadeStart))}:d={FormatDecimal(bgm.FadeOutSeconds)}[{bgmLabel}];");
         builder.Append(CultureInfo.InvariantCulture,
             $"[{mainLabel}][{bgmLabel}]amix=duration=first:inputs=2:dropout_transition=0[{outputLabel}]");
 
@@ -80,7 +80,7 @@ public static class AudioFilterCompiler
             var activeSeconds = FormatSeconds(active);
             builder.Append(CultureInfo.InvariantCulture,
                 $"[{inputIndex}:a]aformat=sample_rates=48000:channel_layouts=stereo,aresample=48000," +
-                $"aloop=loop=-1:size=2e+09,atrim=duration={activeSeconds},asetpts=PTS-STARTPTS," +
+                $"aloop=loop=-1,atrim=duration={activeSeconds},asetpts=PTS-STARTPTS," +
                 $"adelay={delayMs}:all=1,apad=whole_dur={planSeconds}[{label}];");
             mixInputs.Append(CultureInfo.InvariantCulture, $"[{label}]");
         }

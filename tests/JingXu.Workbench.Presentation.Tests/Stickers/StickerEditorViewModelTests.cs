@@ -29,8 +29,12 @@ public sealed class StickerEditorViewModelTests
                 await service.RegisterAsync(path);
             }
 
+            var tracksService = new StickerTracksService(
+                new AtomicJsonStore<StickerTracksDocument>(StickerTracksDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-tracks.json"));
             var vm = new StickerEditorViewModel(
                 service,
+                tracksService,
                 new RecordingMediaFilePicker(),
                 new DirectUiDispatcher())
             {
@@ -106,8 +110,12 @@ public sealed class StickerEditorViewModelTests
             await service.RegisterAsync(firstPath);
             await service.RegisterAsync(secondPath);
 
+            var tracksService2 = new StickerTracksService(
+                new AtomicJsonStore<StickerTracksDocument>(StickerTracksDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-tracks.json"));
             var vm = new StickerEditorViewModel(
                 service,
+                tracksService2,
                 new RecordingMediaFilePicker(),
                 new DirectUiDispatcher())
             {
@@ -154,12 +162,17 @@ public sealed class StickerEditorViewModelTests
             await service.RegisterAsync(firstPath);
             await service.RegisterAsync(secondPath);
 
+            var tracksService3 = new StickerTracksService(
+                new AtomicJsonStore<StickerTracksDocument>(StickerTracksDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-tracks.json"));
             var vm = new StickerEditorViewModel(
                 service,
+                tracksService3,
                 new RecordingMediaFilePicker(),
                 new DirectUiDispatcher());
             await vm.LoadLibraryCommand.ExecuteAsync(null);
             var entryToRemove = vm.LibraryEntries.Single(entry => entry.FilePath == firstPath);
+            var remainingEntry = vm.LibraryEntries.Single(entry => entry.FilePath == secondPath);
 
             var commandProperty = typeof(StickerEditorViewModel).GetProperty("RemoveLibraryStickerCommand");
             Assert.NotNull(commandProperty);
@@ -168,6 +181,7 @@ public sealed class StickerEditorViewModelTests
 
             Assert.DoesNotContain(vm.LibraryEntries, entry => entry.Id == entryToRemove.Id);
             Assert.Single(vm.LibraryEntries);
+            Assert.Same(remainingEntry, vm.LibraryEntries[0]);
             Assert.Contains("已从贴纸素材库移除", vm.StatusMessage, StringComparison.Ordinal);
 
             var reloaded = await service.LoadAsync();
@@ -197,8 +211,12 @@ public sealed class StickerEditorViewModelTests
             await service.RegisterAsync(firstPath);
             await service.RegisterAsync(secondPath);
             var confirmation = new StubStickerLibraryClearConfirmation(true);
+            var tracksService4 = new StickerTracksService(
+                new AtomicJsonStore<StickerTracksDocument>(StickerTracksDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-tracks.json"));
             var vm = new StickerEditorViewModel(
                 service,
+                tracksService4,
                 new RecordingMediaFilePicker(),
                 new DirectUiDispatcher(),
                 confirmation);
@@ -241,8 +259,12 @@ public sealed class StickerEditorViewModelTests
             await service.RegisterAsync(firstPath);
             await service.RegisterAsync(secondPath);
             var confirmation = new StubStickerLibraryClearConfirmation(false);
+            var tracksService5 = new StickerTracksService(
+                new AtomicJsonStore<StickerTracksDocument>(StickerTracksDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-tracks.json"));
             var vm = new StickerEditorViewModel(
                 service,
+                tracksService5,
                 new RecordingMediaFilePicker(),
                 new DirectUiDispatcher(),
                 confirmation);

@@ -113,8 +113,9 @@ public sealed class ThemeContractTests
     {
         string[] geometryKeys =
         [
-            "Icon.Module.Composition", "Icon.Module.Overlays", "Icon.Module.Subtitles",
-            "Icon.Module.Queue", "Icon.Module.Settings", "Icon.Mark.Interlock",
+            "Icon.Module.Composition", "Icon.Module.Overlays", "Icon.Module.Stickers",
+            "Icon.Module.Downloads", "Icon.Module.Queue", "Icon.Module.Settings",
+            "Icon.Mark.Interlock",
             "Icon.Status.Running", "Icon.Status.Completed", "Icon.Status.Failed"
         ];
 

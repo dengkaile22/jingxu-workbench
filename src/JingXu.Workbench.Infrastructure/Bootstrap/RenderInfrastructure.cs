@@ -10,13 +10,20 @@ namespace JingXu.Workbench.Infrastructure.Bootstrap;
 public static class RenderInfrastructure
 {
     /// <summary>创建真实 FFmpeg 渲染执行器。</summary>
-    public static IRenderExecutor CreateFfmpegRenderExecutor(string appRoot, string? userRuntimeDirectory = null) =>
-        new FfmpegRenderExecutor(
-            new ExternalProcessRunner(),
-            CreateMediaProbe(appRoot, userRuntimeDirectory),
-            new RuntimeResolver(appRoot, ResolveFromPath),
+    public static IRenderExecutor CreateFfmpegRenderExecutor(string appRoot, string? userRuntimeDirectory = null)
+    {
+        var runner = new ExternalProcessRunner();
+        var resolver = new RuntimeResolver(appRoot, ResolveFromPath);
+        var probe = new FfprobeMediaProbe(runner, resolver, userRuntimeDirectory);
+        var encoderSelector = new HardwareVideoEncoderSelector(runner);
+        return new FfmpegRenderExecutor(
+            runner,
+            probe,
+            resolver,
             userRuntimeDirectory,
-            driveRoot => new DriveInfo(driveRoot).AvailableFreeSpace);
+            driveRoot => new DriveInfo(driveRoot).AvailableFreeSpace,
+            encoderSelector);
+    }
 
     /// <summary>创建 FFprobe 媒体探测器。</summary>
     public static IMediaProbe CreateMediaProbe(string appRoot, string? userRuntimeDirectory = null) =>

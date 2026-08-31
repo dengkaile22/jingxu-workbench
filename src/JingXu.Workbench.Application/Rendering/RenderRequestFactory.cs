@@ -72,7 +72,11 @@ public static class RenderRequestFactory
         IReadOnlyList<OverlayLayer>? overlayLayers = null,
         EffectVariationTemplate? effectTemplate = null,
         BgmMixPlan? bgm = null,
-        ImageSticker? sticker = null) =>
+        IReadOnlyList<ImageSticker> stickers = null!,
+        MainMaterialBoostPlan? mainMaterialBoost = null,
+        OutputVideoSettings outputVideoSettings = default,
+        DoubleScreenEffectPlan? doubleScreen = null,
+        VideoProcessingMode processingMode = VideoProcessingMode.Auto) =>
         CreateForPlans(
             plans,
             outputDirectory,
@@ -81,9 +85,15 @@ public static class RenderRequestFactory
             aspect,
             overlayLayersPerPlan: null,
             sharedOverlayLayers: overlayLayers,
-            effectTemplate,
-            bgm,
-            sticker);
+            effectTemplate: effectTemplate,
+            bgm: bgm,
+            stickers: stickers,
+            mainMaterialBoost: mainMaterialBoost,
+            outputVideoSettings: outputVideoSettings,
+            doubleScreen: doubleScreen,
+            stickersPerPlan: null,
+            processingMode: processingMode);
+
 
     /// <summary>
     /// 为每条编排计划生成请求，支持按任务分别指定蒙版层。
@@ -98,7 +108,14 @@ public static class RenderRequestFactory
         IReadOnlyList<OverlayLayer>? sharedOverlayLayers,
         EffectVariationTemplate? effectTemplate = null,
         BgmMixPlan? bgm = null,
-        ImageSticker? sticker = null)
+        IReadOnlyList<ImageSticker> stickers = null!,
+        MainMaterialBoostPlan? mainMaterialBoost = null,
+        OutputVideoSettings outputVideoSettings = default,
+        DoubleScreenEffectPlan? doubleScreen = null,
+        IEnumerable<string>? reservedOutputPaths = null,
+        IReadOnlyList<IReadOnlyList<ImageSticker>>? stickersPerPlan = null,
+        VideoProcessingMode processingMode = VideoProcessingMode.Auto,
+        IReadOnlyList<BgmMixPlan>? bgmPerPlan = null)
     {
         ArgumentNullException.ThrowIfNull(plans);
         ArgumentNullException.ThrowIfNull(profile);
@@ -109,9 +126,20 @@ public static class RenderRequestFactory
             throw new ArgumentException("蒙版层数量必须与编排计划数量一致。", nameof(overlayLayersPerPlan));
         }
 
-        var hasBgm = bgm is not null;
+        if (stickersPerPlan is not null && stickersPerPlan.Count != plans.Count)
+        {
+            throw new ArgumentException("贴纸轨道数量必须与编排计划数量一致。", nameof(stickersPerPlan));
+        }
+
+        if (bgmPerPlan is not null && bgmPerPlan.Count > plans.Count)
+        {
+            throw new ArgumentException("BGM 计划数量不能多于编排计划数量。", nameof(bgmPerPlan));
+        }
+
+        var hasBgm = bgm is not null || (bgmPerPlan is { Count: > 0 });
         var usesStandardEffect = effectTemplate is not null && effectTemplate.Id != EffectTemplates.None.Id;
-        var hasEffects = usesStandardEffect || sticker is not null;
+        var hasEffects = usesStandardEffect || stickers is { Count: > 0 } || doubleScreen is not null;
+        var hasMainBoost = mainMaterialBoost is not null && mainMaterialBoost.IsActive;
 
         if (plans.Count == 0)
         {
@@ -120,15 +148,31 @@ public static class RenderRequestFactory
 
         var directory = Path.GetFullPath(outputDirectory.Trim());
         var prefix = SanitizeFileNamePrefix(outputFileNamePrefix);
+        var reserved = reservedOutputPaths?.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var outputPaths = AllocateOutputPaths(directory, prefix, plans.Count, reserved);
 
-        RenderRequest CreateRequest(CompositionPlan plan, string outputPath, IReadOnlyList<OverlayLayer> layers)
+        RenderRequest CreateRequest(CompositionPlan plan, string outputPath, IReadOnlyList<OverlayLayer> layers, IReadOnlyList<ImageSticker> planStickers, int planIndex)
         {
             var hasOverlays = layers.Count > 0;
+            var planHasEffects = usesStandardEffect || planStickers.Count > 0 || doubleScreen is not null;
             MaterializedEffect? effect = null;
             if (usesStandardEffect && effectTemplate is not null)
             {
                 effect = effectTemplate.Materialize(plan.Seed);
             }
+
+            MaterializedMainMaterialBoost? materializedBoost = null;
+            if (hasMainBoost && mainMaterialBoost is not null)
+            {
+                materializedBoost = mainMaterialBoost.Materialize(plan.Seed, plan.Clips.Count);
+            }
+
+            // 每计划独立 BGM（音频库）优先，回退到共享 BGM
+            var planBgm = bgmPerPlan is not null && planIndex < bgmPerPlan.Count
+                ? bgmPerPlan[planIndex]
+                : bgm;
+            var planHasBgm = planBgm is not null;
 
             return new RenderRequest(
                 plan,
@@ -137,25 +181,94 @@ public static class RenderRequestFactory
                 aspect,
                 layers,
                 HasOverlays: hasOverlays,
-                HasEffects: hasEffects,
-                HasBgm: hasBgm,
+                HasEffects: planHasEffects,
+                HasBgm: planHasBgm,
+                HasMainMaterialBoost: hasMainBoost,
                 Effect: effect,
-                Bgm: bgm,
-                Sticker: sticker);
+                Bgm: planBgm,
+                Stickers: planStickers,
+                MainMaterialBoost: materializedBoost,
+                OutputVideoSettings: outputVideoSettings,
+                DoubleScreen: doubleScreen,
+                ProcessingMode: processingMode);
         }
 
         if (plans.Count == 1)
         {
             var layers = ResolveLayers(overlayLayersPerPlan, sharedOverlayLayers, index: 0);
-            return [CreateRequest(plans[0], Path.Combine(directory, $"{prefix}.mp4"), layers)];
+            var planStickers = stickersPerPlan?[0] ?? stickers ?? Array.Empty<ImageSticker>();
+            return [CreateRequest(plans[0], outputPaths[0], layers, planStickers, 0)];
         }
 
         return plans
             .Select((plan, index) => CreateRequest(
                 plan,
-                Path.Combine(directory, $"{prefix}_{index + 1:D3}.mp4"),
-                ResolveLayers(overlayLayersPerPlan, sharedOverlayLayers, index)))
+                outputPaths[index],
+                ResolveLayers(overlayLayersPerPlan, sharedOverlayLayers, index),
+                stickersPerPlan?[index] ?? stickers ?? Array.Empty<ImageSticker>(),
+                index))
             .ToArray();
+    }
+
+    private static List<string> AllocateOutputPaths(
+        string directory,
+        string prefix,
+        int count,
+        HashSet<string> reserved)
+    {
+        if (count == 1)
+        {
+            return [AllocateAvailablePath(directory, prefix, startIndex: 0, reserved)];
+        }
+
+        var paths = new List<string>(count);
+        var nextIndex = 1;
+        while (paths.Count < count)
+        {
+            var candidate = Path.Combine(directory, $"{prefix}_{nextIndex:D3}.mp4");
+            var fullPath = Path.GetFullPath(candidate);
+            if (!File.Exists(fullPath) && !reserved.Contains(fullPath))
+            {
+                paths.Add(candidate);
+            }
+
+            nextIndex++;
+            if (nextIndex > 999)
+            {
+                throw new InvalidOperationException($"无法在目录 {directory} 中为 {prefix} 分配 {count} 个唯一文件名。");
+            }
+        }
+
+        return paths;
+    }
+
+    private static string AllocateAvailablePath(
+        string directory,
+        string prefix,
+        int startIndex,
+        HashSet<string> reserved)
+    {
+        if (startIndex == 0)
+        {
+            var candidate = Path.Combine(directory, $"{prefix}.mp4");
+            var fullPath = Path.GetFullPath(candidate);
+            if (!File.Exists(fullPath) && !reserved.Contains(fullPath))
+            {
+                return candidate;
+            }
+        }
+
+        for (var index = Math.Max(startIndex, 1); index <= 999; index++)
+        {
+            var candidate = Path.Combine(directory, $"{prefix}_{index:D3}.mp4");
+            var fullPath = Path.GetFullPath(candidate);
+            if (!File.Exists(fullPath) && !reserved.Contains(fullPath))
+            {
+                return candidate;
+            }
+        }
+
+        throw new InvalidOperationException($"无法在目录 {directory} 中为 {prefix} 分配唯一文件名。");
     }
 
     private static IReadOnlyList<OverlayLayer> ResolveLayers(

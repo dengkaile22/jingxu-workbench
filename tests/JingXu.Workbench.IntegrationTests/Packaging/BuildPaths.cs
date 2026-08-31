@@ -18,16 +18,15 @@ internal static class BuildPaths
     public static string ReleaseDirectory => Path.Combine(RepoRoot, "artifacts", "release");
 
     public static string PortableZip =>
-        Path.Combine(ReleaseDirectory, "JingXu-Workbench-Portable-win-x64.zip");
-
-    public static string SetupExe =>
-        Path.Combine(ReleaseDirectory, "JingXu-Workbench-Setup-win-x64.exe");
+        Path.Combine(ReleaseDirectory, "炳恒快速混剪-Portable-win-x64.zip");
 
     public static string Sha256Sums => Path.Combine(ReleaseDirectory, "SHA256SUMS.txt");
 
     public static string ThirdPartyNotices => Path.Combine(RepoRoot, "THIRD_PARTY_NOTICES.md");
 
     public static string InstallerProductWxs => Path.Combine(RepoRoot, "build", "Installer", "Product.wxs");
+
+    public static string InstallerPackageWxs => Path.Combine(RepoRoot, "build", "Installer", "Package.wxs");
 
     private static string ResolveRepoRoot()
     {

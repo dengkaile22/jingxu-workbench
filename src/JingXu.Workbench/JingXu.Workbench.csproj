@@ -3,11 +3,14 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <AssemblyName>炳恒快速混剪</AssemblyName>
+    <RootNamespace>JingXu.Workbench</RootNamespace>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <Resource Include="Assets\AppIcon.ico" />
+    <Resource Include="Assets\AppLogo.png" />
     <Resource Include="Assets\Fonts\IBMPlexMono-Regular.ttf" />
   </ItemGroup>
 

@@ -123,8 +123,47 @@ public sealed class FfmpegRenderExecutorTests
         var result = await executor.ExecuteAsync(job, progress: null, default);
         Assert.True(result.IsSuccess);
         Assert.Equal("rendered-bytes", File.ReadAllText(output));
-        Assert.Single(runner.Requests);
-        Assert.DoesNotContain(runner.Requests[0].Arguments, x => x.Contains("cmd.exe", StringComparison.OrdinalIgnoreCase));
+        var renderRequest = Assert.Single(
+            runner.Requests,
+            request => request.WorkingDirectory is not null);
+        Assert.DoesNotContain(
+            renderRequest.Arguments,
+            x => x.Contains("cmd.exe", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ExternalProcessPriority.BelowNormal, renderRequest.Priority);
+    }
+
+    [Fact]
+    public async Task Successful_render_materializes_short_input_aliases_in_staging()
+    {
+        using var dir = new TemporaryDirectory();
+        var clip = dir.File("clip.mp4", contents: "clip");
+        var output = Path.Combine(dir.Root, "成片.mp4");
+
+        using var layout = RuntimeLayout.WithExecutables("app/runtime/ffmpeg/ffmpeg.exe");
+        string? seenAliasPath = null;
+        var runner = new ScriptingProcessRunner
+        {
+            OnRun = (request, stagingRoot, _) =>
+            {
+                Assert.Contains("i0.mp4", request.Arguments);
+                Assert.DoesNotContain(request.Arguments, a => a.Equals(clip, StringComparison.OrdinalIgnoreCase));
+                seenAliasPath = Path.Combine(stagingRoot, "i0.mp4");
+                Assert.True(File.Exists(seenAliasPath), "staging 应物化短路径别名");
+                Directory.CreateDirectory(stagingRoot);
+                File.WriteAllText(Path.Combine(stagingRoot, "output.mp4"), "rendered-bytes");
+                return new ProcessResult(0, "progress=continue\n", string.Empty);
+            }
+        };
+
+        var executor = RenderExecutorFactory.Create(
+            layout,
+            runner,
+            probe: new FixedProbe(TimeSpan.FromSeconds(2)));
+
+        var job = RenderJob.CreateQueued(TestJobs.RequestFor([clip], dir.Root) with { OutputPath = output });
+        var result = await executor.ExecuteAsync(job, progress: null, default);
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(seenAliasPath);
     }
 
     [Fact]
@@ -142,6 +181,132 @@ public sealed class FfmpegRenderExecutorTests
         Assert.False(result.IsSuccess);
         Assert.Contains("退出码 1", result.FailureInfo!.Message, StringComparison.Ordinal);
         Assert.Contains("Invalid data found", result.FailureInfo.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Hardware_initialization_failure_retries_once_with_cpu()
+    {
+        using var dir = new TemporaryDirectory();
+        var clip = dir.File("clip.mp4", contents: "clip");
+        var output = Path.Combine(dir.Root, "成片.mp4");
+        using var layout = RuntimeLayout.WithExecutables("app/runtime/ffmpeg/ffmpeg.exe");
+        var runner = new SequencedRenderRunner(
+            new ProcessResult(
+                1,
+                string.Empty,
+                "[h264_qsv] Error initializing an internal MFX session"),
+            new ProcessResult(0, "progress=end\n", string.Empty));
+        var selector = FixedEncoderSelector.Qsv();
+        var executor = RenderExecutorFactory.Create(
+            layout,
+            runner,
+            selector,
+            new FixedProbe(TimeSpan.FromSeconds(2)));
+        var request = TestJobs.RequestFor([clip], dir.Root) with
+        {
+            OutputPath = output,
+            ProcessingMode = VideoProcessingMode.Gpu
+        };
+
+        var result = await executor.ExecuteAsync(
+            RenderJob.CreateQueued(request),
+            progress: null,
+            default);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(2, runner.Requests.Count);
+        Assert.Contains("h264_qsv", runner.Requests[0].Arguments);
+        Assert.Contains("libx264", runner.Requests[1].Arguments);
+        Assert.Contains("已自动改用 CPU", result.Notice, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Filter_failure_does_not_retry_cpu()
+    {
+        using var dir = new TemporaryDirectory();
+        var clip = dir.File("clip.mp4", contents: "clip");
+        var output = Path.Combine(dir.Root, "成片.mp4");
+        using var layout = RuntimeLayout.WithExecutables("app/runtime/ffmpeg/ffmpeg.exe");
+        var runner = new SequencedRenderRunner(
+            new ProcessResult(1, string.Empty, "Error reinitializing filters!"));
+        var executor = RenderExecutorFactory.Create(
+            layout,
+            runner,
+            FixedEncoderSelector.Qsv(),
+            new FixedProbe(TimeSpan.FromSeconds(2)));
+        var request = TestJobs.RequestFor([clip], dir.Root) with
+        {
+            OutputPath = output,
+            ProcessingMode = VideoProcessingMode.Gpu
+        };
+
+        var result = await executor.ExecuteAsync(
+            RenderJob.CreateQueued(request),
+            progress: null,
+            default);
+
+        Assert.False(result.IsSuccess);
+        Assert.Single(runner.Requests);
+    }
+
+    [Fact]
+    public async Task Cancellation_does_not_retry_cpu()
+    {
+        using var dir = new TemporaryDirectory();
+        var clip = dir.File("clip.mp4", contents: "clip");
+        var output = Path.Combine(dir.Root, "成片.mp4");
+        using var layout = RuntimeLayout.WithExecutables("app/runtime/ffmpeg/ffmpeg.exe");
+        var runner = new CancellingRenderRunner();
+        var executor = RenderExecutorFactory.Create(
+            layout,
+            runner,
+            FixedEncoderSelector.Qsv(),
+            new FixedProbe(TimeSpan.FromSeconds(2)));
+        var request = TestJobs.RequestFor([clip], dir.Root) with
+        {
+            OutputPath = output,
+            ProcessingMode = VideoProcessingMode.Gpu
+        };
+
+        var result = await executor.ExecuteAsync(
+            RenderJob.CreateQueued(request),
+            progress: null,
+            default);
+
+        Assert.True(result.IsCancelled);
+        Assert.Single(runner.Requests);
+    }
+
+    [Fact]
+    public async Task Stream_copy_does_not_probe_or_use_hardware_encoder()
+    {
+        using var dir = new TemporaryDirectory();
+        var clip = dir.File("clip.mp4", contents: "clip");
+        var output = Path.Combine(dir.Root, "成片.mp4");
+        using var layout = RuntimeLayout.WithExecutables("app/runtime/ffmpeg/ffmpeg.exe");
+        var runner = new SequencedRenderRunner(
+            new ProcessResult(0, "progress=end\n", string.Empty));
+        var selector = FixedEncoderSelector.Qsv();
+        var executor = RenderExecutorFactory.Create(
+            layout,
+            runner,
+            selector,
+            new FixedProbe(TimeSpan.FromSeconds(2)));
+        var request = TestJobs.RequestFor([clip], dir.Root) with
+        {
+            OutputPath = output,
+            Profile = RenderProfile.Lossless,
+            ProcessingMode = VideoProcessingMode.Gpu
+        };
+
+        var result = await executor.ExecuteAsync(
+            RenderJob.CreateQueued(request),
+            progress: null,
+            default);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, selector.CallCount);
+        Assert.Contains("copy", Assert.Single(runner.Requests).Arguments);
     }
 }
 
@@ -205,6 +370,18 @@ internal static class RenderExecutorFactory
             runner,
             probe,
             new RuntimeResolver(layout.AppRoot, layout.PathLookup),
+            availableDiskBytes: _ => long.MaxValue);
+
+    public static FfmpegRenderExecutor Create(
+        RuntimeLayout layout,
+        IExternalProcessRunner runner,
+        IVideoEncoderSelector selector,
+        IMediaProbe probe) =>
+        new(
+            runner,
+            probe,
+            new RuntimeResolver(layout.AppRoot, layout.PathLookup),
+            encoderSelector: selector,
             availableDiskBytes: _ => long.MaxValue);
 }
 
@@ -280,4 +457,64 @@ internal sealed class FixedProbe(TimeSpan duration) : IMediaProbe
 {
     public Task<MediaInfo> ProbeAsync(string absolutePath, CancellationToken cancellationToken) =>
         Task.FromResult(new MediaInfo(duration, 1080, 1920, 30m, "h264", "aac", true, 0));
+}
+
+internal sealed class FixedEncoderSelector(VideoEncoderSelection selection) : IVideoEncoderSelector
+{
+    public int CallCount { get; private set; }
+
+    public static FixedEncoderSelector Qsv() =>
+        new(new VideoEncoderSelection(
+            VideoEncoderKind.H264Qsv,
+            "Intel GPU（QSV）",
+            "使用 Intel GPU（QSV）完成。"));
+
+    public Task<VideoEncoderSelection> SelectAsync(
+        string ffmpegExecutable,
+        VideoProcessingMode mode,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        CallCount++;
+        return Task.FromResult(selection);
+    }
+}
+
+internal sealed class SequencedRenderRunner(params IProcessResult[] results) : IExternalProcessRunner
+{
+    private readonly Queue<IProcessResult> _results = new(results);
+
+    public List<IProcessRequest> Requests { get; } = [];
+
+    public Task<IProcessResult> RunAsync(
+        IProcessRequest request,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Requests.Add(request);
+        var result = _results.Dequeue();
+        if (result.ExitCode == 0)
+        {
+            var stagingRoot = request.WorkingDirectory
+                ?? throw new InvalidOperationException("缺少 staging 工作目录。");
+            File.WriteAllText(Path.Combine(stagingRoot, "output.mp4"), "rendered-bytes");
+        }
+
+        return Task.FromResult(result);
+    }
+}
+
+internal sealed class CancellingRenderRunner : IExternalProcessRunner
+{
+    public List<IProcessRequest> Requests { get; } = [];
+
+    public Task<IProcessResult> RunAsync(
+        IProcessRequest request,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        Requests.Add(request);
+        throw new OperationCanceledException(cancellationToken);
+    }
 }

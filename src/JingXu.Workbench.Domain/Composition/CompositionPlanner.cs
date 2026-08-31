@@ -74,11 +74,13 @@ public sealed class CompositionPlanner
     /// <param name="count">需要生成的成片数量。</param>
     /// <param name="seed">随机种子。</param>
     /// <param name="transitionDuration">可选转场重叠时长。</param>
+    /// <param name="clipsPerPlan">每条成片随机抽取的素材数量；null 表示使用全部素材。</param>
     public static Result<IReadOnlyList<CompositionPlan>> PlanRandomBatch(
         IReadOnlyList<MediaAsset> assets,
         int count,
         int seed,
-        TimeSpan? transitionDuration = null)
+        TimeSpan? transitionDuration = null,
+        int? clipsPerPlan = null)
     {
         if (assets.Count == 0)
         {
@@ -90,13 +92,17 @@ public sealed class CompositionPlanner
             return Result<IReadOnlyList<CompositionPlan>>.Failure("成片数量必须为正整数。");
         }
 
+        var takeCount = clipsPerPlan.HasValue
+            ? Math.Clamp(clipsPerPlan.Value, 1, assets.Count)
+            : assets.Count;
+
         var transition = transitionDuration ?? TimeSpan.Zero;
 
         // 按序号 → 路径 → ID 排序，确保输入规范化
         var normalized = NormalizeAssets(assets);
 
-        // 计算排列空间
-        var factorialSpace = Factorial(normalized.Count);
+        // 计算排列空间（按实际抽取数量）
+        var factorialSpace = Factorial(takeCount);
 
         var emittedKeys = new HashSet<string>(StringComparer.Ordinal);
         var plans = new List<CompositionPlan>(count);
@@ -105,7 +111,7 @@ public sealed class CompositionPlanner
         {
             var rng = DeterministicRandom.FromBranch(seed, attempt);
 
-            // Fisher–Yates shuffle
+            // Fisher–Yates shuffle 全部素材后取前 takeCount 条
             var shuffled = normalized.ToArray();
             for (var i = shuffled.Length - 1; i > 0; i--)
             {
@@ -113,7 +119,8 @@ public sealed class CompositionPlanner
                 (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
             }
 
-            var key = string.Join(',', shuffled.Select(a => a.SequenceIndex ?? 0));
+            var selected = shuffled.Take(takeCount).ToArray();
+            var key = string.Join(',', selected.Select(a => a.SequenceIndex ?? 0));
 
             // 排列未耗尽时去重
             if (emittedKeys.Count < factorialSpace && !emittedKeys.Add(key))
@@ -128,13 +135,13 @@ public sealed class CompositionPlanner
             }
 
             // 构建时间轴
-            var clips = new List<PlannedClip>(shuffled.Length);
+            var clips = new List<PlannedClip>(selected.Length);
             var currentStart = TimeSpan.Zero;
-            for (var i = 0; i < shuffled.Length; i++)
+            for (var i = 0; i < selected.Length; i++)
             {
-                clips.Add(new PlannedClip(shuffled[i], currentStart, shuffled[i].Info.Duration));
-                currentStart += shuffled[i].Info.Duration;
-                if (i < shuffled.Length - 1)
+                clips.Add(new PlannedClip(selected[i], currentStart, selected[i].Info.Duration));
+                currentStart += selected[i].Info.Duration;
+                if (i < selected.Length - 1)
                 {
                     currentStart -= transition;
                 }

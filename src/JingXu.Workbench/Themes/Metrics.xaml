@@ -2,9 +2,9 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:sys="clr-namespace:System;assembly=System.Runtime">
 
-    <!-- 圆角：标准 6，紧凑 4（矩形分段器用，禁止胶囊）。 -->
-    <CornerRadius x:Key="Radius.Standard">6</CornerRadius>
-    <CornerRadius x:Key="Radius.Small">4</CornerRadius>
+    <!-- 圆角：标准 10，紧凑 6（更柔和的现代感）。 -->
+    <CornerRadius x:Key="Radius.Standard">10</CornerRadius>
+    <CornerRadius x:Key="Radius.Small">6</CornerRadius>
 
     <!-- 1px 发丝边框。 -->
     <Thickness x:Key="Stroke.Hairline">1</Thickness>

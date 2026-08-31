@@ -5,14 +5,16 @@
         xmlns:queue="clr-namespace:JingXu.Workbench.Features.Queue"
         xmlns:composition="clr-namespace:JingXu.Workbench.Features.Composition"
         xmlns:overlays="clr-namespace:JingXu.Workbench.Features.Overlays"
+        xmlns:stickers="clr-namespace:JingXu.Workbench.Features.Stickers"
         xmlns:settings="clr-namespace:JingXu.Workbench.Features.Settings"
-        xmlns:subtitles="clr-namespace:JingXu.Workbench.Features.Subtitles"
+        xmlns:downloads="clr-namespace:JingXu.Workbench.Features.Downloads"
         mc:Ignorable="d"
+        xmlns:audio="clr-namespace:JingXu.Workbench.Features.AudioLibrary"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         d:DataContext="{d:DesignInstance shell:ShellViewModel}"
-        Title="镜序工作台"
-        Icon="Assets/AppIcon.ico"
+         Title="炳恒快速混剪"
+         Icon="Assets/AppIcon.ico"
         Width="1600"
         Height="920"
         MinWidth="1120"
@@ -43,21 +45,28 @@
         <DataTemplate DataType="{x:Type overlays:OverlayEditorViewModel}">
             <overlays:OverlayEditorView />
         </DataTemplate>
+        <DataTemplate DataType="{x:Type stickers:StickerEditorViewModel}">
+            <stickers:StickerEditorView />
+        </DataTemplate>
         <DataTemplate DataType="{x:Type queue:RenderQueueViewModel}">
             <queue:RenderQueueView />
         </DataTemplate>
         <DataTemplate DataType="{x:Type settings:SettingsViewModel}">
             <settings:SettingsView />
         </DataTemplate>
-        <DataTemplate DataType="{x:Type subtitles:SubtitleLabViewModel}">
-            <subtitles:SubtitleLabView />
+        <DataTemplate DataType="{x:Type downloads:DownloadViewModel}">
+            <downloads:DownloadView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type audio:AudioLibraryViewModel}">
+            <audio:AudioLibraryView />
         </DataTemplate>
     </Window.Resources>
 
     <Border x:Name="RootBorder"
             Background="{DynamicResource Surface.Canvas}"
             BorderBrush="{DynamicResource Line.Strong}"
-            BorderThickness="1">
+            BorderThickness="1"
+            CornerRadius="10">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="44" />
@@ -78,22 +87,16 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <!-- 铭牌：互锁取景框标记 + 镜序 + 产品线 -->
+                    <!-- 铭牌：Logo + 软件名 -->
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
-                        <Path Data="{DynamicResource Icon.Mark.Interlock}"
-                              Stroke="{DynamicResource Brand.Primary}"
-                              StrokeThickness="1.7"
-                              StrokeLineJoin="Round"
-                              Width="20"
-                              Height="20"
-                              Stretch="Uniform"
-                              VerticalAlignment="Center" />
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
-                            <TextBlock Text="镜" Style="{DynamicResource Text.Wordmark}" />
-                            <TextBlock Text="序" Style="{DynamicResource Text.Wordmark}" Margin="3,0,0,0" />
-                        </StackPanel>
-                        <Border Width="1" Height="18" Background="{DynamicResource Line.Default}" Margin="14,0,12,0" />
-                        <TextBlock Text="{Binding ProductLine}" Style="{DynamicResource Text.ProductLine}" VerticalAlignment="Center" />
+                        <Image Source="Assets/AppLogo.png"
+                               Width="28"
+                               Height="28"
+                               Stretch="Uniform"
+                               VerticalAlignment="Center"
+                               RenderOptions.BitmapScalingMode="HighQuality" />
+                        <Border Width="1" Height="20" Background="{DynamicResource Line.Default}" Margin="12,0,12,0" />
+                        <TextBlock Text="炳恒快速混剪" Style="{DynamicResource Text.Wordmark}" VerticalAlignment="Center" />
                     </StackPanel>
 
                     <!-- 项目名 + 保存状态 -->
@@ -273,7 +276,8 @@
                             Background="{DynamicResource Gate.Well}"
                             BorderBrush="{DynamicResource Brand.Bloom}"
                             BorderThickness="1"
-                            CornerRadius="{DynamicResource Radius.Standard}">
+                            CornerRadius="{DynamicResource Radius.Standard}"
+                            Visibility="{Binding IsCompositionModule, Converter={StaticResource BoolToVis}}">
                         <Grid>
                             <TextBlock Text="取景井"
                                        Style="{DynamicResource Text.Gate.Caption}"
@@ -286,11 +290,24 @@
 
                     <!-- 模块内容（导航切换时淡入）-->
                     <ContentControl x:Name="ModuleContentHost"
-                                    Grid.Row="1"
                                     Content="{Binding CurrentModule}"
                                     Focusable="False"
+                                    ClipToBounds="True"
                                     HorizontalContentAlignment="Stretch"
-                                    VerticalContentAlignment="Stretch" />
+                                    VerticalContentAlignment="Stretch">
+                        <ContentControl.Style>
+                            <Style TargetType="ContentControl">
+                                <Setter Property="Grid.Row" Value="0" />
+                                <Setter Property="Grid.RowSpan" Value="2" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCompositionModule}" Value="True">
+                                        <Setter Property="Grid.Row" Value="1" />
+                                        <Setter Property="Grid.RowSpan" Value="1" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ContentControl.Style>
+                    </ContentControl>
                 </Grid>
 
                 <!-- 检查器（可折叠）-->
@@ -443,10 +460,19 @@
                                   Height="16"
                                   Stretch="Uniform"
                                   VerticalAlignment="Center" />
-                            <TextBlock Text="{Binding QueueModule.SummaryText}"
-                                       Style="{DynamicResource Text.Body}"
-                                       VerticalAlignment="Center"
-                                       Margin="10,0,0,0" />
+                            <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding QueueModule.SummaryText}"
+                                           Style="{DynamicResource Text.Body}" />
+                                <ProgressBar Height="5"
+                                             Width="220"
+                                             Margin="0,6,0,0"
+                                             HorizontalAlignment="Left"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Value="{Binding QueueModule.OverallProgressPercent, Mode=OneWay}"
+                                             Visibility="{Binding QueueModule.HasOverallProgress, Converter={StaticResource BoolToVis}}"
+                                             AutomationProperties.Name="底部队列整体进度" />
+                            </StackPanel>
                             <TextBlock Text="· 完成编排后加入队列，可在此跟踪阶段、进度并取消或重试。"
                                        Style="{DynamicResource Text.Caption}"
                                        VerticalAlignment="Center"

@@ -24,6 +24,9 @@ public sealed record ProcessRequest : IProcessRequest
     /// <inheritdoc />
     public IReadOnlyDictionary<string, string> EnvironmentOverrides { get; init; } = EmptyEnvironment;
 
+    /// <inheritdoc />
+    public ExternalProcessPriority Priority { get; init; } = ExternalProcessPriority.Normal;
+
     /// <summary>
     /// 创建进程请求。参数以独立列表传入，保证不发生 shell 字符串拼接。
     /// </summary>
@@ -31,11 +34,13 @@ public sealed record ProcessRequest : IProcessRequest
     /// <param name="arguments">独立参数列表。</param>
     /// <param name="workingDirectory">工作目录，可为空。</param>
     /// <param name="environmentOverrides">环境变量覆盖，可为空。</param>
+    /// <param name="priority">子进程调度优先级。</param>
     public static ProcessRequest Create(
         string executable,
         IReadOnlyList<string> arguments,
         string? workingDirectory = null,
-        IReadOnlyDictionary<string, string>? environmentOverrides = null)
+        IReadOnlyDictionary<string, string>? environmentOverrides = null,
+        ExternalProcessPriority priority = ExternalProcessPriority.Normal)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         ArgumentNullException.ThrowIfNull(arguments);
@@ -47,7 +52,8 @@ public sealed record ProcessRequest : IProcessRequest
             WorkingDirectory = workingDirectory,
             EnvironmentOverrides = environmentOverrides is null
                 ? EmptyEnvironment
-                : new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(environmentOverrides))
+                : new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(environmentOverrides)),
+            Priority = priority
         };
     }
 }

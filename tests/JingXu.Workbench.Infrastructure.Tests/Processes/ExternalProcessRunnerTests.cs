@@ -1,10 +1,31 @@
 using System.Diagnostics;
+using JingXu.Workbench.Application.Abstractions;
 using JingXu.Workbench.Infrastructure.Processes;
 
 namespace JingXu.Workbench.Infrastructure.Tests.Processes;
 
 public sealed class ExternalProcessRunnerTests
 {
+    [Fact]
+    public async Task Requested_below_normal_priority_is_applied_to_cpu_heavy_process()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "进程优先级测试依赖 Windows。");
+
+        var request = ProcessRequest.Create(
+            "powershell.exe",
+            [
+                "-NoProfile",
+                "-Command",
+                "Start-Sleep -Milliseconds 250; (Get-Process -Id $PID).PriorityClass"
+            ],
+            priority: ExternalProcessPriority.BelowNormal);
+
+        var result = await new ExternalProcessRunner().RunAsync(request, null, default);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("BelowNormal", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task Runner_drains_both_streams_and_returns_exit_code()
     {

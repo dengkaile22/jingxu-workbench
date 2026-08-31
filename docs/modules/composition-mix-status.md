@@ -27,9 +27,11 @@
 | 差异化开关 | ✅ | UI `EnableVariationEffects` → `EffectTemplates.StandardVariation()` |
 | BGM | ✅ | UI `BgmPath` / 音量相关入队；`AudioFilterCompiler` |
 | 图片贴纸 | ✅ | `ImageSticker` + `EffectFilterCompiler`；混剪 UI 可选贴纸并调节位置/尺寸/透明度 |
+| 主素材音量/缩放 | ✅ | `MainMaterialBoostPlan`；混剪 UI 固定/随机 100%–110%；主轨 loudnorm+volume / scale+crop；蒙版不生效 |
 | 命名效果模板 | ✅ | `TemplateService` + `AtomicJsonStore`；混剪 UI 加载/应用/另存为（含贴纸快照） |
 | 输出质量档 | ✅ | 混剪 UI 暴露无损/高/平衡/小体积 → `RenderProfile.For`；无损不可用时提示需转码 |
 | 默认输出目录 | ✅ | 导入后按 `RenderRequestFactory.ResolveDefaultOutputDirectory`（同 `OutputNamePolicy`）；浏览可覆盖 |
+| 随机批量每片素材数 | ✅ | UI `ClipsPerPlan`（每片素材数）留空=全部；`CompositionPlanner.PlanRandomBatch` 按指定数量随机抽取 |
 | 交叉转场 | ❌/低 | `CompositionPlan.TransitionDuration`；入队侧实际为 `TimeSpan.Zero`；无 UI |
 | 封面 | 🟡 | `CoverGenerator` + `CoverMode`；混剪 UI 封面控件暴露程度弱于规格叙述 |
 | 项目级保存 | ❌ | 会话态为主；`ProjectDocument` 未挂壳层 |

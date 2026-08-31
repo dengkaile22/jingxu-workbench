@@ -21,7 +21,7 @@
 | 协调器 | ✅ | `Application/Rendering/RenderCoordinator.cs`（`maxConcurrency` clamp 1–4，`PauseQueue`） |
 | 预检 | ✅ | `RenderPreflight.cs` |
 | 执行 | ✅ | `FfmpegRenderExecutor` + `ExternalProcessRunner` + `WindowsJobObject` |
-| 组合根默认并发 | 🟡 | `AppCompositionRoot` 创建时 `maxConcurrency: 1`；设置页 **未见** 并发调节 UI（检索无「并发」绑定） |
+| 组合根默认并发 / UI 调节 | ✅ | `AppCompositionRoot` 默认 `maxConcurrency: 2`；设置页已支持 1–4 并发调节并即时应用 |
 | 队列 UI | ✅ | `Features/Queue/RenderQueueViewModel.cs` 绑定 `RenderCoordinator` |
 | 队列持久化 | ❌ 相对规格 | `InMemoryRenderQueueStore`（`RenderQueueInfrastructure.cs`）；**进程退出即丢失** |
 | 中断恢复算法 | 🟡 | `ProjectService.RecoverJobs` / `RenderQueueRecovery` 有逻辑；缺持久化则重启恢复无数据源 |

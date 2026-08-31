@@ -17,4 +17,11 @@ public interface IMediaFrameExtractor
         string videoPath,
         string outputJpegPath,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 合成主片首帧 + 蒙版层半透明叠层的静帧预览图（接近成片几何，非实时视频）。
+    /// </summary>
+    Task<Result<string>> ExtractOverlayCompositePreviewAsync(
+        OverlayCompositePreviewRequest request,
+        CancellationToken cancellationToken);
 }

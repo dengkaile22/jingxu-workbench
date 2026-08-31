@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
 using JingXu.Workbench.Application.Abstractions;
 using JingXu.Workbench.Domain.Overlays;
@@ -7,7 +8,7 @@ namespace JingXu.Workbench.Application.Projects;
 /// <summary>蒙版素材库文档。</summary>
 public sealed class OverlayLibraryDocument
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     [JsonPropertyName("schemaVersion")]
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
@@ -38,6 +39,9 @@ public sealed class OverlayLibraryDocument
 /// <summary>蒙版素材库持久化服务。</summary>
 public sealed class OverlayLibraryService
 {
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> MutationGates =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly IAtomicJsonStore<OverlayLibraryDocument> _store;
     private readonly string _defaultLibraryPath;
 
@@ -59,14 +63,60 @@ public sealed class OverlayLibraryService
     /// <summary>加载素材库；文件不存在时返回空库。</summary>
     public async Task<OverlayLibraryDocument> LoadAsync(string? path = null, CancellationToken cancellationToken = default)
     {
-        var target = path ?? _defaultLibraryPath;
+        var target = ResolveLibraryPath(path);
+        var result = await LoadDocumentAsync(target, cancellationToken).ConfigureAwait(false);
+        return result.Document;
+    }
+
+    private string ResolveLibraryPath(string? path) =>
+        Path.GetFullPath(path ?? _defaultLibraryPath);
+
+    private static async Task<TResult> MutateAsync<TResult>(
+        string target,
+        Func<string, Task<TResult>> mutation,
+        CancellationToken cancellationToken)
+    {
+        var gate = MutationGates.GetOrAdd(target, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await mutation(target).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private static async Task MutateAsync(
+        string target,
+        Func<string, Task> mutation,
+        CancellationToken cancellationToken)
+    {
+        var gate = MutationGates.GetOrAdd(target, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await mutation(target).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<DocumentLoadResult<OverlayLibraryDocument>> LoadDocumentAsync(
+        string target,
+        CancellationToken cancellationToken)
+    {
         if (!File.Exists(target))
         {
-            return OverlayLibraryDocument.Empty;
+            return new DocumentLoadResult<OverlayLibraryDocument>(
+                OverlayLibraryDocument.Empty,
+                DocumentAccessMode.ReadWrite);
         }
 
-        var result = await _store.LoadAsync(target, cancellationToken).ConfigureAwait(false);
-        return result.Document;
+        return await _store.LoadAsync(target, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>原子保存素材库。</summary>
@@ -76,14 +126,32 @@ public sealed class OverlayLibraryService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(document);
-        var target = path ?? _defaultLibraryPath;
+        var target = ResolveLibraryPath(path);
+        await MutateAsync(
+                target,
+                async resolvedTarget =>
+                {
+                    var loaded = await LoadDocumentAsync(resolvedTarget, cancellationToken).ConfigureAwait(false);
+                    await SaveCoreAsync(document, resolvedTarget, loaded.AccessMode, cancellationToken)
+                        .ConfigureAwait(false);
+                }, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task SaveCoreAsync(
+        OverlayLibraryDocument document,
+        string target,
+        DocumentAccessMode accessMode,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(document);
         var directory = Path.GetDirectoryName(target);
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        await _store.SaveAsync(target, document, DocumentAccessMode.ReadWrite, cancellationToken)
+        await _store.SaveAsync(target, document, accessMode, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -102,16 +170,204 @@ public sealed class OverlayLibraryService
             throw new FileNotFoundException("蒙版素材文件不存在。", filePath);
         }
 
-        var document = await LoadAsync(libraryPath, cancellationToken).ConfigureAwait(false);
-        var entry = new OverlayLibraryEntry(
-            Guid.NewGuid(),
-            Path.GetFullPath(filePath),
-            tags ?? [],
-            thumbnailPath,
-            DateTimeOffset.UtcNow);
+        var target = ResolveLibraryPath(libraryPath);
+        var fullPath = Path.GetFullPath(filePath);
+        return await MutateAsync(
+                target,
+                async resolvedTarget =>
+                {
+                    var loaded = await LoadDocumentAsync(resolvedTarget, cancellationToken).ConfigureAwait(false);
+                    var document = loaded.Document;
+                    var existing = document.Entries.FirstOrDefault(e =>
+                        string.Equals(e.FilePath, fullPath, StringComparison.OrdinalIgnoreCase));
 
-        await SaveAsync(document.WithEntry(entry), libraryPath, cancellationToken).ConfigureAwait(false);
-        return entry;
+                    // 同一路径只保留一条，避免重复导入把库数量虚高。
+                    var entry = existing is null
+                        ? new OverlayLibraryEntry(
+                            Guid.NewGuid(),
+                            fullPath,
+                            tags ?? [],
+                            thumbnailPath,
+                            DateTimeOffset.UtcNow)
+                        : existing with
+                        {
+                            Tags = tags ?? existing.Tags,
+                            ThumbnailPath = thumbnailPath ?? existing.ThumbnailPath,
+                            LastUsedAt = DateTimeOffset.UtcNow
+                        };
+
+                    await SaveCoreAsync(document.WithEntry(entry), resolvedTarget, loaded.AccessMode, cancellationToken)
+                        .ConfigureAwait(false);
+                    return entry;
+                }, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 原子地将一份视觉参数快照套用到选中的素材库条目。
+    /// 仅更新条目的 <see cref="OverlayLibraryEntry.VisualSettings"/>，不改动素材路径、标签、缩略图或使用记录。
+    /// </summary>
+    public async Task<(OverlayLibraryDocument Document, int Updated)> ApplyVisualSettingsAsync(
+        IReadOnlyCollection<Guid> entryIds,
+        OverlayVisualSettings visualSettings,
+        string? libraryPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entryIds);
+        ArgumentNullException.ThrowIfNull(visualSettings);
+        var validation = visualSettings.Validate();
+        if (!validation.IsSuccess)
+        {
+            throw new ArgumentException(validation.Error, nameof(visualSettings));
+        }
+
+        var selectedIds = entryIds.ToHashSet();
+        var target = ResolveLibraryPath(libraryPath);
+        return await MutateAsync(
+                target,
+                async resolvedTarget =>
+                {
+                    var loaded = await LoadDocumentAsync(resolvedTarget, cancellationToken).ConfigureAwait(false);
+                    var document = loaded.Document;
+                    if (selectedIds.Count == 0)
+                    {
+                        return (document, 0);
+                    }
+
+                    var updated = 0;
+                    var entries = document.Entries
+                        .Select(entry =>
+                        {
+                            if (!selectedIds.Contains(entry.Id) || entry.VisualSettings == visualSettings)
+                            {
+                                return entry;
+                            }
+
+                            updated++;
+                            return entry with { VisualSettings = visualSettings };
+                        })
+                        .ToArray();
+                    if (updated == 0)
+                    {
+                        return (document, 0);
+                    }
+
+                    var updatedDocument = new OverlayLibraryDocument { Entries = entries };
+                    await SaveCoreAsync(updatedDocument, resolvedTarget, loaded.AccessMode, cancellationToken).ConfigureAwait(false);
+                    return (updatedDocument, updated);
+                }, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes a thumbnail only when the original library entry still exists.
+    /// This lets a delayed background thumbnail task finish without re-registering a deleted entry.
+    /// </summary>
+    public async Task<(OverlayLibraryDocument Document, bool Updated)> UpdateThumbnailIfEntryExistsAsync(
+        Guid entryId,
+        string thumbnailPath,
+        string? libraryPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(thumbnailPath);
+
+        var target = ResolveLibraryPath(libraryPath);
+        return await MutateAsync(
+                target,
+                async resolvedTarget =>
+                {
+                    var loaded = await LoadDocumentAsync(resolvedTarget, cancellationToken).ConfigureAwait(false);
+                    var document = loaded.Document;
+                    var existing = document.Entries.FirstOrDefault(entry => entry.Id == entryId);
+                    if (existing is null ||
+                        string.Equals(existing.ThumbnailPath, thumbnailPath, StringComparison.Ordinal))
+                    {
+                        return (document, false);
+                    }
+
+                    var updatedEntry = existing with { ThumbnailPath = thumbnailPath };
+                    var updatedDocument = document.WithEntry(updatedEntry);
+                    await SaveCoreAsync(updatedDocument, resolvedTarget, loaded.AccessMode, cancellationToken)
+                        .ConfigureAwait(false);
+                    return (updatedDocument, true);
+                }, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>移除路径失效（文件不存在）的条目，返回清理后文档与移除数量。</summary>
+    public async Task<(OverlayLibraryDocument Document, int Removed)> PruneMissingAsync(
+        string? libraryPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        var target = ResolveLibraryPath(libraryPath);
+        return await MutateAsync(
+                target,
+                async resolvedTarget =>
+                {
+                    var loaded = await LoadDocumentAsync(resolvedTarget, cancellationToken).ConfigureAwait(false);
+                    var document = loaded.Document;
+                    var kept = document.Entries.Where(e => File.Exists(e.FilePath)).ToList();
+                    var removed = document.Entries.Count - kept.Count;
+                    if (removed == 0)
+                    {
+                        return (document, 0);
+                    }
+
+                    var pruned = new OverlayLibraryDocument { Entries = kept };
+                    await SaveCoreAsync(pruned, resolvedTarget, loaded.AccessMode, cancellationToken).ConfigureAwait(false);
+                    return (pruned, removed);
+                }, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>按 Id 删除单条素材库条目。</summary>
+    public async Task<(OverlayLibraryDocument Document, bool Removed)> DeleteEntryAsync(
+        Guid entryId,
+        string? libraryPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        var target = ResolveLibraryPath(libraryPath);
+        return await MutateAsync(
+                target,
+                async resolvedTarget =>
+                {
+                    var loaded = await LoadDocumentAsync(resolvedTarget, cancellationToken).ConfigureAwait(false);
+                    var document = loaded.Document;
+                    if (document.Entries.All(e => e.Id != entryId))
+                    {
+                        return (document, false);
+                    }
+
+                    var updated = document.WithoutEntry(entryId);
+                    await SaveCoreAsync(updated, resolvedTarget, loaded.AccessMode, cancellationToken).ConfigureAwait(false);
+                    return (updated, true);
+                }, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>清空整库条目（不删磁盘上的视频文件）。</summary>
+    public async Task<(OverlayLibraryDocument Document, int Removed)> ClearAllAsync(
+        string? libraryPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        var target = ResolveLibraryPath(libraryPath);
+        return await MutateAsync(
+                target,
+                async resolvedTarget =>
+                {
+                    var loaded = await LoadDocumentAsync(resolvedTarget, cancellationToken).ConfigureAwait(false);
+                    var document = loaded.Document;
+                    var removed = document.Entries.Count;
+                    if (removed == 0)
+                    {
+                        return (document, 0);
+                    }
+
+                    var empty = OverlayLibraryDocument.Empty;
+                    await SaveCoreAsync(empty, resolvedTarget, loaded.AccessMode, cancellationToken).ConfigureAwait(false);
+                    return (empty, removed);
+                }, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>记录条目最近使用时间。</summary>
@@ -120,14 +376,23 @@ public sealed class OverlayLibraryService
         string? libraryPath = null,
         CancellationToken cancellationToken = default)
     {
-        var document = await LoadAsync(libraryPath, cancellationToken).ConfigureAwait(false);
-        var existing = document.Entries.FirstOrDefault(e => e.Id == entryId);
-        if (existing is null)
-        {
-            return;
-        }
+        var target = ResolveLibraryPath(libraryPath);
+        await MutateAsync(
+                target,
+                async resolvedTarget =>
+                {
+                    var loaded = await LoadDocumentAsync(resolvedTarget, cancellationToken).ConfigureAwait(false);
+                    var document = loaded.Document;
+                    var existing = document.Entries.FirstOrDefault(e => e.Id == entryId);
+                    if (existing is null)
+                    {
+                        return;
+                    }
 
-        var updated = existing with { LastUsedAt = DateTimeOffset.UtcNow };
-        await SaveAsync(document.WithEntry(updated), libraryPath, cancellationToken).ConfigureAwait(false);
+                    var updated = existing with { LastUsedAt = DateTimeOffset.UtcNow };
+                    await SaveCoreAsync(document.WithEntry(updated), resolvedTarget, loaded.AccessMode, cancellationToken)
+                        .ConfigureAwait(false);
+                }, cancellationToken)
+            .ConfigureAwait(false);
     }
 }

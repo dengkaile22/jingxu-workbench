@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using JingXu.Workbench.Application.Abstractions;
 using JingXu.Workbench.Application.Rendering;
@@ -15,20 +16,24 @@ namespace JingXu.Workbench.Infrastructure.Rendering;
 public sealed class FfmpegRenderExecutor : IRenderExecutor
 {
     private const string TempDirectoryName = ".jingxu-tmp";
-    private const double DurationToleranceSeconds = 0.1;
+    // 容器时间基/AAC 帧对齐常见 ±数十毫秒；loudnorm 裁切后仍可能有少量偏差。
+    private const double DurationToleranceSeconds = 0.25;
+    private static readonly TimeSpan DefaultRenderTimeout = TimeSpan.FromHours(4);
 
     private readonly IExternalProcessRunner _runner;
     private readonly IMediaProbe _probe;
     private readonly RuntimeResolver _runtimeResolver;
     private readonly string? _userRuntimeDirectory;
     private readonly Func<string, long>? _availableDiskBytes;
+    private readonly IVideoEncoderSelector _encoderSelector;
 
     public FfmpegRenderExecutor(
         IExternalProcessRunner runner,
         IMediaProbe probe,
         RuntimeResolver runtimeResolver,
         string? userRuntimeDirectory = null,
-        Func<string, long>? availableDiskBytes = null)
+        Func<string, long>? availableDiskBytes = null,
+        IVideoEncoderSelector? encoderSelector = null)
     {
         ArgumentNullException.ThrowIfNull(runner);
         ArgumentNullException.ThrowIfNull(probe);
@@ -38,6 +43,7 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
         _runtimeResolver = runtimeResolver;
         _userRuntimeDirectory = userRuntimeDirectory;
         _availableDiskBytes = availableDiskBytes;
+        _encoderSelector = encoderSelector ?? new HardwareVideoEncoderSelector(runner);
     }
 
     /// <inheritdoc />
@@ -81,16 +87,43 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
 
             Directory.CreateDirectory(stagingRoot);
 
+            var isStreamCopy =
+                request.SubtitleBurn is null &&
+                RenderDecision.For(request).CanStreamCopy;
+            var selection = request.SubtitleBurn is not null
+                ? VideoEncoderSelection.Cpu()
+                : isStreamCopy
+                    ? new VideoEncoderSelection(
+                        VideoEncoderKind.Libx264,
+                        "无损直拷（不重新编码）",
+                        "使用无损直拷完成。")
+                    : await _encoderSelector
+                        .SelectAsync(ffmpeg.Path, request.ProcessingMode, cancellationToken)
+                        .ConfigureAwait(false);
+
             FfmpegCompileResult compileResult;
             TimeSpan expectedDuration;
             if (request.SubtitleBurn is not null)
             {
-                compileResult = SubtitleBurnInCommandCompiler.Compile(ffmpeg.Path, request.SubtitleBurn, tempOutputPath);
+                var firstClip = request.Plan.Clips[0].Asset.Info;
+                var (canvasWidth, canvasHeight) = OutputCanvasResolver.Resolve(request);
+                compileResult = SubtitleBurnInCommandCompiler.Compile(
+                    ffmpeg.Path,
+                    request.SubtitleBurn,
+                    tempOutputPath,
+                    request.OutputVideoSettings,
+                    canvasWidth,
+                    canvasHeight,
+                    firstClip.FrameRate);
                 expectedDuration = request.Plan.Duration;
             }
             else
             {
-                compileResult = FfmpegCommandCompiler.Compile(ffmpeg.Path, request, tempOutputPath);
+                compileResult = FfmpegCommandCompiler.Compile(
+                    ffmpeg.Path,
+                    request,
+                    tempOutputPath,
+                    selection.Kind);
                 expectedDuration = request.Plan.Duration;
             }
 
@@ -100,42 +133,122 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
                 return RenderExecutionResult.Failed(budget.Error!);
             }
 
-            foreach (var auxiliary in compileResult.AuxiliaryFiles)
+            try
             {
-                var auxiliaryPath = Path.Combine(stagingRoot, auxiliary.FileName);
-                await File.WriteAllTextAsync(auxiliaryPath, auxiliary.Content, cancellationToken).ConfigureAwait(false);
+                StagingInputMaterializer.Materialize(stagingRoot, compileResult.InputAliases);
             }
-
-            var processRequest = ProcessRequest.Create(
-                compileResult.Command.Executable,
-                compileResult.Command.Arguments,
-                workingDirectory: stagingRoot);
+            catch (FileNotFoundException ex)
+            {
+                CleanupMedia(stagingRoot, preserveLog: true);
+                return RenderExecutionResult.Failed(ex.Message);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                CleanupMedia(stagingRoot, preserveLog: true);
+                return RenderExecutionResult.Failed($"无法准备 staging 输入别名：{ex.Message}");
+            }
 
             IProcessResult processResult;
             try
             {
-                processResult = await _runner.RunAsync(
-                    processRequest,
-                    CreateProgressHandler(progress),
+                processResult = await RunProcessAttemptAsync(
+                    compileResult,
+                    stagingRoot,
+                    expectedDuration,
+                    progress,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
-                await WriteLogAsync(logPath, "任务已取消。", cancellationToken).ConfigureAwait(false);
+                await WriteLogAsync(logPath, "任务已取消。", CancellationToken.None).ConfigureAwait(false);
                 CleanupMedia(stagingRoot, preserveLog: true);
                 return RenderExecutionResult.Cancelled();
             }
 
-            await WriteLogAsync(logPath, CombineOutput(processResult), cancellationToken)
-                .ConfigureAwait(false);
+            var log = new StringBuilder();
+            log.AppendLine("=== 编码器选择 ===");
+            log.AppendLine(selection.DisplayName);
+            log.AppendLine();
+            AppendAttemptLog(
+                log,
+                selection.Kind == VideoEncoderKind.Libx264 ? "CPU / 直拷尝试" : "GPU 尝试",
+                processResult);
+
+            string? successNotice = selection.Notice;
+            if (processResult.ExitCode != 0 &&
+                selection.Kind != VideoEncoderKind.Libx264 &&
+                IsHardwareEncoderFailure(selection.Kind, processResult.StandardError))
+            {
+                TryDelete(tempOutputPath);
+                log.AppendLine();
+                log.AppendLine("=== 自动回退 CPU ===");
+                log.AppendLine("GPU 编码初始化失败，已改用 libx264。");
+                log.AppendLine();
+
+                var cpuCompileResult = FfmpegCommandCompiler.Compile(
+                    ffmpeg.Path,
+                    request,
+                    tempOutputPath,
+                    VideoEncoderKind.Libx264);
+                var cpuBudget = RenderPreflight.CheckCommandBudget(
+                    cpuCompileResult.Command.EstimatedCommandLineLength);
+                if (!cpuBudget.IsSuccess)
+                {
+                    await WriteLogAsync(logPath, log.ToString(), cancellationToken).ConfigureAwait(false);
+                    CleanupMedia(stagingRoot, preserveLog: true);
+                    return RenderExecutionResult.Failed(cpuBudget.Error!);
+                }
+
+                try
+                {
+                    StagingInputMaterializer.Materialize(stagingRoot, cpuCompileResult.InputAliases);
+                }
+                catch (FileNotFoundException ex)
+                {
+                    await WriteLogAsync(logPath, log.ToString(), cancellationToken).ConfigureAwait(false);
+                    CleanupMedia(stagingRoot, preserveLog: true);
+                    return RenderExecutionResult.Failed(ex.Message);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    await WriteLogAsync(logPath, log.ToString(), cancellationToken).ConfigureAwait(false);
+                    CleanupMedia(stagingRoot, preserveLog: true);
+                    return RenderExecutionResult.Failed($"无法准备 staging 输入别名：{ex.Message}");
+                }
+
+                try
+                {
+                    processResult = await RunProcessAttemptAsync(
+                        cpuCompileResult,
+                        stagingRoot,
+                        expectedDuration,
+                        progress,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    log.AppendLine("CPU 回退过程中任务已取消。");
+                    await WriteLogAsync(logPath, log.ToString(), CancellationToken.None).ConfigureAwait(false);
+                    CleanupMedia(stagingRoot, preserveLog: true);
+                    return RenderExecutionResult.Cancelled();
+                }
+
+                AppendAttemptLog(log, "CPU 尝试", processResult);
+                successNotice = "GPU 编码不可用，已自动改用 CPU 完成。";
+            }
 
             if (processResult.ExitCode != 0)
             {
+                await WriteLogAsync(logPath, log.ToString(), cancellationToken)
+                    .ConfigureAwait(false);
                 CleanupMedia(stagingRoot, preserveLog: true);
                 return RenderExecutionResult.Failed(MapProcessFailure(processResult.ExitCode, processResult.StandardError));
             }
 
-            var validation = await ValidateOutputAsync(tempOutputPath, expectedDuration, cancellationToken)
+            await WriteLogAsync(logPath, log.ToString(), cancellationToken)
+                .ConfigureAwait(false);
+
+            var validation = await ValidateOutputAsync(tempOutputPath, expectedDuration, request, cancellationToken)
                 .ConfigureAwait(false);
             if (!validation.IsSuccess)
             {
@@ -145,7 +258,7 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
 
             MoveToFinalOutput(tempOutputPath, outputPath);
             CleanupStagingDirectory(stagingRoot, preserveLog: true);
-            return RenderExecutionResult.Success();
+            return RenderExecutionResult.Success(successNotice);
         }
         catch (OperationCanceledException)
         {
@@ -157,6 +270,43 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
             CleanupMedia(stagingRoot, preserveLog: true);
             return RenderExecutionResult.Failed($"写入输出文件失败：{ex.Message}");
         }
+        catch (Exception ex)
+        {
+            CleanupMedia(stagingRoot, preserveLog: true);
+            return RenderExecutionResult.Failed($"渲染编译失败：{ex.Message}");
+        }
+    }
+
+    private async Task<IProcessResult> RunProcessAttemptAsync(
+        FfmpegCompileResult compileResult,
+        string stagingRoot,
+        TimeSpan expectedDuration,
+        IProgress<RenderProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        foreach (var auxiliary in compileResult.AuxiliaryFiles)
+        {
+            var auxiliaryPath = Path.Combine(stagingRoot, auxiliary.FileName);
+            await File.WriteAllTextAsync(
+                auxiliaryPath,
+                auxiliary.Content,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var processRequest = ProcessRequest.Create(
+            compileResult.Command.Executable,
+            compileResult.Command.Arguments,
+            workingDirectory: stagingRoot,
+            priority: ExternalProcessPriority.BelowNormal);
+
+        using var timeoutCts = new CancellationTokenSource(DefaultRenderTimeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutCts.Token);
+        return await _runner.RunAsync(
+            processRequest,
+            CreateProgressHandler(progress, expectedDuration),
+            linkedCts.Token).ConfigureAwait(false);
     }
 
     private async Task<Result<Unit>> RunPreflightAsync(
@@ -194,7 +344,9 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
         return Result<Unit>.Success(default);
     }
 
-    private static Progress<string>? CreateProgressHandler(IProgress<RenderProgress>? progress)
+    private static Progress<string>? CreateProgressHandler(
+        IProgress<RenderProgress>? progress,
+        TimeSpan expectedDuration)
     {
         if (progress is null)
         {
@@ -210,22 +362,35 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
                 blockBuilder.AppendLine(line);
                 if (line.StartsWith("progress=", StringComparison.Ordinal))
                 {
-                    ReportProgress(progress, blockBuilder.ToString());
+                    ReportProgress(progress, blockBuilder.ToString(), expectedDuration);
                     blockBuilder.Clear();
                 }
             }
         });
     }
 
-    private static void ReportProgress(IProgress<RenderProgress> progress, string block)
+    private static void ReportProgress(
+        IProgress<RenderProgress> progress,
+        string block,
+        TimeSpan expectedDuration)
     {
         var parsed = FfmpegProgressParser.Parse(block);
-        progress.Report(new RenderProgress(parsed.Position, parsed.Speed, null));
+        double? percent = null;
+        if (expectedDuration > TimeSpan.Zero && parsed.Position > TimeSpan.Zero)
+        {
+            percent = Math.Clamp(
+                parsed.Position.TotalSeconds / expectedDuration.TotalSeconds * 100.0,
+                0,
+                99.5);
+        }
+
+        progress.Report(new RenderProgress(parsed.Position, parsed.Speed, percent));
     }
 
     private async Task<Result<Unit>> ValidateOutputAsync(
         string tempOutputPath,
         TimeSpan expectedDuration,
+        RenderRequest request,
         CancellationToken cancellationToken)
     {
         if (!File.Exists(tempOutputPath))
@@ -254,6 +419,32 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
                 return Result<Unit>.Failure(
                     $"输出时长与预期不符（预期 {expectedDuration.TotalSeconds:0.###} 秒，实际 {probed.Duration.TotalSeconds:0.###} 秒）。");
             }
+
+            var outputSettings = request.OutputVideoSettings;
+            if (!outputSettings.IsOriginalResolution)
+            {
+                var expectedSize = ResolveExpectedOutputSize(request);
+                var actualSize = OutputCanvasResolver.NormalizeDimensions(
+                    probed.Width,
+                    probed.Height,
+                    probed.RotationDegrees);
+                if (actualSize != expectedSize)
+                {
+                    return Result<Unit>.Failure(
+                        $"输出分辨率与所选规格不符（预期 {expectedSize.Width}×{expectedSize.Height}，实际 {actualSize.Width}×{actualSize.Height}）。");
+                }
+            }
+
+            if (!outputSettings.IsOriginalFrameRate)
+            {
+                var expectedFrameRate = outputSettings.ResolveFrameRate(
+                    request.Plan.Clips[0].Asset.Info.FrameRate);
+                if (Math.Abs(probed.FrameRate - expectedFrameRate) > 0.01m)
+                {
+                    return Result<Unit>.Failure(
+                        $"输出帧率与所选规格不符（预期 {expectedFrameRate:0.###} fps，实际 {probed.FrameRate:0.###} fps）。");
+                }
+            }
         }
         catch (MediaProbeException ex)
         {
@@ -261,6 +452,12 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
         }
 
         return Result<Unit>.Success(default);
+    }
+
+    private static (int Width, int Height) ResolveExpectedOutputSize(RenderRequest request)
+    {
+        var (canvasWidth, canvasHeight) = OutputCanvasResolver.Resolve(request);
+        return request.OutputVideoSettings.ResolveTargetSize(canvasWidth, canvasHeight);
     }
 
     private static void MoveToFinalOutput(string tempOutputPath, string finalOutputPath)
@@ -292,8 +489,70 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
         }
 
         var lines = stderr.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return lines.Length == 0 ? string.Empty : lines[^1];
+        if (lines.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        for (var index = lines.Length - 1; index >= 0; index--)
+        {
+            if (!IsGenericFfmpegFailureTrailer(lines[index]))
+            {
+                return lines[index];
+            }
+        }
+
+        return lines[^1];
     }
+
+    private static bool IsGenericFfmpegFailureTrailer(string line) =>
+        line.Equals("Conversion failed!", StringComparison.OrdinalIgnoreCase) ||
+        line.Equals("Error reinitializing filters!", StringComparison.OrdinalIgnoreCase) ||
+        line.Equals("Error while filtering: Invalid argument", StringComparison.OrdinalIgnoreCase) ||
+        line.Contains("Qavg:", StringComparison.OrdinalIgnoreCase) ||
+        line.StartsWith("video:", StringComparison.OrdinalIgnoreCase) ||
+        line.StartsWith("frame=", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool IsHardwareEncoderFailure(VideoEncoderKind encoder, string stderr)
+    {
+        if (encoder == VideoEncoderKind.Libx264 || string.IsNullOrWhiteSpace(stderr))
+        {
+            return false;
+        }
+
+        var hasEncoderFamily = encoder switch
+        {
+            VideoEncoderKind.H264Nvenc =>
+                ContainsAny(stderr, "h264_nvenc", "nvenc", "nvcuda", "cuda"),
+            VideoEncoderKind.H264Qsv =>
+                ContainsAny(stderr, "h264_qsv", "qsv", "mfx"),
+            VideoEncoderKind.H264Amf =>
+                ContainsAny(stderr, "h264_amf", "amf"),
+            _ => false
+        };
+        if (!hasEncoderFamily)
+        {
+            return false;
+        }
+
+        return ContainsAny(
+            stderr,
+            "no capable devices found",
+            "cannot load nvcuda",
+            "error initializing output stream",
+            "failed to initialise",
+            "failed to initialize",
+            "device setup failed",
+            "device lost",
+            "unsupported device",
+            "initializing an internal mfx session",
+            "failed to create mfx session",
+            "amf failed to initialise",
+            "encoder initialization failed");
+    }
+
+    private static bool ContainsAny(string value, params string[] tokens) =>
+        tokens.Any(token => value.Contains(token, StringComparison.OrdinalIgnoreCase));
 
     private static string CombineOutput(IProcessResult result)
     {
@@ -309,6 +568,17 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
         }
 
         return builder.ToString();
+    }
+
+    private static void AppendAttemptLog(
+        StringBuilder builder,
+        string title,
+        IProcessResult result)
+    {
+        builder.Append("=== ").Append(title).AppendLine(" ===");
+        builder.Append("退出码：").AppendLine(result.ExitCode.ToString(CultureInfo.InvariantCulture));
+        var output = CombineOutput(result);
+        builder.AppendLine(string.IsNullOrWhiteSpace(output) ? "（无进程输出）" : output.TrimEnd());
     }
 
     private static async Task WriteLogAsync(string logPath, string content, CancellationToken cancellationToken)

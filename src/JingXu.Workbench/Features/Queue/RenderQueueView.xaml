@@ -44,13 +44,43 @@
         </Grid>
 
         <!-- 概览计数 -->
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,12,0,10">
-            <TextBlock Style="{DynamicResource Text.Caption}">
-                <Run Text="共" /><Run Text="{Binding TotalCount, Mode=OneWay}" /><Run Text=" 个" />
-                <Run Text="· 进行中 " /><Run Text="{Binding ActiveCount, Mode=OneWay}" />
-                <Run Text="· 已结束 " /><Run Text="{Binding FinishedCount, Mode=OneWay}" />
-                <Run Text="· 失败 " /><Run Text="{Binding FailedCount, Mode=OneWay}" />
-            </TextBlock>
+        <StackPanel Grid.Row="1" Margin="0,12,0,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center">
+                    <Run Text="共 " /><Run Text="{Binding TotalCount, Mode=OneWay}" /><Run Text=" 个" />
+                    <Run Text=" · 渲染中 " /><Run Text="{Binding RunningCount, Mode=OneWay}" />
+                    <Run Text=" · 排队 " /><Run Text="{Binding QueuedCount, Mode=OneWay}" />
+                    <Run Text=" · 已结束 " /><Run Text="{Binding FinishedCount, Mode=OneWay}" />
+                    <Run Text=" · 失败 " /><Run Text="{Binding FailedCount, Mode=OneWay}" />
+                </TextBlock>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Style="{DynamicResource Button.Secondary}"
+                            Content="{Binding PauseResumeLabel}"
+                            Command="{Binding PauseOrResumeCommand}"
+                            Margin="0,0,8,0"
+                            AutomationProperties.Name="暂停或恢复队列调度" />
+                    <Button Style="{DynamicResource Button.Secondary}"
+                            Content="清理已完成"
+                            Command="{Binding ClearFinishedCommand}"
+                            Margin="0,0,8,0"
+                            AutomationProperties.Name="清理已完成任务" />
+                    <Button Style="{DynamicResource Button.Secondary}"
+                            Content="全部清理"
+                            Command="{Binding ClearAllCommand}"
+                            AutomationProperties.Name="清理全部任务" />
+                </StackPanel>
+            </Grid>
+            <ProgressBar Height="6"
+                         Margin="0,8,0,0"
+                         Minimum="0"
+                         Maximum="100"
+                         Value="{Binding OverallProgressPercent, Mode=OneWay}"
+                         Visibility="{Binding HasOverallProgress, Converter={StaticResource BoolToVis}}"
+                         AutomationProperties.Name="队列整体进度" />
         </StackPanel>
 
         <!-- 空状态 -->
@@ -109,7 +139,22 @@
                                       StrokeLineJoin="Round" />
                                 <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
                                     <TextBlock Text="{Binding Title}" Style="{DynamicResource Text.Body}" />
-                                    <TextBlock Text="{Binding ShortId}" Style="{DynamicResource Text.Mono}" Foreground="{DynamicResource Ink.Muted}" FontSize="10.5" />
+                                    <TextBlock Text="{Binding ProgressText, Mode=OneWay}"
+                                               Style="{DynamicResource Text.Caption}"
+                                               Foreground="{DynamicResource Ink.Muted}"
+                                               Margin="0,2,0,0" />
+                                    <ProgressBar Height="5"
+                                                 Margin="0,6,24,0"
+                                                 Minimum="0"
+                                                 Maximum="100"
+                                                 Value="{Binding ProgressPercent, Mode=OneWay}"
+                                                 Visibility="{Binding ShowProgress, Converter={StaticResource BoolToVis}}"
+                                                 AutomationProperties.Name="任务进度" />
+                                    <TextBlock Text="{Binding ShortId}"
+                                               Style="{DynamicResource Text.Mono}"
+                                               Foreground="{DynamicResource Ink.Muted}"
+                                               FontSize="10.5"
+                                               Margin="0,4,0,0" />
                                 </StackPanel>
                                 <TextBlock Grid.Column="2"
                                            VerticalAlignment="Center"

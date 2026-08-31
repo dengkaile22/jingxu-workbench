@@ -18,6 +18,9 @@ public enum OutputCanvasPreset
     /// <summary>方形 1:1（1080×1080）。</summary>
     Square1x1,
 
+    /// <summary>竖屏 3:4（1080×1440）。</summary>
+    Portrait3x4,
+
     /// <summary>自定义宽高。</summary>
     Custom
 }
@@ -54,6 +57,8 @@ public sealed record UnifiedAspectPolicy(
                 Result<OutputAspect>.Success(OutputAspect.Custom(1920, 1080, ClipFitMode)),
             OutputCanvasPreset.Square1x1 =>
                 Result<OutputAspect>.Success(OutputAspect.Custom(1080, 1080, ClipFitMode)),
+            OutputCanvasPreset.Portrait3x4 =>
+                Result<OutputAspect>.Success(OutputAspect.Custom(1080, 1440, ClipFitMode)),
             OutputCanvasPreset.Custom => ResolveCustomOutputAspect(),
             _ => Result<OutputAspect>.Failure("未知的画幅预设。")
         };
@@ -104,6 +109,7 @@ public sealed record UnifiedAspectPolicy(
             OutputCanvasPreset.Vertical9x16 => "1080×1920（9:16 竖屏）",
             OutputCanvasPreset.Horizontal16x9 => "1920×1080（16:9 横屏）",
             OutputCanvasPreset.Square1x1 => "1080×1080（1:1 方形）",
+            OutputCanvasPreset.Portrait3x4 => "1080×1440（3:4 竖屏）",
             OutputCanvasPreset.Custom => DescribeCustomCanvas(),
             _ => "未知"
         };
@@ -144,6 +150,15 @@ public sealed record UnifiedAspectPolicy(
             OverlayFitMode.FillCrop => "Cover 填满裁切",
             OverlayFitMode.Contain => "Contain 完整适配",
             OverlayFitMode.Stretch => "Stretch 拉伸",
+            OverlayFitMode.MatchCanvasCrop => "先裁成画幅再覆盖",
             _ => fit.ToString()
         };
+
+    /// <summary>
+    /// 统一比例为 3:4 竖屏时的推荐蒙版适配：先把蒙版裁成画幅比例再覆盖（对齐剪映手动流程）。
+    /// </summary>
+    public static OverlayFitMode RecommendedOverlayFit(OutputCanvasPreset preset) =>
+        preset == OutputCanvasPreset.Portrait3x4
+            ? OverlayFitMode.MatchCanvasCrop
+            : OverlayFitMode.FillCrop;
 }

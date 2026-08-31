@@ -99,7 +99,7 @@ internal static class MediaIntegrationHarness
         OutputAspect aspect,
         IReadOnlyList<OverlayLayer>? overlays = null,
         BgmMixPlan? bgm = null,
-        ImageSticker? sticker = null,
+        IReadOnlyList<ImageSticker>? stickers = null,
         CancellationToken cancellationToken = default)
     {
         var outputDir = Path.Combine(workspace.Root, "output");
@@ -115,7 +115,7 @@ internal static class MediaIntegrationHarness
             overlays,
             effectTemplate: null,
             bgm,
-            sticker);
+            stickers ?? []);
 
         var request = requests[0] with { OutputPath = outputPath };
         var executor = CreateExecutor(workspace);

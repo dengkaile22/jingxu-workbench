@@ -42,13 +42,25 @@ public static class FfprobeJsonParser
 
         var video = document.Streams.FirstOrDefault(s =>
             string.Equals(s.CodecType, "video", StringComparison.OrdinalIgnoreCase));
-        if (video is null)
-        {
-            throw new MediaProbeException(string.Empty, "无法解析 FFprobe 输出：未找到视频流。");
-        }
 
         var audio = document.Streams.FirstOrDefault(s =>
             string.Equals(s.CodecType, "audio", StringComparison.OrdinalIgnoreCase));
+
+        // 纯音频文件（MP3/WAV 等）没有视频流，使用 format.duration 和音频流信息
+        if (video is null)
+        {
+            var audioDuration = ResolveDuration(audio?.Duration, document.Format?.Duration);
+            var audioCodec = string.IsNullOrWhiteSpace(audio?.CodecName) ? "unknown" : audio?.CodecName;
+            return new MediaInfo(
+                audioDuration,
+                Width: 0,
+                Height: 0,
+                FrameRate: 0m,
+                VideoCodec: "none",
+                AudioCodec: audioCodec,
+                HasAudio: audio is not null,
+                RotationDegrees: 0);
+        }
 
         var duration = ResolveDuration(video.Duration, document.Format?.Duration);
         var frameRate = ParseRationalFrameRate(video.AvgFrameRate)

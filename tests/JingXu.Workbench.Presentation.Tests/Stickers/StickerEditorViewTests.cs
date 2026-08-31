@@ -32,6 +32,10 @@ public sealed class StickerEditorViewTests
             var clearButton = Assert.IsType<Button>(view.FindName("ClearStickerLibraryButton"));
             Assert.Same(shell.StickerModule.ClearStickerLibraryCommand, clearButton.Command);
             Assert.False(clearButton.IsEnabled);
+            var libraryList = Assert.IsType<ListBox>(view.FindName("StickerLibraryList"));
+            Assert.True(VirtualizingPanel.GetIsVirtualizing(libraryList));
+            Assert.Equal(VirtualizationMode.Recycling, VirtualizingPanel.GetVirtualizationMode(libraryList));
+            Assert.True(ScrollViewer.GetCanContentScroll(libraryList));
             Assert.True(view.DesiredSize.Width > 0);
             Assert.True(view.DesiredSize.Height > 0);
         });

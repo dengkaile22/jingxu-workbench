@@ -20,7 +20,7 @@ internal static class ImportSmokeRunner
         var pathIndex = Array.FindIndex(args, a => string.Equals(a, "--import-smoke", StringComparison.OrdinalIgnoreCase));
         if (pathIndex < 0 || pathIndex + 1 >= args.Length)
         {
-            Console.Error.WriteLine("用法: JingXu.Workbench.exe --import-smoke <视频路径>");
+            Console.Error.WriteLine("用法: 炳恒快速混剪.exe --import-smoke <视频路径>");
             return 2;
         }
 

@@ -98,9 +98,7 @@ tests/
 build/
   Installer/Package.wxs
   Installer/Product.wxs
-  Installer/Bundle.wxs
   Installer/JingXu.Workbench.Msi.wixproj
-  Installer/JingXu.Workbench.Bundle.wixproj
 scripts/
   Install-DotNetSdk.ps1
   Resolve-Runtimes.ps1
@@ -1500,9 +1498,7 @@ git commit -m "docs: stage and document offline runtimes"
 - Create: `scripts/Build-Installer.ps1`
 - Create: `build/Installer/Package.wxs`
 - Create: `build/Installer/Product.wxs`
-- Create: `build/Installer/Bundle.wxs`
 - Create: `build/Installer/JingXu.Workbench.Msi.wixproj`
-- Create: `build/Installer/JingXu.Workbench.Bundle.wixproj`
 - Create: `build/Installer/License.rtf`
 - Test: `tests/JingXu.Workbench.IntegrationTests/Packaging/PortableArtifactTests.cs`
 - Test: `tests/JingXu.Workbench.IntegrationTests/Packaging/WixSourceTests.cs`
@@ -1546,7 +1542,7 @@ dotnet publish src/JingXu.Workbench/JingXu.Workbench.csproj -c Release -r win-x6
 
 Then stage validated runtimes/fonts/notices, exclude PDB/test/cache/user data, normalize timestamps for the archive, create `artifacts/release/JingXu-Workbench-Portable-win-x64.zip` and emit SHA-256.
 
-WiX uses stable UpgradeCode/Product identity, x64 install scope, MajorUpgrade, Start menu entry, optional desktop shortcut and ARP metadata; it manages only the application directory. Build a Burn bootstrapper named `JingXu-Workbench-Setup-win-x64.exe`. Without a certificate it remains unsigned and documentation explicitly warns about SmartScreen.
+WiX uses stable UpgradeCode/Product identity, x64 install scope, MajorUpgrade, Start menu entry, optional desktop shortcut and ARP metadata; it manages only the application directory. Build `炳恒快速混剪-win-x64.msi` as the only installer. Without a certificate it remains unsigned and documentation explicitly warns about SmartScreen.
 
 - [ ] **Step 4: 验证安装、升级和卸载边界**
 
@@ -1569,7 +1565,7 @@ git commit -m "build: package portable app and Windows installer"
 
 - [ ] **Step 1: 写发布校验脚本的失败条件**
 
-`Verify-Release.ps1` must return nonzero for any build warning, failed/skipped required integration test, dirty staged artifact, missing runtime hash, missing notice, missing portable/setup artifact, wrong filename, orphan process, zero-byte media, duration/order/overlay/subtitle acceptance failure or unresolved placeholder scan.
+`Verify-Release.ps1` must return nonzero for any build warning, failed/skipped required integration test, dirty staged artifact, missing runtime hash, missing notice, missing portable/MSI artifact, wrong filename, orphan process, zero-byte media, duration/order/overlay/subtitle acceptance failure or unresolved placeholder scan.
 
 - [ ] **Step 2: 运行完整新鲜验证**
 
@@ -1608,8 +1604,8 @@ git status --short --branch
 Expected: working tree clean except ignored `artifacts/`; release directory contains:
 
 ```text
-artifacts/release/JingXu-Workbench-Portable-win-x64.zip
-artifacts/release/JingXu-Workbench-Setup-win-x64.exe
+artifacts/release/炳恒快速混剪-Portable-win-x64.zip
+artifacts/release/炳恒快速混剪-win-x64.msi
 artifacts/release/SHA256SUMS.txt
 ```
 

@@ -6,6 +6,14 @@ namespace JingXu.Workbench.Presentation.Tests.Settings;
 public sealed class SettingsViewModelTests
 {
     [Fact]
+    public void Render_concurrency_options_include_four_for_upgraded_computers()
+    {
+        var vm = SettingsViewModelFactory.WithMissing(RuntimeKind.Ffmpeg);
+
+        Assert.Equal([1, 2, 3, 4], vm.ConcurrencyOptions);
+    }
+
+    [Fact]
     public async Task Runtime_check_reports_actionable_chinese_status()
     {
         var vm = SettingsViewModelFactory.WithMissing(RuntimeKind.Tesseract);

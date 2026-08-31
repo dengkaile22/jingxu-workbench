@@ -28,6 +28,29 @@ public sealed class RenderProfileTests
         Assert.Equal(crf, profile.Crf);
         Assert.Equal(audioKbps, profile.AudioKbps);
     }
+
+    [Fact]
+    public void Legacy_request_with_missing_overlay_and_sticker_collections_is_safe_to_inspect()
+    {
+        var request = TestPlans.WithInput(@"C:\media\legacy.mp4") with
+        {
+            OverlayLayers = null!,
+            Stickers = null!,
+            HasOverlays = true,
+            HasEffects = true
+        };
+
+        Assert.False(request.HasRenderableOverlays);
+        Assert.False(request.HasRenderableEffects);
+    }
+
+    [Fact]
+    public void Render_request_defaults_to_auto_processing()
+    {
+        var request = TestPlans.WithInput(@"C:\media\1.mp4");
+
+        Assert.Equal(VideoProcessingMode.Auto, request.ProcessingMode);
+    }
 }
 
 internal static class TestPlans

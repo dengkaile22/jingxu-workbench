@@ -1,10 +1,16 @@
 using JingXu.Workbench.Application.Abstractions;
 using JingXu.Workbench.Application.Composition;
 using JingXu.Workbench.Application.Overlays;
+using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Application.Rendering;
 using JingXu.Workbench.Domain.Media;
 using JingXu.Workbench.Domain.Overlays;
 using JingXu.Workbench.Domain.Rendering;
+using JingXu.Workbench.Domain.Stickers;
+using JingXu.Workbench.Features.Overlays;
+using JingXu.Workbench.Features.Stickers;
+using JingXu.Workbench.Infrastructure.Persistence;
+using JingXu.Workbench.Presentation.Tests.Infrastructure;
 
 namespace JingXu.Workbench.Presentation.Tests.Composition;
 
@@ -193,6 +199,25 @@ public sealed class CompositionViewModelTests
         Assert.Equal(RenderProfile.High, job.Request!.Profile);
     }
 
+    [Theory]
+    [InlineData(VideoProcessingMode.Auto)]
+    [InlineData(VideoProcessingMode.Cpu)]
+    [InlineData(VideoProcessingMode.Gpu)]
+    public async Task Enqueue_snapshots_selected_processing_mode(VideoProcessingMode mode)
+    {
+        var store = new InMemoryRenderQueueStore();
+        var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
+        var vm = CompositionViewModelTestFactory.Create(coordinator);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+
+        vm.Mode = CompositionMode.CustomSequence;
+        vm.SequenceExpression = "123456";
+        vm.SelectedProcessingMode = mode;
+        await vm.EnqueueCommand.ExecuteAsync(null);
+
+        Assert.Equal(mode, Assert.Single(coordinator.Jobs).Request!.ProcessingMode);
+    }
+
     [Fact]
     public async Task Import_sets_default_output_to_source_storyboard_folder()
     {
@@ -237,55 +262,278 @@ public sealed class CompositionViewModelTests
         var vm = CompositionViewModelTestFactory.Create(coordinator);
         await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
 
-        vm.Mode = CompositionMode.CustomSequence;
-        vm.SequenceExpression = "123456";
-        vm.EnableSticker = true;
-        vm.StickerPath = @"C:\贴纸\logo.png";
-        vm.StickerXPercent = 10;
-        vm.StickerYPercent = 20;
-        vm.StickerWidthPercent = 30;
-        vm.StickerHeightPercent = 25;
-        vm.StickerOpacityPercent = 80;
-        await vm.EnqueueCommand.ExecuteAsync(null);
+        var stickerPath = Path.Combine(Path.GetTempPath(), $"jingxu-sticker-test-{Guid.NewGuid():N}.png");
+        File.WriteAllBytes(stickerPath, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        try
+        {
+            vm.Mode = CompositionMode.CustomSequence;
+            vm.SequenceExpression = "123456";
+            vm.StickerEditor.AddStickerCommand.Execute(new StickerLibraryEntryRowViewModel(
+                new StickerLibraryEntry(Guid.NewGuid(), stickerPath, null, null)));
+            var track = Assert.Single(vm.StickerEditor.Tracks);
+            track.X = 10;
+            track.Y = 20;
+            track.Width = 30;
+            track.Height = 25;
+            track.StickerOpacity = 80;
 
-        var job = Assert.Single(coordinator.Jobs);
-        Assert.True(job.Request!.HasEffects);
-        Assert.NotNull(job.Request.Sticker);
-        Assert.Equal(@"C:\贴纸\logo.png", job.Request.Sticker!.Path);
-        Assert.Equal(0.1, job.Request.Sticker.Bounds.X);
-        Assert.Equal(0.8, job.Request.Sticker.Opacity);
+            await vm.EnqueueCommand.ExecuteAsync(null);
+
+            var job = Assert.Single(coordinator.Jobs);
+            Assert.True(job.Request!.HasEffects);
+            Assert.Single(job.Request.Stickers);
+            Assert.Equal(stickerPath, job.Request.Stickers[0].Path);
+            Assert.Equal(0.1, job.Request.Stickers[0].Bounds.X);
+            Assert.Equal(0.8, job.Request.Stickers[0].Opacity);
+        }
+        finally
+        {
+            File.Delete(stickerPath);
+        }
     }
 
     [Fact]
-    public async Task Save_and_apply_effect_template_round_trips_sticker()
+    public async Task Save_and_reload_effect_template_restores_variation_and_sticker_track_parameters()
     {
         var templateService = CompositionViewModelTestFactory.CreateTemplateService();
         var vm = CompositionViewModelTestFactory.Create(templateService: templateService);
         await vm.LoadEffectTemplatesCommand.ExecuteAsync(null);
 
-        vm.EnableVariationEffects = true;
-        vm.EnableSticker = true;
-        vm.StickerPath = @"C:\贴纸\badge.png";
-        vm.StickerXPercent = 55;
-        vm.StickerYPercent = 60;
-        vm.StickerWidthPercent = 18;
-        vm.StickerHeightPercent = 12;
-        vm.StickerOpacityPercent = 90;
-        vm.NewTemplateName = "角标模板";
-        await vm.SaveEffectTemplateCommand.ExecuteAsync(null);
+        var stickerPaths = new[]
+        {
+            Path.Combine(Path.GetTempPath(), $"jingxu-sticker-template-a-{Guid.NewGuid():N}.png"),
+            Path.Combine(Path.GetTempPath(), $"jingxu-sticker-template-b-{Guid.NewGuid():N}.png")
+        };
+        foreach (var path in stickerPaths)
+        {
+            File.WriteAllBytes(path, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        }
 
-        Assert.Contains(vm.EffectTemplatesList, t => t.DisplayName == "角标模板");
+        try
+        {
+            vm.EnableVariationEffects = true;
+            vm.VariationIntensityPercent = 80;
+            vm.StickerEditor.AddStickerCommand.Execute(new StickerLibraryEntryRowViewModel(
+                new StickerLibraryEntry(Guid.NewGuid(), stickerPaths[0], null, null)));
+            vm.StickerEditor.AddStickerCommand.Execute(new StickerLibraryEntryRowViewModel(
+                new StickerLibraryEntry(Guid.NewGuid(), stickerPaths[1], null, null)));
 
-        vm.EnableSticker = false;
-        vm.StickerPath = string.Empty;
-        vm.SelectedEffectTemplate = vm.EffectTemplatesList.First(t => t.DisplayName == "角标模板");
-        vm.ApplySelectedTemplateCommand.Execute(null);
+            vm.StickerEditor.Tracks[0].Name = "左上角标";
+            vm.StickerEditor.Tracks[0].X = 8;
+            vm.StickerEditor.Tracks[0].Y = 12;
+            vm.StickerEditor.Tracks[0].Width = 22;
+            vm.StickerEditor.Tracks[0].Height = 18;
+            vm.StickerEditor.Tracks[0].StickerOpacity = 75;
+            vm.StickerEditor.Tracks[0].RotationDegrees = -6;
+            vm.StickerEditor.Tracks[1].Name = "右下角标";
+            vm.StickerEditor.Tracks[1].X = 62;
+            vm.StickerEditor.Tracks[1].Y = 70;
+            vm.StickerEditor.Tracks[1].Width = 24;
+            vm.StickerEditor.Tracks[1].Height = 16;
+            vm.StickerEditor.Tracks[1].StickerOpacity = 90;
+            vm.StickerEditor.Tracks[1].RotationDegrees = 4;
+            vm.StickerEditor.Tracks[1].IsEnabled = false;
 
-        Assert.True(vm.EnableSticker);
-        Assert.Equal(@"C:\贴纸\badge.png", vm.StickerPath);
-        Assert.Equal(55, vm.StickerXPercent);
-        Assert.Equal(90, vm.StickerOpacityPercent);
-        Assert.True(vm.EnableVariationEffects);
+            vm.NewTemplateName = "双角标模板";
+            await vm.SaveEffectTemplateCommand.ExecuteAsync(null);
+
+            var reloaded = CompositionViewModelTestFactory.Create(templateService: templateService);
+            await reloaded.LoadEffectTemplatesCommand.ExecuteAsync(null);
+            reloaded.VariationIntensityPercent = 20;
+            reloaded.SelectedEffectTemplate = reloaded.EffectTemplatesList.First(
+                template => template.DisplayName == "双角标模板");
+            reloaded.ApplySelectedTemplateCommand.Execute(null);
+
+            Assert.True(reloaded.EnableVariationEffects);
+            Assert.Equal(80, reloaded.VariationIntensityPercent);
+            Assert.Equal(2, reloaded.StickerEditor.Tracks.Count);
+            Assert.Collection(
+                reloaded.StickerEditor.Tracks,
+                first =>
+                {
+                    Assert.Equal("左上角标", first.Name);
+                    Assert.Equal(stickerPaths[0], first.SourcePath);
+                    Assert.Equal(8, first.X);
+                    Assert.Equal(12, first.Y);
+                    Assert.Equal(22, first.Width);
+                    Assert.Equal(18, first.Height);
+                    Assert.Equal(75, first.StickerOpacity);
+                    Assert.Equal(-6, first.RotationDegrees);
+                    Assert.True(first.IsEnabled);
+                },
+                second =>
+                {
+                    Assert.Equal("右下角标", second.Name);
+                    Assert.Equal(stickerPaths[1], second.SourcePath);
+                    Assert.Equal(62, second.X);
+                    Assert.Equal(70, second.Y);
+                    Assert.Equal(24, second.Width);
+                    Assert.Equal(16, second.Height);
+                    Assert.Equal(90, second.StickerOpacity);
+                    Assert.Equal(4, second.RotationDegrees);
+                    Assert.False(second.IsEnabled);
+                });
+        }
+        finally
+        {
+            foreach (var path in stickerPaths)
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Batch_enqueue_randomly_replaces_sticker_from_persistent_library_per_output()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"jingxu-sticker-enqueue-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var templatePath = Path.Combine(root, "template.png");
+            var firstPath = Path.Combine(root, "first.png");
+            var secondPath = Path.Combine(root, "second.png");
+            await File.WriteAllBytesAsync(templatePath, [0x89, 0x50, 0x4E, 0x47]);
+            await File.WriteAllBytesAsync(firstPath, [0x89, 0x50, 0x4E, 0x47]);
+            await File.WriteAllBytesAsync(secondPath, [0x89, 0x50, 0x4E, 0x47]);
+
+            var stickerLibrary = new StickerLibraryService(
+                new AtomicJsonStore<StickerLibraryDocument>(StickerLibraryDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-library.json"));
+            await stickerLibrary.RegisterAsync(firstPath);
+            await stickerLibrary.RegisterAsync(secondPath);
+            var stickerTracksSvc1 = new StickerTracksService(
+                new AtomicJsonStore<StickerTracksDocument>(StickerTracksDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-tracks.json"));
+            var stickerEditor = new StickerEditorViewModel(
+                stickerLibrary,
+                stickerTracksSvc1,
+                new RecordingMediaFilePicker(),
+                new DirectUiDispatcher())
+            {
+                UseRandomStickerLibrary = true
+            };
+            stickerEditor.AddStickerCommand.Execute(new StickerLibraryEntryRowViewModel(
+                new StickerLibraryEntry(Guid.NewGuid(), templatePath, null, null)));
+
+            var store = new InMemoryRenderQueueStore();
+            var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
+            var vm = CompositionViewModelTestFactory.Create(
+                coordinator,
+                stickerEditor: stickerEditor);
+            await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+            vm.Mode = CompositionMode.CustomSequence;
+            vm.SequenceExpression = "123456;654321";
+
+            await vm.EnqueueCommand.ExecuteAsync(null);
+
+            Assert.Equal(2, coordinator.Jobs.Count);
+            var firstSticker = Assert.Single(coordinator.Jobs[0].Request!.Stickers);
+            var secondSticker = Assert.Single(coordinator.Jobs[1].Request!.Stickers);
+            Assert.NotEqual(templatePath, firstSticker.Path);
+            Assert.NotEqual(firstSticker.Path, secondSticker.Path);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Sequential_product_enqueues_use_each_random_sticker_before_repeating()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"jingxu-sticker-product-random-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var templatePath = Path.Combine(root, "template.png");
+            var libraryPaths = Enumerable.Range(1, 4)
+                .Select(index => Path.Combine(root, $"library-{index}.png"))
+                .ToArray();
+            await File.WriteAllBytesAsync(templatePath, [0x89, 0x50, 0x4E, 0x47]);
+            foreach (var path in libraryPaths)
+            {
+                await File.WriteAllBytesAsync(path, [0x89, 0x50, 0x4E, 0x47]);
+            }
+
+            var stickerLibrary = new StickerLibraryService(
+                new AtomicJsonStore<StickerLibraryDocument>(StickerLibraryDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-library.json"));
+            foreach (var path in libraryPaths)
+            {
+                await stickerLibrary.RegisterAsync(path);
+            }
+
+            var stickerTracksSvc2 = new StickerTracksService(
+                new AtomicJsonStore<StickerTracksDocument>(StickerTracksDocument.CurrentSchemaVersion),
+                Path.Combine(root, "sticker-tracks.json"));
+            var stickerEditor = new StickerEditorViewModel(
+                stickerLibrary,
+                stickerTracksSvc2,
+                new RecordingMediaFilePicker(),
+                new DirectUiDispatcher())
+            {
+                UseRandomStickerLibrary = true
+            };
+            stickerEditor.AddStickerCommand.Execute(new StickerLibraryEntryRowViewModel(
+                new StickerLibraryEntry(Guid.NewGuid(), templatePath, null, null)));
+
+            var store = new InMemoryRenderQueueStore();
+            var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
+            var vm = CompositionViewModelTestFactory.Create(coordinator, stickerEditor: stickerEditor);
+            await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+            vm.Mode = CompositionMode.CustomSequence;
+            vm.SequenceExpression = "123456";
+
+            for (var product = 0; product < libraryPaths.Length; product++)
+            {
+                await vm.EnqueueCommand.ExecuteAsync(null);
+            }
+
+            var selectedPaths = coordinator.Jobs
+                .Select(job => Assert.Single(job.Request!.Stickers).Path)
+                .ToArray();
+            Assert.Equal(libraryPaths.Length, selectedPaths.Length);
+            Assert.Equal(
+                libraryPaths.Length,
+                selectedPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Enqueue_rejects_sticker_bounds_outside_the_video_frame()
+    {
+        var store = new InMemoryRenderQueueStore();
+        var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
+        var vm = CompositionViewModelTestFactory.Create(coordinator);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+
+        var stickerPath = Path.Combine(Path.GetTempPath(), $"jingxu-invalid-sticker-{Guid.NewGuid():N}.png");
+        File.WriteAllBytes(stickerPath, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        try
+        {
+            vm.Mode = CompositionMode.CustomSequence;
+            vm.SequenceExpression = "123456";
+            vm.StickerEditor.AddStickerCommand.Execute(new StickerLibraryEntryRowViewModel(
+                new StickerLibraryEntry(Guid.NewGuid(), stickerPath, null, null)));
+            var track = Assert.Single(vm.StickerEditor.Tracks);
+            track.X = 90;
+            track.Width = 20;
+
+            await vm.EnqueueCommand.ExecuteAsync(null);
+
+            Assert.Empty(coordinator.Jobs);
+            Assert.Contains("贴纸", vm.ValidationMessage);
+            Assert.Contains("范围", vm.ValidationMessage);
+        }
+        finally
+        {
+            File.Delete(stickerPath);
+        }
     }
 
     [Fact]
@@ -465,6 +713,109 @@ public sealed class CompositionViewModelTests
     }
 
     [Fact]
+    public async Task Sequential_product_enqueues_use_each_random_mask_before_repeating()
+    {
+        var store = new InMemoryRenderQueueStore();
+        var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
+        var state = new OverlayWorkbenchState();
+        state.Add(OverlayLayer.CreateScreenshotPreset(@"C:\mask-template.mp4", TimeSpan.FromSeconds(2)));
+        var library = CompositionViewModelTestFactory.CreateOverlayLibraryService();
+        var libraryPaths = new[]
+        {
+            @"C:\library\one.mp4",
+            @"C:\library\two.mp4",
+            @"C:\library\three.mp4",
+            @"C:\library\four.mp4"
+        };
+        await CompositionViewModelTestFactory.SeedLibraryAsync(library, libraryPaths);
+
+        var vm = CompositionViewModelTestFactory.Create(
+            coordinator,
+            overlayState: state,
+            overlayLibraryService: library);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+        vm.Mode = CompositionMode.CustomSequence;
+        vm.SequenceExpression = "123456";
+        vm.EnableOverlayOnOutput = true;
+        vm.UseRandomOverlayLibrary = true;
+
+        for (var product = 0; product < libraryPaths.Length; product++)
+        {
+            await vm.EnqueueCommand.ExecuteAsync(null);
+        }
+
+        var selectedPaths = coordinator.Jobs
+            .Select(job => Assert.Single(job.Request!.OverlayLayers).SourcePath)
+            .ToArray();
+        Assert.Equal(libraryPaths.Length, selectedPaths.Length);
+        Assert.Equal(
+            libraryPaths.Length,
+            selectedPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [Fact]
+    public async Task Random_mask_uses_selected_start_clip_after_materials_and_queue_are_cleared()
+    {
+        var store = new InMemoryRenderQueueStore();
+        var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
+        var state = new OverlayWorkbenchState();
+        state.Add(OverlayLayer.CreateScreenshotPreset(@"C:\mask-first.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Name = "蒙版 1",
+            StartClipIndex = 1
+        });
+        state.Add(OverlayLayer.CreateScreenshotPreset(@"C:\mask-second.mp4", TimeSpan.FromSeconds(2)) with
+        {
+            Name = "蒙版 2",
+            StartClipIndex = 1
+        });
+        var library = CompositionViewModelTestFactory.CreateOverlayLibraryService();
+        await CompositionViewModelTestFactory.SeedLibraryAsync(
+            library,
+            @"C:\library\one.mp4",
+            @"C:\library\two.mp4");
+        var overlayLayersSvc = new OverlayLayersService(
+            new AtomicJsonStore<OverlayLayersDocument>(OverlayLayersDocument.CurrentSchemaVersion),
+            Path.Combine(Path.GetTempPath(), $"jingxu-overlay-layers-{Guid.NewGuid():N}.json"));
+        var overlayEditor = new OverlayEditorViewModel(
+            new RecordingMediaFilePicker(),
+            state,
+            FakeMediaProbe.ForSixClips(),
+            new DirectUiDispatcher(),
+            overlayLayersSvc,
+            library)
+        {
+            UseRandomMaskLibrary = true
+        };
+        var vm = CompositionViewModelTestFactory.Create(
+            coordinator,
+            overlayState: state,
+            overlayLibraryService: library,
+            overlayEditor: overlayEditor);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+        vm.Mode = CompositionMode.CustomSequence;
+        vm.SequenceExpression = "123456";
+        vm.EnableOverlayOnOutput = true;
+        vm.UseRandomOverlayLibrary = true;
+
+        await vm.EnqueueCommand.ExecuteAsync(null);
+        Assert.Equal(1, Assert.Single(Assert.Single(coordinator.Jobs).Request!.OverlayLayers).StartClipIndex);
+
+        vm.ClearMaterialsCommand.Execute(null);
+        await coordinator.ClearAllJobsAsync();
+        overlayEditor.Selected = overlayEditor.Layers.Single(row => row.DisplayName == "蒙版 2");
+        overlayEditor.StartClipIndex = 3;
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+        vm.Mode = CompositionMode.CustomSequence;
+        vm.SequenceExpression = "123456";
+
+        await vm.EnqueueCommand.ExecuteAsync(null);
+
+        var latestJob = coordinator.Jobs[coordinator.Jobs.Count - 1];
+        Assert.Equal(3, Assert.Single(latestJob.Request!.OverlayLayers).StartClipIndex);
+    }
+
+    [Fact]
     public void Multi_expression_custom_mode_shows_multiple_preview_plans()
     {
         var vm = CompositionViewModelTestFactory.LoadedComposition();
@@ -511,6 +862,68 @@ public sealed class CompositionViewModelTests
 
         Assert.Empty(coordinator.Jobs);
         Assert.Contains("未配置蒙版层", vm.ValidationMessage);
+    }
+
+    [Fact]
+    public async Task Successful_enqueue_clears_previous_runtime_validation_failure()
+    {
+        var store = new InMemoryRenderQueueStore();
+        var coordinator = RenderCoordinator.Create(new NoOpRenderExecutor(), store, maxConcurrency: 1);
+        var vm = CompositionViewModelTestFactory.Create(coordinator);
+        await vm.ImportFilesCommand.ExecuteAsync(CompositionTestPaths.SixClips);
+        vm.Mode = CompositionMode.CustomSequence;
+        vm.SequenceExpression = "123456";
+        vm.EnableOverlayOnOutput = true;
+
+        await vm.EnqueueCommand.ExecuteAsync(null);
+        Assert.Contains("未配置蒙版层", vm.ValidationMessage);
+
+        vm.EnableOverlayOnOutput = false;
+        await vm.EnqueueCommand.ExecuteAsync(null);
+
+        Assert.Single(coordinator.Jobs);
+        Assert.Empty(vm.ValidationMessage);
+        Assert.Contains("已将 1 个任务加入队列", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Composition_view_shows_enqueue_result_next_to_enqueue_button()
+    {
+        var repoRoot = FindRepoRoot();
+        var xamlPath = Path.Combine(
+            repoRoot,
+            "src",
+            "JingXu.Workbench",
+            "Features",
+            "Composition",
+            "CompositionView.xaml");
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains("x:Name=\"EnqueueFeedback\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding ValidationMessage}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding StatusMessage}\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Composition_view_exposes_auto_cpu_and_gpu_processor_selector()
+    {
+        var repoRoot = FindRepoRoot();
+        var xamlPath = Path.Combine(
+            repoRoot,
+            "src",
+            "JingXu.Workbench",
+            "Features",
+            "Composition",
+            "CompositionView.xaml");
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains("AutomationProperties.Name=\"处理器自动\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"处理器CPU\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"处理器GPU\"", xaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "IsChecked=\"{Binding SelectedProcessingMode, Converter={StaticResource EnumToBool}, ConverterParameter=Auto}\"",
+            xaml,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -576,5 +989,21 @@ public sealed class CompositionViewModelTests
         vm.CustomAspectWidth = 0;
 
         Assert.False(vm.EnqueueCommand.CanExecute(null));
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (!string.IsNullOrEmpty(dir))
+        {
+            if (File.Exists(Path.Combine(dir, "JingXu.Workbench.sln")))
+            {
+                return dir;
+            }
+
+            dir = Directory.GetParent(dir)?.FullName ?? string.Empty;
+        }
+
+        throw new InvalidOperationException("无法定位仓库根目录。");
     }
 }

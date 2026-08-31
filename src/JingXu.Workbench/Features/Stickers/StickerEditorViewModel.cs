@@ -9,23 +9,29 @@ using JingXu.Workbench.Domain.Common;
 using JingXu.Workbench.Domain.Composition;
 using JingXu.Workbench.Domain.Stickers;
 using JingXu.Workbench.Features.Shell;
+using JingXu.Workbench.Infrastructure.Persistence;
 
 namespace JingXu.Workbench.Features.Stickers;
 
 public sealed partial class StickerEditorViewModel : WorkspaceModuleViewModel
 {
     private readonly StickerLibraryService _libraryService;
+    private readonly StickerTracksService _tracksService;
     private readonly IMediaFilePicker _filePicker;
     private readonly IUiDispatcher _uiDispatcher;
     private readonly IStickerLibraryClearConfirmation _clearConfirmation;
+    private long _saveGeneration;
+    private bool _isLoadingTracks;
 
     public StickerEditorViewModel(
         StickerLibraryService libraryService,
+        StickerTracksService tracksService,
         IMediaFilePicker filePicker,
         IUiDispatcher uiDispatcher,
         IStickerLibraryClearConfirmation? clearConfirmation = null)
     {
         _libraryService = libraryService;
+        _tracksService = tracksService;
         _filePicker = filePicker;
         _uiDispatcher = uiDispatcher;
         _clearConfirmation = clearConfirmation ?? new WpfStickerLibraryClearConfirmation();
@@ -37,12 +43,18 @@ public sealed partial class StickerEditorViewModel : WorkspaceModuleViewModel
             {
                 SelectedTrack = Tracks.FirstOrDefault();
             }
+            if (!_isLoadingTracks)
+            {
+                EnqueueDebouncedSave();
+            }
         };
         LibraryEntries.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(HasLibraryEntries));
             ClearStickerLibraryCommand.NotifyCanExecuteChanged();
         };
+
+        _ = EnsureTracksLoadedAsync();
     }
 
     public override string Title => "贴纸轨道";
@@ -164,6 +176,102 @@ public sealed partial class StickerEditorViewModel : WorkspaceModuleViewModel
         _uiDispatcher.Invoke(() => ApplyLibraryDocument(document));
     }
 
+    /// <summary>从持久化 JSON 加载贴纸轨道。</summary>
+    public async Task EnsureTracksLoadedAsync()
+    {
+        StickerTracksDocument document;
+        try
+        {
+            document = await _tracksService.LoadAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (document.Tracks.Count == 0)
+        {
+            return;
+        }
+
+        _isLoadingTracks = true;
+        try
+        {
+            _uiDispatcher.Invoke(() =>
+            {
+                Tracks.Clear();
+                foreach (var model in document.Tracks)
+                {
+                    var row = new StickerTrackRowViewModel(model)
+                    {
+                        AspectRatioChanged = OnTrackAspectRatioChanged
+                    };
+                    SubscribeTrackPropertyChanges(row);
+                    Tracks.Add(row);
+                }
+                SelectedTrack = Tracks.FirstOrDefault();
+            });
+        }
+        finally
+        {
+            _isLoadingTracks = false;
+        }
+    }
+
+    private void SubscribeTrackPropertyChanges(StickerTrackRowViewModel row)
+    {
+        row.PropertyChanged += (_, _) =>
+        {
+            if (!_isLoadingTracks)
+            {
+                EnqueueDebouncedSave();
+            }
+        };
+    }
+
+    /// <summary>将当前贴纸轨道持久化到 JSON。</summary>
+    private async Task SaveTracksAsync(long generation)
+    {
+        try
+        {
+            // 被新变更淘汰时放弃保存
+            if (generation != Interlocked.Read(ref _saveGeneration))
+            {
+                return;
+            }
+
+            var modelTracks = Tracks
+                .Select(row =>
+                {
+                    var result = row.TryToModel();
+                    return result.IsSuccess ? result.Value : null;
+                })
+                .Where(t => t is not null)
+                .Cast<StickerTrack>()
+                .ToArray();
+
+            var document = new StickerTracksDocument { Tracks = modelTracks };
+            await _tracksService.SaveAsync(document).ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>防抖保存：500ms 内不再触发新变更时落地。</summary>
+    private void EnqueueDebouncedSave()
+    {
+        var gen = Interlocked.Increment(ref _saveGeneration);
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(500).ConfigureAwait(false);
+            if (gen == Interlocked.Read(ref _saveGeneration))
+            {
+                await SaveTracksAsync(gen).ConfigureAwait(false);
+            }
+        });
+    }
+
     [RelayCommand]
     private async Task ImportStickersAsync()
     {
@@ -202,10 +310,15 @@ public sealed partial class StickerEditorViewModel : WorkspaceModuleViewModel
 
         try
         {
-            var document = await _libraryService.RemoveAsync(entry.Id).ConfigureAwait(false);
+            await _libraryService.RemoveAsync(entry.Id).ConfigureAwait(false);
             _uiDispatcher.Invoke(() =>
             {
-                ApplyLibraryDocument(document);
+                var row = LibraryEntries.FirstOrDefault(item => item.Id == entry.Id);
+                if (row is not null)
+                {
+                    LibraryEntries.Remove(row);
+                }
+
                 StatusMessage = $"已从贴纸素材库移除「{entry.FileName}」（不会删除原文件）。";
             });
         }

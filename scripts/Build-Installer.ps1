@@ -33,7 +33,6 @@ if ([string]::IsNullOrWhiteSpace($PortableDirectory)) {
 $installerDir = Join-Path (Join-Path $repoRoot 'build') 'Installer'
 $releaseDir = Join-Path (Join-Path $repoRoot 'artifacts') 'release'
 $msiPath = Join-Path $releaseDir 'JingXu.Workbench.msi'
-$setupPath = Join-Path $releaseDir 'JingXu-Workbench-Setup-win-x64.exe'
 
 if (-not (Test-Path $PortableDirectory)) {
     Write-Error "Portable directory not found: $PortableDirectory. Run scripts/Build-Portable.ps1 first."
@@ -53,38 +52,37 @@ Write-Host "Using WiX: $wix"
 $publishDir = (Resolve-Path $PortableDirectory).Path
 
 if ($wix -like '*wix.exe') {
-    Write-Host '=== Build MSI ==='
+    Write-Host '=== Build MSI Installer ==='
     $productWxs = Join-Path $installerDir 'Product.wxs'
     $packageWxs = Join-Path $installerDir 'Package.wxs'
-    & $wix build $productWxs $packageWxs -d PublishDir=$publishDir -o $msiPath -arch x64
+    $licenseFile = (Resolve-Path (Join-Path $installerDir 'License.rtf')).Path
+    & $wix build $productWxs $packageWxs -ext WixToolset.UI.wixext -bindpath $installerDir -d PublishDir=$publishDir -d LicenseRtf=$licenseFile -o $msiPath -arch x64
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    Write-Host '=== Build Burn bundle ==='
-    $bundleWxs = Join-Path $installerDir 'Bundle.wxs'
-    & $wix build $bundleWxs -ext WixToolset.BootstrapperApplications -d PublishDir=$publishDir -d MsiPath=$msiPath -o $setupPath -arch x64
-    if ($LASTEXITCODE -eq 144) {
-        Write-Warning 'BLOCKER: Burn bundle requires WixToolset.BootstrapperApplications extension (not installed). MSI was built.'
-        exit 144
-    }
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $namedMsiPath = Join-Path $releaseDir '炳恒快速混剪-win-x64.msi'
+    Copy-Item $msiPath $namedMsiPath -Force
+
+    # 同步到项目根目录 dist/ 交付目录
+    $distDir = Join-Path $repoRoot 'dist'
+    if (-not (Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir -Force | Out-Null }
+    Copy-Item $namedMsiPath (Join-Path $distDir '炳恒快速混剪-win-x64.msi') -Force
 }
 else {
     Write-Warning 'BLOCKER: Legacy candle/light detected. This repository requires WiX Toolset 6 (wix.exe).'
     exit 2
 }
 
-if (Test-Path $setupPath) {
-    $hash = (Get-FileHash -Path $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $sumsPath = Join-Path $releaseDir 'SHA256SUMS.txt'
-    $line = "$hash  JingXu-Workbench-Setup-win-x64.exe"
-    if (Test-Path $sumsPath) {
-        $existing = Get-Content $sumsPath | Where-Object { $_ -notmatch 'JingXu-Workbench-Setup-win-x64' }
-        @($existing + $line) | Set-Content $sumsPath -Encoding UTF8
-    }
-    else {
-        Set-Content -Path $sumsPath -Value $line -Encoding UTF8
-    }
-    Write-Host "Setup executable: $setupPath"
-}
+$msiHash = (Get-FileHash -Path $msiPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sumsContent = "$msiHash  炳恒快速混剪-win-x64.msi`r`n$msiHash  JingXu.Workbench.msi`r`n"
+
+$releaseSums = Join-Path $releaseDir 'SHA256SUMS.txt'
+Set-Content -Path $releaseSums -Value $sumsContent -Encoding UTF8
+
+$distSums = Join-Path (Join-Path $repoRoot 'dist') 'SHA256SUMS.txt'
+Set-Content -Path $distSums -Value "$msiHash  炳恒快速混剪-win-x64.msi`r`n" -Encoding UTF8
+
+Write-Host "MSI Package generated: $namedMsiPath"
+Write-Host "Dist MSI Package: $(Join-Path $distDir '炳恒快速混剪-win-x64.msi')"
+Write-Host "SHA-256 (MSI): $msiHash"
 
 exit 0

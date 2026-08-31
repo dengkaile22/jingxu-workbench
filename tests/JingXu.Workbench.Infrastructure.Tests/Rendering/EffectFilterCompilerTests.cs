@@ -61,9 +61,10 @@ public sealed class EffectFilterCompilerTests
             height: 0.25,
             opacity: 0.75).Value!;
 
-        var graph = EffectFilterCompiler.CompileSticker(sticker, inputVideoLabel: "vfx", stickerInputIndex: 3);
+        var graph = EffectFilterCompiler.CompileSticker(sticker, inputVideoLabel: "vfx", stickerInputIndex: 3, frameWidth: 1920, frameHeight: 1080);
         Assert.Contains("[3:v]", graph, StringComparison.Ordinal);
         Assert.Contains("overlay=", graph, StringComparison.Ordinal);
+        Assert.Contains("shortest=1", graph, StringComparison.Ordinal);
         Assert.Contains("colorchannelmixer=aa=0.75", graph, StringComparison.Ordinal);
     }
 
@@ -71,7 +72,7 @@ public sealed class EffectFilterCompilerTests
     public void Empty_effect_returns_passthrough_label()
     {
         var effect = MaterializedEffect.Identity;
-        var result = EffectFilterCompiler.CompileChain(effect, sticker: null, inputVideoLabel: "vbase");
+        var result = EffectFilterCompiler.CompileChain(effect, [], inputVideoLabel: "vbase");
         Assert.Equal("vbase", result.OutputVideoLabel);
         Assert.Empty(result.FilterSuffix);
     }

@@ -38,6 +38,7 @@ public sealed record RenderJob
     public Guid Id { get; init; }
     public JobState State { get; init; }
     public string? Error { get; init; }
+    public string? Notice { get; init; }
     public bool CanRetry { get; init; }
     public int AttemptCount { get; init; }
     public DateTimeOffset CreatedAt { get; init; }
@@ -46,7 +47,21 @@ public sealed record RenderJob
     /// <summary>入队时的不可变请求快照；占位任务可为空。</summary>
     public RenderRequest? Request { get; init; }
 
+    /// <summary>渲染进度百分比（0–100）；未知时为 null。</summary>
+    public double? ProgressPercent { get; init; }
+
+    /// <summary>当前进度阶段文案（如「渲染中 42%」）。</summary>
+    public string? ProgressPhase { get; init; }
+
     private RenderJob() { }
+
+    /// <summary>更新进度字段（不改变任务状态）。</summary>
+    public RenderJob WithProgress(double? percent, string? phase) =>
+        this with
+        {
+            ProgressPercent = percent is null ? null : Math.Clamp(percent.Value, 0, 100),
+            ProgressPhase = phase
+        };
 
     /// <summary>创建草稿任务。</summary>
     public static RenderJob CreateDraft() =>
@@ -90,27 +105,54 @@ public sealed record RenderJob
             : throw new InvalidOperationException($"无法从状态 {State} 开始完成。");
 
     /// <summary>标记完成。</summary>
-    public RenderJob Complete() =>
+    public RenderJob Complete(string? notice = null) =>
         State is JobState.Finalizing
-            ? this with { State = JobState.Completed, CompletedAt = DateTimeOffset.UtcNow }
+            ? this with
+            {
+                State = JobState.Completed,
+                CompletedAt = DateTimeOffset.UtcNow,
+                Notice = notice,
+                ProgressPercent = 100,
+                ProgressPhase = null
+            }
             : throw new InvalidOperationException($"无法从状态 {State} 标记完成。");
 
     /// <summary>标记失败。</summary>
     public RenderJob Fail(string error, bool canRetry = true) =>
         State is JobState.Preparing or JobState.Running or JobState.Finalizing
-            ? this with { State = JobState.Failed, Error = error, CanRetry = canRetry }
+            ? this with
+            {
+                State = JobState.Failed,
+                Error = error,
+                Notice = null,
+                CanRetry = canRetry,
+                ProgressPhase = null
+            }
             : throw new InvalidOperationException($"无法从状态 {State} 标记失败。");
 
     /// <summary>取消。</summary>
     public RenderJob Cancel() =>
         State is JobState.Queued or JobState.Preparing or JobState.Running or JobState.Finalizing
-            ? this with { State = JobState.Cancelled, CompletedAt = DateTimeOffset.UtcNow }
+            ? this with
+            {
+                State = JobState.Cancelled,
+                CompletedAt = DateTimeOffset.UtcNow,
+                Notice = null,
+                ProgressPhase = null
+            }
             : throw new InvalidOperationException($"无法从状态 {State} 取消。");
 
     /// <summary>重试（从失败恢复为入队）。</summary>
     public RenderJob Retry() =>
         State is JobState.Failed && CanRetry
-            ? this with { State = JobState.Queued, Error = null }
+            ? this with
+            {
+                State = JobState.Queued,
+                Error = null,
+                Notice = null,
+                ProgressPercent = null,
+                ProgressPhase = null
+            }
             : throw new InvalidOperationException($"无法从状态 {State} 重试（CanRetry={CanRetry}）。");
 
     /// <summary>

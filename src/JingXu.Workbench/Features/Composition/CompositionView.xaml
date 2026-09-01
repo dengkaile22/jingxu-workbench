@@ -850,6 +850,39 @@
                                VerticalAlignment="Center" />
                 </StackPanel>
             </WrapPanel>
+            <WrapPanel Margin="0,0,0,10"
+                       IsEnabled="{Binding IsDoubleScreenSettingsEnabled}">
+                <CheckBox Content="随机抽取当前素材文件夹"
+                          IsChecked="{Binding DoubleScreenUseRandomCurrentFolder}"
+                          Margin="0,0,14,6"
+                          AutomationProperties.Name="随机抽取当前素材文件夹素材" />
+                <TextBlock Text="随机覆盖上方或下方"
+                           Style="{DynamicResource Text.Caption}"
+                           VerticalAlignment="Center"
+                           Margin="0,0,14,6"
+                           Visibility="{Binding IsDoubleScreenRandomSettingsEnabled, Converter={StaticResource BoolToVis}}" />
+                <CheckBox Content="双屏中缝羽化"
+                          IsChecked="{Binding DoubleScreenFeatherEnabled}"
+                          Margin="0,0,14,6"
+                          AutomationProperties.Name="双屏中缝羽化开关" />
+                <TextBlock Text="双屏羽化强度"
+                           Style="{DynamicResource Text.Caption}"
+                           VerticalAlignment="Center"
+                           Margin="0,0,6,6" />
+                <Slider Minimum="0"
+                        Maximum="256"
+                        TickFrequency="8"
+                        IsSnapToTickEnabled="True"
+                        Value="{Binding DoubleScreenFeatherPixels}"
+                        Width="120"
+                        Margin="0,0,8,6"
+                        IsEnabled="{Binding DoubleScreenFeatherEnabled}"
+                        AutomationProperties.Name="双屏羽化强度" />
+                <TextBlock Text="{Binding DoubleScreenFeatherLabel}"
+                           Style="{DynamicResource Text.Mono}"
+                           VerticalAlignment="Center"
+                           Margin="0,0,0,6" />
+            </WrapPanel>
             <Grid Margin="0,0,0,12" IsEnabled="{Binding IsVariationIntensityEnabled}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />

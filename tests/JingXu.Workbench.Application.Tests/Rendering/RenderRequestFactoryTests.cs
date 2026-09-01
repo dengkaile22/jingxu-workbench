@@ -10,6 +10,55 @@ namespace JingXu.Workbench.Application.Tests.Rendering;
 public sealed class RenderRequestFactoryTests
 {
     [Fact]
+    public void Request_factory_accepts_current_folder_sources_for_double_screen_materialization()
+    {
+        var method = typeof(RenderRequestFactory)
+            .GetMethods()
+            .Where(static method => method.Name == nameof(RenderRequestFactory.CreateForPlans))
+            .SelectMany(static method => method.GetParameters())
+            .FirstOrDefault(parameter => parameter.Name == "doubleScreenSourceAssets");
+
+        Assert.NotNull(method);
+    }
+
+    [Fact]
+    public void Request_factory_materializes_random_double_screen_sources_per_plan()
+    {
+        var plans = new[] { TestPlan(seed: 1), TestPlan(seed: 2) };
+        var source = new MediaAsset(
+            Guid.NewGuid(),
+            @"C:\素材\随机辅助.mp4",
+            2,
+            new MediaInfo(TimeSpan.FromSeconds(3), 1080, 1920, 30m, "h264", "aac", true, 0));
+        var doubleScreen = new DoubleScreenEffectPlan(
+            StartClipIndex: 1,
+            SourceMode: DoubleScreenSourceMode.RandomCurrentFolder,
+            PlacementMode: DoubleScreenPlacementMode.Random,
+            FeatherEnabled: true,
+            FeatherPixels: 32);
+
+        var requests = RenderRequestFactory.CreateForPlans(
+            plans,
+            @"C:\输出",
+            "成片",
+            RenderProfile.Balanced,
+            OutputAspect.InheritFirst,
+            overlayLayersPerPlan: null,
+            sharedOverlayLayers: null,
+            doubleScreen: doubleScreen,
+            doubleScreenSourceAssets: [plans[0].Clips[0].Asset, source]);
+
+        Assert.Equal(2, requests.Count);
+        Assert.All(requests, request =>
+        {
+            Assert.NotNull(request.DoubleScreen);
+            Assert.Equal(DoubleScreenSourceMode.RandomCurrentFolder, request.DoubleScreen!.SourceMode);
+            Assert.Single(request.DoubleScreen.ClipSelections);
+            Assert.Equal(32, request.DoubleScreen.FeatherPixels);
+        });
+    }
+
+    [Fact]
     public void Single_plan_uses_prefix_without_sequence_suffix()
     {
         var plan = TestPlan();

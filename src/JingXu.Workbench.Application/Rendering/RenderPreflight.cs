@@ -1,4 +1,5 @@
 using JingXu.Workbench.Domain.Common;
+using JingXu.Workbench.Domain.Effects;
 using JingXu.Workbench.Domain.Rendering;
 
 namespace JingXu.Workbench.Application.Rendering;
@@ -37,6 +38,30 @@ public static class RenderPreflight
             if (!File.Exists(clip.Asset.Path))
             {
                 return Result<Unit>.Failure($"找不到输入素材：{clip.Asset.Path}");
+            }
+        }
+
+        if (request.DoubleScreen?.SourceMode == DoubleScreenSourceMode.RandomCurrentFolder)
+        {
+            var expectedClipIndexes = Enumerable
+                .Range(0, request.Plan.Clips.Count)
+                .Where(request.DoubleScreen.AppliesTo)
+                .ToHashSet();
+            var actualClipIndexes = request.DoubleScreen.ClipSelections
+                .Select(selection => selection.ClipIndex)
+                .ToHashSet();
+            if (request.DoubleScreen.ClipSelections.Count != actualClipIndexes.Count ||
+                !expectedClipIndexes.SetEquals(actualClipIndexes))
+            {
+                return Result<Unit>.Failure("双屏随机素材快照不完整，请重新入队后再开始渲染。");
+            }
+
+            foreach (var selection in request.DoubleScreen.ClipSelections)
+            {
+                if (!File.Exists(selection.SourceAsset.Path))
+                {
+                    return Result<Unit>.Failure($"找不到双屏辅助素材：{selection.SourceAsset.Path}");
+                }
             }
         }
 

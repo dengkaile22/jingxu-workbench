@@ -966,6 +966,24 @@ public sealed class CompositionViewModelTests
     }
 
     [Fact]
+    public void Composition_view_exposes_double_screen_source_and_feather_controls()
+    {
+        var repoRoot = FindRepoRoot();
+        var xamlPath = Path.Combine(
+            repoRoot,
+            "src",
+            "JingXu.Workbench",
+            "Features",
+            "Composition",
+            "CompositionView.xaml");
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains("随机抽取当前素材文件夹", xaml, StringComparison.Ordinal);
+        Assert.Contains("双屏中缝羽化", xaml, StringComparison.Ordinal);
+        Assert.Contains("双屏羽化强度", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Enqueue_with_unified_aspect_attaches_custom_output_aspect()
     {
         var store = new InMemoryRenderQueueStore();

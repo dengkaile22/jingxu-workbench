@@ -1,5 +1,6 @@
 using JingXu.Workbench.Domain.Composition;
 using JingXu.Workbench.Domain.Effects;
+using JingXu.Workbench.Domain.Media;
 using JingXu.Workbench.Domain.Overlays;
 using JingXu.Workbench.Domain.Rendering;
 
@@ -76,7 +77,8 @@ public static class RenderRequestFactory
         MainMaterialBoostPlan? mainMaterialBoost = null,
         OutputVideoSettings outputVideoSettings = default,
         DoubleScreenEffectPlan? doubleScreen = null,
-        VideoProcessingMode processingMode = VideoProcessingMode.Auto) =>
+        VideoProcessingMode processingMode = VideoProcessingMode.Auto,
+        IReadOnlyList<MediaAsset>? doubleScreenSourceAssets = null) =>
         CreateForPlans(
             plans,
             outputDirectory,
@@ -92,7 +94,8 @@ public static class RenderRequestFactory
             outputVideoSettings: outputVideoSettings,
             doubleScreen: doubleScreen,
             stickersPerPlan: null,
-            processingMode: processingMode);
+            processingMode: processingMode,
+            doubleScreenSourceAssets: doubleScreenSourceAssets);
 
 
     /// <summary>
@@ -115,7 +118,8 @@ public static class RenderRequestFactory
         IEnumerable<string>? reservedOutputPaths = null,
         IReadOnlyList<IReadOnlyList<ImageSticker>>? stickersPerPlan = null,
         VideoProcessingMode processingMode = VideoProcessingMode.Auto,
-        IReadOnlyList<BgmMixPlan>? bgmPerPlan = null)
+        IReadOnlyList<BgmMixPlan>? bgmPerPlan = null,
+        IReadOnlyList<MediaAsset>? doubleScreenSourceAssets = null)
     {
         ArgumentNullException.ThrowIfNull(plans);
         ArgumentNullException.ThrowIfNull(profile);
@@ -141,6 +145,14 @@ public static class RenderRequestFactory
         var hasEffects = usesStandardEffect || stickers is { Count: > 0 } || doubleScreen is not null;
         var hasMainBoost = mainMaterialBoost is not null && mainMaterialBoost.IsActive;
 
+        if (doubleScreen?.SourceMode == DoubleScreenSourceMode.RandomCurrentFolder &&
+            (doubleScreenSourceAssets is null || doubleScreenSourceAssets.Count == 0))
+        {
+            throw new ArgumentException(
+                "双屏随机素材模式需要提供当前素材文件夹中的视频素材。",
+                nameof(doubleScreenSourceAssets));
+        }
+
         if (plans.Count == 0)
         {
             return [];
@@ -156,6 +168,21 @@ public static class RenderRequestFactory
         {
             var hasOverlays = layers.Count > 0;
             var planHasEffects = usesStandardEffect || planStickers.Count > 0 || doubleScreen is not null;
+            DoubleScreenEffectPlan? planDoubleScreen = doubleScreen;
+            if (doubleScreen is not null && doubleScreen.SourceMode == DoubleScreenSourceMode.RandomCurrentFolder)
+            {
+                var materialized = doubleScreen.MaterializeForPlan(
+                    plan,
+                    doubleScreenSourceAssets!,
+                    planIndex);
+                if (!materialized.IsSuccess)
+                {
+                    throw new InvalidOperationException(materialized.Error);
+                }
+
+                planDoubleScreen = materialized.Value!;
+            }
+
             MaterializedEffect? effect = null;
             if (usesStandardEffect && effectTemplate is not null)
             {
@@ -189,7 +216,7 @@ public static class RenderRequestFactory
                 Stickers: planStickers,
                 MainMaterialBoost: materializedBoost,
                 OutputVideoSettings: outputVideoSettings,
-                DoubleScreen: doubleScreen,
+                DoubleScreen: planDoubleScreen,
                 ProcessingMode: processingMode);
         }
 

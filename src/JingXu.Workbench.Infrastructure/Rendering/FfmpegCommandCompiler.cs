@@ -132,6 +132,39 @@ public static class FfmpegCommandCompiler
         }
 
         var nextInputIndex = request.Plan.Clips.Count;
+        var doubleScreenInputIndices = new Dictionary<int, int>();
+        var doubleScreenSourceInputIndices = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (request.DoubleScreen?.SourceMode == DoubleScreenSourceMode.RandomCurrentFolder)
+        {
+            foreach (var selection in request.DoubleScreen.ClipSelections.OrderBy(static selection => selection.ClipIndex))
+            {
+                if (selection.ClipIndex < 0 || selection.ClipIndex >= request.Plan.Clips.Count ||
+                    !request.DoubleScreen.AppliesTo(selection.ClipIndex))
+                {
+                    continue;
+                }
+
+                if (doubleScreenInputIndices.ContainsKey(selection.ClipIndex))
+                {
+                    throw new InvalidOperationException(
+                        $"双屏随机素材快照包含重复的视频序号：{selection.ClipIndex + 1}。");
+                }
+
+                var sourceAlias = aliaser.Alias(selection.SourceAsset.Path);
+                if (!doubleScreenSourceInputIndices.TryGetValue(sourceAlias, out var sourceInputIndex))
+                {
+                    arguments.Add("-stream_loop");
+                    arguments.Add("-1");
+                    arguments.Add("-i");
+                    arguments.Add(sourceAlias);
+                    sourceInputIndex = nextInputIndex++;
+                    doubleScreenSourceInputIndices.Add(sourceAlias, sourceInputIndex);
+                }
+
+                doubleScreenInputIndices.Add(selection.ClipIndex, sourceInputIndex);
+            }
+        }
+
         int? bgmInputIndex = null;
         var stickerInputIndices = new List<int>();
 
@@ -191,7 +224,8 @@ public static class FfmpegCommandCompiler
             overlayInputBase,
             bgmInputIndex,
             stickerInputIndices,
-            stickerBaseLabel);
+            stickerBaseLabel,
+            doubleScreenInputIndices);
         // 将滤镜图写入 sidecar，避免 Windows CreateProcess ~32K 命令行上限
         // （蒙版/贴纸/特效叠加后 filter_complex 常达数万字符）。
         arguments.Add("-filter_complex_script");
@@ -245,7 +279,8 @@ public static class FfmpegCommandCompiler
         int overlayInputBase,
         int? bgmInputIndex,
         IReadOnlyList<int> stickerInputIndices,
-        string stickerBaseLabel)
+        string stickerBaseLabel,
+        Dictionary<int, int> doubleScreenInputIndices)
     {
         var plan = request.Plan;
         var builder = new StringBuilder();
@@ -280,7 +315,39 @@ public static class FfmpegCommandCompiler
 
             if (doubleScreenApplies)
             {
-                builder.Append(BuildDoubleScreenFilter(index, targetWidth, targetHeight));
+                var selection = request.DoubleScreen!.SelectionFor(index);
+                var sourceInputIndex = -1;
+                if (request.DoubleScreen.SourceMode == DoubleScreenSourceMode.RandomCurrentFolder &&
+                    (selection is null || !doubleScreenInputIndices.TryGetValue(index, out sourceInputIndex)))
+                {
+                    throw new InvalidOperationException(
+                        $"第 {index + 1} 个视频缺少双屏随机素材快照，无法开始渲染。请重新入队。 ");
+                }
+
+                var featherPixels = request.DoubleScreen.FeatherEnabled
+                    ? request.DoubleScreen.FeatherPixels
+                    : 0;
+                if (selection is not null && doubleScreenInputIndices.TryGetValue(index, out sourceInputIndex))
+                {
+                    builder.Append(BuildDoubleScreenFilter(
+                        index,
+                        sourceInputIndex,
+                        targetWidth,
+                        targetHeight,
+                        selection.Placement,
+                        request.DoubleScreen.FeatherEnabled,
+                        featherPixels,
+                        durationSeconds,
+                        fpsText));
+                }
+                else
+                {
+                    builder.Append(BuildDoubleScreenFilter(
+                        index,
+                        targetWidth,
+                        targetHeight,
+                        featherPixels));
+                }
             }
 
             if (clip.Asset.Info.HasAudio)
@@ -350,11 +417,22 @@ public static class FfmpegCommandCompiler
     /// 奇数总高时上半 <c>H/2</c>、下半 <c>H-H/2</c>，保证拼回原画布高度。
     /// </summary>
     internal static string BuildDoubleScreenFilter(int clipIndex, int targetWidth, int targetHeight)
+        => BuildDoubleScreenFilter(
+            clipIndex,
+            targetWidth,
+            targetHeight,
+            DefaultDoubleScreenBlendPixels);
+
+    private static string BuildDoubleScreenFilter(
+        int clipIndex,
+        int targetWidth,
+        int targetHeight,
+        int requestedBlendPixels)
     {
         // 奇数高度时不能简单除以 2，否则上下叠完会少 1 像素，导致 concat 尺寸不匹配。
         var topHeight = targetHeight / 2;
         var bottomHeight = targetHeight - topHeight;
-        var blend = ResolveDoubleScreenBlendPixels(topHeight, bottomHeight);
+        var blend = ResolveDoubleScreenBlendPixels(topHeight, bottomHeight, requestedBlendPixels);
         if (blend < 2)
         {
             return string.Create(
@@ -383,16 +461,85 @@ public static class FfmpegCommandCompiler
             $"[v{clipIndex}base][v{clipIndex}top]overlay=0:0,format=yuv420p[v{clipIndex}];");
     }
 
+    /// <summary>
+    /// 使用已物化的外部视频素材生成双屏滤镜。外部输入会循环并裁切到当前片段时长，
+    /// 因而不会因为随机素材比主片短而让 overlay 提前结束。
+    /// </summary>
+    internal static string BuildDoubleScreenFilter(
+        int clipIndex,
+        int sourceInputIndex,
+        int targetWidth,
+        int targetHeight,
+        DoubleScreenPlacement placement,
+        bool featherEnabled,
+        int featherPixels,
+        string durationSeconds,
+        string fpsText)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(durationSeconds);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fpsText);
+
+        var topHeight = targetHeight / 2;
+        var bottomHeight = targetHeight - topHeight;
+        var blend = featherEnabled
+            ? ResolveDoubleScreenBlendPixels(topHeight, bottomHeight, featherPixels)
+            : 0;
+        var auxSourceLabel = $"ds{clipIndex}aux_src";
+        var topInputLabel = placement == DoubleScreenPlacement.Top
+            ? auxSourceLabel
+            : $"v{clipIndex}fit";
+        var bottomInputLabel = placement == DoubleScreenPlacement.Top
+            ? $"v{clipIndex}fit"
+            : auxSourceLabel;
+        var builder = new StringBuilder();
+
+        builder.Append(CultureInfo.InvariantCulture,
+            $"[{sourceInputIndex}:v]fps={fpsText},trim=duration={durationSeconds},setpts=PTS-STARTPTS[{auxSourceLabel}];");
+
+        if (blend < 2)
+        {
+            builder.Append(CultureInfo.InvariantCulture,
+                $"[{topInputLabel}]scale={targetWidth}:{topHeight}:force_original_aspect_ratio=increase," +
+                $"crop={targetWidth}:{topHeight}:(iw-ow)/2:(ih-oh)/2[ds{clipIndex}top];" +
+                $"[{bottomInputLabel}]scale={targetWidth}:{bottomHeight}:force_original_aspect_ratio=increase," +
+                $"crop={targetWidth}:{bottomHeight}:(iw-ow)/2:(ih-oh)/2[ds{clipIndex}bottom];" +
+                $"[ds{clipIndex}top][ds{clipIndex}bottom]vstack=inputs=2[v{clipIndex}];");
+            return builder.ToString();
+        }
+
+        var topCropHeight = topHeight + blend;
+        var bottomCropHeight = bottomHeight + blend;
+        var fadeStart = topHeight - blend;
+        builder.Append(CultureInfo.InvariantCulture,
+            $"[{topInputLabel}]scale={targetWidth}:{topCropHeight}:force_original_aspect_ratio=increase," +
+            $"crop={targetWidth}:{topCropHeight}:(iw-ow)/2:(ih-oh)/2,format=rgba," +
+            $"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(Y,{fadeStart}),255,if(gte(Y,{topHeight}),0,255*({topHeight}-Y)/{blend}))[ds{clipIndex}top];" +
+            $"[{bottomInputLabel}]scale={targetWidth}:{bottomCropHeight}:force_original_aspect_ratio=increase," +
+            $"crop={targetWidth}:{bottomCropHeight}:(iw-ow)/2:(ih-oh)/2[ds{clipIndex}bottom];" +
+            $"[ds{clipIndex}bottom]pad={targetWidth}:{targetHeight}:0:{fadeStart}:black[ds{clipIndex}base];" +
+            $"[ds{clipIndex}base][ds{clipIndex}top]overlay=0:0,format=yuv420p[v{clipIndex}];");
+        return builder.ToString();
+    }
+
     /// <summary>按半高收紧中缝羽化带宽；过矮时返回 0，调用方回退硬切 vstack。</summary>
     internal static int ResolveDoubleScreenBlendPixels(int topHeight, int bottomHeight)
+        => ResolveDoubleScreenBlendPixels(
+            topHeight,
+            bottomHeight,
+            DefaultDoubleScreenBlendPixels);
+
+    private static int ResolveDoubleScreenBlendPixels(
+        int topHeight,
+        int bottomHeight,
+        int requestedBlendPixels)
     {
         var maxBand = Math.Min(topHeight, bottomHeight) / 3;
-        if (maxBand < 2)
+        if (maxBand < 2 || requestedBlendPixels < 2)
         {
             return 0;
         }
 
-        var blend = Math.Clamp(DefaultDoubleScreenBlendPixels, 2, maxBand);
+        var blend = Math.Min(requestedBlendPixels, maxBand);
         if ((blend & 1) != 0)
         {
             blend--;

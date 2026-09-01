@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using JingXu.Workbench.Application.Rendering;
 using JingXu.Workbench.Domain.Composition;
 using JingXu.Workbench.Domain.Effects;
@@ -11,6 +12,59 @@ namespace JingXu.Workbench.Infrastructure.Tests.Rendering;
 
 public sealed class FfmpegCommandCompilerTests
 {
+    [Fact]
+    public void Double_screen_compiler_exposes_external_material_filter_overload()
+    {
+        var overload = typeof(FfmpegCommandCompiler)
+            .GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            .FirstOrDefault(method =>
+                method.Name == "BuildDoubleScreenFilter"
+                && method.GetParameters().Any(parameter => parameter.Name == "sourceInputIndex"));
+
+        Assert.NotNull(overload);
+    }
+
+    [Fact]
+    public void Random_double_screen_adds_looped_auxiliary_input_and_uses_hard_cut_when_disabled()
+    {
+        var result = FfmpegCommandCompiler.Compile(
+            @"C:\ffmpeg.exe",
+            CompilerTestPlans.WithRandomDoubleScreen(featherEnabled: false),
+            @"C:\out\temp.mp4");
+
+        var filter = result.TryGetFilterComplex();
+        Assert.NotNull(filter);
+        Assert.Contains("-stream_loop", result.Command.Arguments);
+        Assert.Contains("i3.mp4", result.Command.Arguments);
+        Assert.Equal(4, result.Command.Arguments.Count(argument => argument == "-i"));
+        Assert.Contains(result.InputAliases, alias =>
+            alias.AbsolutePath.Contains("随机辅助.mp4", StringComparison.Ordinal));
+        Assert.Contains("[3:v]fps=30,trim=duration=2", filter, StringComparison.Ordinal);
+        Assert.Contains("vstack=inputs=2", filter, StringComparison.Ordinal);
+        Assert.DoesNotContain("geq=", filter, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Random_double_screen_places_auxiliary_material_in_requested_half_with_feather()
+    {
+        var filter = FfmpegCommandCompiler.BuildDoubleScreenFilter(
+            clipIndex: 1,
+            sourceInputIndex: 3,
+            targetWidth: 1080,
+            targetHeight: 1920,
+            placement: DoubleScreenPlacement.Top,
+            featherEnabled: true,
+            featherPixels: 64,
+            durationSeconds: "2",
+            fpsText: "30");
+
+        Assert.Contains("[3:v]fps=30,trim=duration=2", filter, StringComparison.Ordinal);
+        Assert.Contains("[ds1aux_src]scale=1080:1024", filter, StringComparison.Ordinal);
+        Assert.Contains("[v1fit]scale=1080:1024", filter, StringComparison.Ordinal);
+        Assert.Contains("geq=", filter, StringComparison.Ordinal);
+        Assert.Contains("overlay=0:0", filter, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Chinese_path_is_aliased_without_shell_quotes()
     {
@@ -523,6 +577,44 @@ internal static class CompilerTestPlans
             [],
             HasEffects: true,
             DoubleScreen: new DoubleScreenEffectPlan(StartClipIndex: startClipIndex));
+    }
+
+    public static RenderRequest WithRandomDoubleScreen(bool featherEnabled)
+    {
+        var assets = new[]
+        {
+            Asset(@"C:\media\1.mp4", 1),
+            Asset(@"C:\media\2.mp4", 2),
+            Asset(@"C:\media\3.mp4", 3)
+        };
+        var clips = assets
+            .Select((asset, index) => new PlannedClip(
+                asset,
+                TimeSpan.FromSeconds(index * 2),
+                asset.Info.Duration))
+            .ToArray();
+        var plan = new CompositionPlan(clips, TimeSpan.FromSeconds(6), Seed: 42, TimeSpan.Zero);
+        var auxiliary = Asset(@"C:\媒体库\随机辅助.mp4", 99);
+        var doubleScreen = new DoubleScreenEffectPlan(
+            StartClipIndex: 2,
+            SourceMode: DoubleScreenSourceMode.RandomCurrentFolder,
+            PlacementMode: DoubleScreenPlacementMode.Bottom,
+            FeatherEnabled: featherEnabled,
+            FeatherPixels: 64,
+            ClipSelections:
+            [
+                new DoubleScreenClipSelection(1, auxiliary, DoubleScreenPlacement.Bottom),
+                new DoubleScreenClipSelection(2, auxiliary, DoubleScreenPlacement.Bottom)
+            ]);
+
+        return new RenderRequest(
+            plan,
+            @"C:\out\成片.mp4",
+            RenderProfile.Balanced,
+            OutputAspect.InheritFirst,
+            [],
+            HasEffects: true,
+            DoubleScreen: doubleScreen);
     }
 
     /// <summary>

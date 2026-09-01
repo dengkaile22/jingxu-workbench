@@ -241,6 +241,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(QualityHint))]
+    [NotifyPropertyChangedFor(nameof(IsDoubleScreenSettingsEnabled))]
     private bool _enableVariationEffects;
 
     [ObservableProperty]
@@ -271,12 +272,25 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsDoubleScreenStartEnabled))]
+    [NotifyPropertyChangedFor(nameof(IsDoubleScreenSettingsEnabled))]
     [NotifyCanExecuteChangedFor(nameof(EnqueueCommand))]
     private bool _enableDoubleScreen;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(EnqueueCommand))]
     private int _doubleScreenStartClipIndex = 1;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsDoubleScreenRandomSettingsEnabled))]
+    private bool _doubleScreenUseRandomCurrentFolder;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(DoubleScreenFeatherLabel))]
+    private bool _doubleScreenFeatherEnabled = true;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(DoubleScreenFeatherLabel))]
+    private int _doubleScreenFeatherPixels = DoubleScreenEffectPlan.DefaultFeatherPixels;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ActiveWorkspaceLabel))]
@@ -638,6 +652,14 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
 
     public bool IsDoubleScreenStartEnabled => EnableVariationEffects && EnableDoubleScreen;
 
+    public bool IsDoubleScreenSettingsEnabled => IsDoubleScreenStartEnabled;
+
+    public bool IsDoubleScreenRandomSettingsEnabled =>
+        IsDoubleScreenSettingsEnabled && DoubleScreenUseRandomCurrentFolder;
+
+    public string DoubleScreenFeatherLabel =>
+        DoubleScreenFeatherEnabled ? $"{DoubleScreenFeatherPixels} 像素" : "关闭";
+
     public string VariationIntensityLabel => $"强度 {VariationIntensityPercent}%";
 
     /// <summary>蒙版叠层效果预览说明（几何/透明度，非实时视频帧）。</summary>
@@ -737,14 +759,24 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         OnPropertyChanged(nameof(IsVariationIntensityEnabled));
         OnPropertyChanged(nameof(IsVariationItemSwitchesEnabled));
         OnPropertyChanged(nameof(IsDoubleScreenStartEnabled));
+        OnPropertyChanged(nameof(IsDoubleScreenSettingsEnabled));
+        OnPropertyChanged(nameof(IsDoubleScreenRandomSettingsEnabled));
         RefreshQualityHint();
     }
 
     partial void OnEnableDoubleScreenChanged(bool value)
     {
         OnPropertyChanged(nameof(IsDoubleScreenStartEnabled));
+        OnPropertyChanged(nameof(IsDoubleScreenSettingsEnabled));
+        OnPropertyChanged(nameof(IsDoubleScreenRandomSettingsEnabled));
         RefreshQualityHint();
     }
+
+    partial void OnDoubleScreenUseRandomCurrentFolderChanged(bool value) => RefreshQualityHint();
+
+    partial void OnDoubleScreenFeatherEnabledChanged(bool value) => RefreshQualityHint();
+
+    partial void OnDoubleScreenFeatherPixelsChanged(int value) => RefreshQualityHint();
 
     partial void OnActiveWorkspaceIndexChanged(int value)
     {
@@ -1943,7 +1975,14 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         DoubleScreenEffectPlan? doubleScreen = null;
         if (EnableVariationEffects && EnableDoubleScreen)
         {
-            var doubleScreenResult = DoubleScreenEffectPlan.Create(DoubleScreenStartClipIndex);
+            var doubleScreenResult = DoubleScreenEffectPlan.Create(
+                DoubleScreenStartClipIndex,
+                sourceMode: DoubleScreenUseRandomCurrentFolder
+                    ? DoubleScreenSourceMode.RandomCurrentFolder
+                    : DoubleScreenSourceMode.CurrentClip,
+                placementMode: DoubleScreenPlacementMode.Random,
+                featherEnabled: DoubleScreenFeatherEnabled,
+                featherPixels: DoubleScreenFeatherPixels);
             var maximumStartIndex = _executablePlans.Count == 0
                 ? 0
                 : _executablePlans.Min(static plan => plan.Clips.Count);
@@ -2161,7 +2200,8 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
             reservedOutputPaths,
             stickersPerPlan,
             SelectedProcessingMode,
-            bgmPerPlan: useAudioLibrary ? bgmPerPlan : null);
+            bgmPerPlan: useAudioLibrary ? bgmPerPlan : null,
+            doubleScreenSourceAssets: _assets);
 
         var jobs = requests
             .Select(RenderJob.CreateQueued)
@@ -2208,7 +2248,13 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
 
         if (doubleScreen is not null)
         {
-            hints.Add($"双屏（第 {doubleScreen.StartClipIndex} 个视频起）");
+            var sourceHint = DoubleScreenUseRandomCurrentFolder
+                ? "随机抽取当前素材文件夹素材并随机上下覆盖"
+                : "当前视频上下双屏";
+            var featherHint = DoubleScreenFeatherEnabled
+                ? $"羽化 {DoubleScreenFeatherPixels}px"
+                : "硬切";
+            hints.Add($"双屏（第 {doubleScreen.StartClipIndex} 个视频起，{sourceHint}，{featherHint}）");
         }
 
         var totalStickerCount = stickersPerPlan.Sum(s => s.Count);

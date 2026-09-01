@@ -513,7 +513,7 @@ public static class FfmpegCommandCompiler
         builder.Append(CultureInfo.InvariantCulture,
             $"[{topInputLabel}]scale={targetWidth}:{topCropHeight}:force_original_aspect_ratio=increase," +
             $"crop={targetWidth}:{topCropHeight}:(iw-ow)/2:(ih-oh)/2,format=rgba," +
-            $"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(Y,{fadeStart}),255,if(gte(Y,{topHeight}),0,255*({topHeight}-Y)/{blend}))[ds{clipIndex}top];" +
+            $"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(Y,{fadeStart}),255,if(gte(Y,{topHeight}),0,255*({topHeight}-Y)/{blend}))'[ds{clipIndex}top];" +
             $"[{bottomInputLabel}]scale={targetWidth}:{bottomCropHeight}:force_original_aspect_ratio=increase," +
             $"crop={targetWidth}:{bottomCropHeight}:(iw-ow)/2:(ih-oh)/2[ds{clipIndex}bottom];" +
             $"[ds{clipIndex}bottom]pad={targetWidth}:{targetHeight}:0:{fadeStart}:black[ds{clipIndex}base];" +

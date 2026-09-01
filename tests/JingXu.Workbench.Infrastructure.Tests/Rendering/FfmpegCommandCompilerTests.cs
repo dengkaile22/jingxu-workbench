@@ -62,6 +62,7 @@ public sealed class FfmpegCommandCompilerTests
         Assert.Contains("[ds1aux_src]scale=1080:1024", filter, StringComparison.Ordinal);
         Assert.Contains("[v1fit]scale=1080:1024", filter, StringComparison.Ordinal);
         Assert.Contains("geq=", filter, StringComparison.Ordinal);
+        Assert.Contains("/64))'[ds1top]", filter, StringComparison.Ordinal);
         Assert.Contains("overlay=0:0", filter, StringComparison.Ordinal);
     }
 

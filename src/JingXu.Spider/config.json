@@ -1,0 +1,43 @@
+{
+  "accounts": [
+    {
+      "platform": "douyin",
+      "url_or_id": "https://www.douyin.com/user/MS4wLjABAAAAw_06b_F43P6297l9YkU6S98sU7TfP-1Z_2W_8X7-3Y4",
+      "name": "交个朋友直播间",
+      "enabled": true,
+      "sec_uid": "",
+      "user_id": ""
+    },
+    {
+      "platform": "douyin",
+      "url_or_id": "https://www.douyin.com/user/MS4wLjABAAAA4v-Z_WpT8P1-3X7sU8TfP-1Z_2W_8X7-3Y4",
+      "name": "东方甄选",
+      "enabled": true,
+      "sec_uid": "",
+      "user_id": ""
+    },
+    {
+      "platform": "kuaishou",
+      "url_or_id": "https://www.kuaishou.com/profile/3x6df89v345",
+      "name": "快手小店精选",
+      "enabled": false,
+      "sec_uid": "",
+      "user_id": ""
+    }
+  ],
+  "time_config": {
+    "mode": "days",
+    "days": 7,
+    "start_date": "",
+    "end_date": ""
+  },
+  "filter_config": {
+    "min_account_count": 2,
+    "min_total_occurrences": 1,
+    "filter_by": "accounts",
+    "enable_fuzzy_cluster": true,
+    "fuzzy_threshold": 0.75
+  },
+  "headless": false,
+  "max_scrolls_per_account": 25
+}

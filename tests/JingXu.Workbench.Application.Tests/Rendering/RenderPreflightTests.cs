@@ -22,7 +22,11 @@ public sealed class RenderPreflightTests
         Assert.Equal(@"C:\项目\分镜输出", RenderRequestFactory.ResolveDefaultOutputDirectory(
             [@"C:\素材A\a.mp4", @"D:\素材B\b.mp4"],
             @"C:\项目"));
-        Assert.EndsWith(Path.Combine("JingXu", "分镜输出"), RenderRequestFactory.DefaultOutputDirectory);
+        var configured = Environment.GetEnvironmentVariable("JINGXU_DATA_DIRECTORY");
+        var dataRoot = !string.IsNullOrWhiteSpace(configured) && Path.IsPathFullyQualified(configured)
+            ? Path.GetFullPath(configured)
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JingXu");
+        Assert.Equal(Path.Combine(dataRoot, "分镜输出"), RenderRequestFactory.DefaultOutputDirectory);
     }
 
     [Fact]

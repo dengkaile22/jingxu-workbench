@@ -5,6 +5,18 @@ namespace JingXu.Workbench.Infrastructure.Tests.Media;
 
 public sealed class FfprobeJsonParserTests
 {
+    [Theory]
+    [InlineData("yuv420p")]
+    [InlineData("yuv420p10le")]
+    [InlineData("yuva420p")]
+    public void Retains_pixel_format_for_safe_hardware_processing(string pixelFormat)
+    {
+        var json = "{\"streams\":[{\"codec_type\":\"video\",\"codec_name\":\"h264\",\"pix_fmt\":\"" + pixelFormat + "\"}]}";
+        var info = FfprobeJsonParser.Parse(json);
+
+        Assert.Equal(pixelFormat, info.PixelFormat);
+    }
+
     private static string Fixture(string name) =>
         Path.Combine(AppContext.BaseDirectory, "Media", "Fixtures", name);
 

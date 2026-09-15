@@ -19,3 +19,9 @@ runtime/*
 *.rar
 /test-assets/**
 !/test-assets/README.md
+
+# 选品爬虫（保留源码；不提交浏览器登录态、导出报表与缓存）
+/src/JingXu.Spider/**/__pycache__/
+/src/JingXu.Spider/data/
+/src/JingXu.Spider/*.xlsx
+/src/JingXu.Spider/.venv/

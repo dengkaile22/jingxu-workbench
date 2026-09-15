@@ -963,6 +963,15 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
     /// <summary>用主片路径合成接近成片的叠层静帧预览（蒙版页可选手动刷新）。</summary>
     public async Task RefreshEffectPreviewAsync(string? baseVideoPath = null)
     {
+        try { await RefreshEffectPreviewCoreAsync(baseVideoPath).ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            _uiDispatcher.Invoke(() => InvalidateEffectPreview($"合成预览失败：{ToChineseOverlayError(ex)}"));
+        }
+    }
+
+    private async Task RefreshEffectPreviewCoreAsync(string? baseVideoPath)
+    {
         var selected = Selected;
         var effectiveBaseVideoPath = string.IsNullOrWhiteSpace(baseVideoPath)
             ? EffectPreviewBaseVideoPath
@@ -991,10 +1000,11 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
 
         var generation = Interlocked.Increment(ref _previewGeneration);
         var output = Path.Combine(
-            Path.GetTempPath(),
+            JingXu.Workbench.Application.Projects.WorkbenchDataPaths.GetTempDirectory(),
             "JingXu",
             "overlay-preview",
-            $"mask-composite-{generation}.jpg");
+            $"mask-composite-{_previewSessionId}-{generation}.jpg");
+        using var pendingResource = TempResourceLease.Acquire(output);
 
         var request = new OverlayCompositePreviewRequest(
             effectiveBaseVideoPath,
@@ -1009,6 +1019,7 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
 
         if (generation != _previewGeneration)
         {
+            TryDeleteOwnedOverlayPreview(output);
             return;
         }
 
@@ -1016,16 +1027,20 @@ public sealed partial class OverlayEditorViewModel : WorkspaceModuleViewModel
         {
             if (generation != _previewGeneration)
             {
+                TryDeleteOwnedOverlayPreview(output);
                 return;
             }
 
             if (result.IsSuccess)
             {
+                var previous = EffectPreviewImagePath;
                 EffectPreviewImagePath = result.Value;
+                TryDeleteOwnedOverlayPreview(previous);
                 EffectPreviewHint = "真实合成静帧（主片首帧 + 当前蒙版层）；已通过与成片相同的叠层滤镜生成。";
             }
             else
             {
+                TryDeleteOwnedOverlayPreview(output);
                 EffectPreviewImagePath = null;
                 EffectPreviewHint = $"合成预览失败，未显示蒙版缩略图。{result.Error}";
             }

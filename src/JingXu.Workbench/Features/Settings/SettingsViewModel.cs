@@ -5,8 +5,10 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Application.Rendering;
+using JingXu.Workbench.Domain.Rendering;
 using JingXu.Workbench.Features.Shell;
 using JingXu.Workbench.Infrastructure.Processes;
+using JingXu.Workbench.Infrastructure.Rendering;
 using JingXu.Workbench.Infrastructure.Runtime;
 
 namespace JingXu.Workbench.Features.Settings;
@@ -27,6 +29,8 @@ public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
 {
     private readonly RuntimeDiagnosticService _runtimeDiagnostics;
     private readonly RenderCoordinator? _renderCoordinator;
+    private readonly IVideoEncoderSelector? _encoderSelector;
+    private readonly IVideoProcessingSelector? _processingSelector;
 
     public override WorkspaceModule ModuleKind => WorkspaceModule.Settings;
 
@@ -69,16 +73,32 @@ public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
     [NotifyPropertyChangedFor(nameof(HasCacheCleanupStatus))]
     private string _cacheCleanupStatusMessage = string.Empty;
 
+    [ObservableProperty]
+    private bool _isCleaningCache;
+
     /// <summary>数据目录状态的中文描述。</summary>
     public string DataDirectoryStatusText => DataDirectoryExists ? "已创建" : "尚未创建（首次保存项目时自动生成）";
 
     /// <summary>并发说明。</summary>
     public string ConcurrencyHint =>
-        MaxRenderConcurrency <= 1
+        (MaxRenderConcurrency <= 1
             ? "串行渲染：一次只跑 1 个任务，适合 CPU 编码和低配置电脑。"
             : MaxRenderConcurrency <= 2
-                ? "最多同时渲染 2 个任务；适合当前电脑并兼顾界面响应。"
-                : $"最多同时渲染 {MaxRenderConcurrency} 个任务；适合升级后的高配置电脑。";
+                ? "最多同时渲染 2 个任务；GPU 编码时也建议保持 2，避免显存争用。"
+                : $"最多同时渲染 {MaxRenderConcurrency} 个任务；适合多核 CPU。GPU 编码时并发过高可能争用显存。")
+        + " 高分辨率四屏任务自动逐个处理，减少内存和显存争用。";
+
+    /// <summary>只读：本机探测到的 GPU 编码器，或回退 CPU 的说明。</summary>
+    [ObservableProperty]
+    private string _gpuEncoderStatus =
+        "尚未检测。混剪页默认「自动」：有可用 GPU 时用硬件编码（NVENC → QSV → AMF），失败自动回退 CPU。点击下方「刷新诊断」可立即检测。";
+
+    [ObservableProperty]
+    private string _gpuProcessingStatus = "硬件解码与 GPU 缩放尚未检测。点击「刷新诊断」可检测当前设备。";
+
+    /// <summary>GPU 能力的固定说明，避免做成复杂配置项。</summary>
+    public string GpuEncoderHint { get; } =
+        "自动模式优先硬件编码，在适合的缩小场景启用硬解与 GPU 缩放；GPU 模式可手动启用兼容主片硬解。同尺寸视频的硬解可能因帧回传而更慢。循环辅助素材、蒙版、贴纸与调色使用 CPU。硬件失败自动回退；无损直拷不走编码器。需要对应 NVIDIA / AMD / Intel 显卡驱动。";
 
     public bool HasConcurrencyStatus => !string.IsNullOrWhiteSpace(ConcurrencyStatusMessage);
 
@@ -91,18 +111,20 @@ public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
 
     internal SettingsViewModel(
         RuntimeDiagnosticService runtimeDiagnostics,
-        RenderCoordinator? renderCoordinator = null)
+        RenderCoordinator? renderCoordinator = null,
+        IVideoEncoderSelector? encoderSelector = null,
+        IVideoProcessingSelector? processingSelector = null)
     {
         ArgumentNullException.ThrowIfNull(runtimeDiagnostics);
         _runtimeDiagnostics = runtimeDiagnostics;
         _renderCoordinator = renderCoordinator;
+        _encoderSelector = encoderSelector;
+        _processingSelector = processingSelector;
 
         var version = Assembly.GetExecutingAssembly().GetName().Version;
         AppVersion = version is null ? "1.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
 
-        DataDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu");
+        DataDirectory = WorkbenchDataPaths.GetDataDirectory();
 
         RuntimeSearchOrder =
         [
@@ -140,18 +162,55 @@ public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
         OnPropertyChanged(nameof(HasConcurrencyStatus));
     }
 
-    /// <summary>清理工作台缓存与临时目录（%TEMP%\jingxu-*、.jingxu-tmp 等）。</summary>
+    /// <summary>清理工作台缓存与临时目录（已知 jingxu 临时目录、.jingxu-tmp 半成品、蒙版缩略图缓存）。不成片、不删库 JSON。</summary>
     [RelayCommand]
-    private void ClearWorkbenchCache()
+    private async Task ClearWorkbenchCacheAsync()
     {
+        IsCleaningCache = true;
+        CacheCleanupStatusMessage = "正在检查并清理失效临时文件…";
+        OnPropertyChanged(nameof(HasCacheCleanupStatus));
         try
         {
-            var result = WorkbenchCacheCleanup.Cleanup(DataDirectory);
+            IReadOnlyList<Guid>? protectedIds = null;
+            List<string>? extraRoots = null;
+            List<string>? protectedFiles = null;
+            if (_renderCoordinator is not null)
+            {
+                protectedIds = _renderCoordinator.InflightJobIds;
+                extraRoots = [];
+                protectedFiles = [];
+                foreach (var job in _renderCoordinator.Jobs)
+                {
+                    var outputDir = Path.GetDirectoryName(job.Request?.OutputPath);
+                    if (!string.IsNullOrWhiteSpace(outputDir))
+                    {
+                        extraRoots.Add(outputDir);
+                    }
+
+                    var subtitlePath = job.Request?.SubtitleBurn?.SubtitleFilePath;
+                    if (job.State is JobState.Queued or JobState.Preparing or JobState.Running or JobState.Finalizing
+                        && !string.IsNullOrWhiteSpace(subtitlePath))
+                    {
+                        protectedFiles.Add(subtitlePath);
+                    }
+                }
+            }
+
+            var result = await Task.Run(() => WorkbenchCacheCleanup.Cleanup(
+                DataDirectory,
+                extraSearchRoots: extraRoots,
+                protectedJobIds: protectedIds,
+                protectedFiles: protectedFiles,
+                includeOverlayThumbCache: true)).ConfigureAwait(true);
             CacheCleanupStatusMessage = result.SummaryText;
         }
         catch (Exception ex)
         {
             CacheCleanupStatusMessage = $"清理失败：{ex.GetBaseException().Message}";
+        }
+        finally
+        {
+            IsCleaningCache = false;
         }
 
         RefreshDataDirectoryState();
@@ -161,23 +220,77 @@ public sealed partial class SettingsViewModel : WorkspaceModuleViewModel
     private void RefreshDataDirectoryState() =>
         DataDirectoryExists = Directory.Exists(DataDirectory);
 
-    /// <summary>重新读取本地数据目录与运行时诊断状态。</summary>
+    /// <summary>重新读取本地数据目录、运行时与 GPU 编码器诊断。</summary>
     [RelayCommand]
     private async Task RefreshDiagnosticsAsync()
     {
         RefreshDataDirectoryState();
         await RefreshRuntimeStatusAsync().ConfigureAwait(true);
+        await RefreshGpuEncoderStatusAsync().ConfigureAwait(true);
     }
+
+    /// <summary>根据当前 FFmpeg 探测可用的 NVENC/QSV/AMF，结果只读展示。</summary>
+    private async Task RefreshGpuEncoderStatusAsync()
+    {
+        var ffmpeg = RuntimeStatuses.FirstOrDefault(status => status.Kind == RuntimeKind.Ffmpeg);
+        if (ffmpeg is null || !ffmpeg.IsAvailable || string.IsNullOrWhiteSpace(ffmpeg.ResolvedPath))
+        {
+            GpuEncoderStatus = "未找到 FFmpeg，无法检测 GPU 编码器。渲染将使用 CPU（libx264）。";
+            GpuProcessingStatus = "未找到 FFmpeg，无法检测硬件解码与 GPU 缩放。";
+            return;
+        }
+
+        if (_encoderSelector is null)
+        {
+            GpuEncoderStatus = "GPU 编码器探测未装配。首次转码仍会自动探测，失败则回退 CPU。";
+            GpuProcessingStatus = "GPU 处理能力探测未装配。";
+            return;
+        }
+
+        try
+        {
+            _encoderSelector.ResetProbe(ffmpeg.ResolvedPath);
+            var selection = await _encoderSelector
+                .SelectAsync(ffmpeg.ResolvedPath, VideoProcessingMode.Auto, CancellationToken.None)
+                .ConfigureAwait(true);
+            GpuEncoderStatus = DescribeGpuSelection(selection);
+            if (_processingSelector is null)
+            {
+                GpuProcessingStatus = "GPU 处理能力探测未装配；解码与缩放使用 CPU。";
+            }
+            else
+            {
+                GpuProcessingStatus = "正在实测硬件解码、缩放与帧回传…";
+                _processingSelector.ResetProbe(ffmpeg.ResolvedPath);
+                var processing = await _processingSelector.SelectAsync(ffmpeg.ResolvedPath,
+                    VideoProcessingMode.Auto, selection.Kind, CancellationToken.None).ConfigureAwait(true);
+                GpuProcessingStatus = processing.Description;
+            }
+        }
+        catch (Exception ex)
+        {
+            GpuEncoderStatus = $"GPU 编码器检测失败：{ex.GetBaseException().Message}。渲染将回退 CPU（libx264）。";
+            GpuProcessingStatus = "GPU 处理能力检测未完成；解码与缩放使用 CPU。";
+        }
+    }
+
+    private static string DescribeGpuSelection(VideoEncoderSelection selection) =>
+        selection.Kind switch
+        {
+            VideoEncoderKind.H264Nvenc =>
+                "当前可用：NVIDIA GPU（NVENC / h264_nvenc）。混剪页选「自动」或「GPU」时将用它做最终编码。",
+            VideoEncoderKind.H264Qsv =>
+                "当前可用：Intel GPU（QSV / h264_qsv）。混剪页选「自动」或「GPU」时将用它做最终编码。",
+            VideoEncoderKind.H264Amf =>
+                "当前可用：AMD GPU（AMF / h264_amf）。混剪页选「自动」或「GPU」时将用它做最终编码。",
+            _ =>
+                "未检测到可用 GPU 编码器，渲染将使用 CPU（libx264）。请安装 NVIDIA / AMD / Intel 显卡驱动，并允许独显用于本程序。"
+        };
 
     /// <summary>仅刷新运行时组件诊断。</summary>
     [RelayCommand]
     private async Task RefreshRuntimeStatusAsync()
     {
-        if (IsRefreshingRuntimeStatus)
-        {
-            return;
-        }
-
         IsRefreshingRuntimeStatus = true;
         var sync = SynchronizationContext.Current;
         try

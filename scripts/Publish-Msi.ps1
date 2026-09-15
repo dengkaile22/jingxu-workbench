@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string] $Configuration = 'Release',
     [string] $RuntimeCacheDirectory = "",
@@ -34,7 +34,7 @@ if ([string]::IsNullOrWhiteSpace($RuntimeCacheDirectory)) {
 }
 
 Write-Host '=== 1. 编译发布自包含应用 (Publish Self-Contained) ==='
-dotnet publish $project -c $Configuration -r win-x64 --self-contained true -p:PublishTrimmed=false -p:PublishSingleFile=false -p:DebugType=None -p:DebugSymbols=false -o $publishDir
+dotnet publish $project -c $Configuration -r win-x64 --self-contained true -m:1 -p:PublishTrimmed=false -p:PublishSingleFile=false -p:DebugType=None -p:DebugSymbols=false -o $publishDir
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host '=== 2. 组织本地离线 Runtime 组件 ==='
@@ -60,6 +60,34 @@ foreach ($notice in @('README.md', 'THIRD_PARTY_NOTICES.md')) {
     if (Test-Path $src) {
         Copy-Item $src (Join-Path $publishDir $notice) -Force
     }
+}
+
+# 自检读取应用根目录的真实清单，避免回退到内置的开发占位清单。
+Copy-Item -LiteralPath (Join-Path $repoRoot 'build\runtime-manifest.json') -Destination (Join-Path $publishDir 'runtime-manifest.json') -Force
+
+Write-Host '=== 2b. 暂存内置 Python 与选品爬虫源码 ==='
+$publishRuntimeDir = Join-Path $publishDir 'runtime'
+$pythonSource = Join-Path $RuntimeCacheDirectory 'python'
+$pythonTarget = Join-Path $publishRuntimeDir 'python'
+if (Test-Path (Join-Path $pythonSource 'python.exe')) {
+    if (Test-Path $pythonTarget) { Remove-Item $pythonTarget -Recurse -Force }
+    New-Item -ItemType Directory -Path $pythonTarget -Force | Out-Null
+    & robocopy $pythonSource $pythonTarget /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
+    Write-Host "已暂存内置 Python: $pythonSource"
+} else {
+    Write-Warning "未找到内置 Python（$pythonSource）。选品爬虫将回退到系统 Python；如需随包分发请先运行 scripts/Resolve-SpiderRuntime.ps1。"
+}
+
+$spiderSource = Join-Path (Join-Path $repoRoot 'src') 'JingXu.Spider'
+$spiderTarget = Join-Path $publishRuntimeDir 'spider'
+if (Test-Path $spiderSource) {
+    if (Test-Path $spiderTarget) { Remove-Item $spiderTarget -Recurse -Force }
+    & robocopy $spiderSource $spiderTarget /E /NFL /NDL /NJH /NJS /NC /NS /NP `
+        /XD '__pycache__' 'data' 'tests' 'examples' 'gui' '.venv' `
+        /XF 'config.json' 'setup.py' 'run.py' '*.bat' '*.xlsx' '*.pyc' '*.log' | Out-Null
+    Write-Host "已暂存选品爬虫源码: $spiderSource"
+} else {
+    Write-Warning "未找到选品爬虫源码目录：$spiderSource"
 }
 
 if (Test-Path $stagingPortableDir) { Remove-Item $stagingPortableDir -Recurse -Force }

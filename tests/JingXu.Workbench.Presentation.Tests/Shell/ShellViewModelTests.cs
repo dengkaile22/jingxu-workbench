@@ -56,7 +56,7 @@ public sealed class ShellViewModelTests
             [
                 WorkspaceModule.Composition, WorkspaceModule.Overlays, WorkspaceModule.Stickers,
                 WorkspaceModule.AudioLibrary,
-                WorkspaceModule.Downloads, WorkspaceModule.Queue, WorkspaceModule.Settings
+                WorkspaceModule.Downloads, WorkspaceModule.Spider, WorkspaceModule.Queue, WorkspaceModule.Settings
             ],
             shell.Modules.Select(m => m.ModuleKind));
 
@@ -65,7 +65,7 @@ public sealed class ShellViewModelTests
             [
                 WorkspaceModule.Composition, WorkspaceModule.Overlays, WorkspaceModule.Stickers,
                 WorkspaceModule.AudioLibrary,
-                WorkspaceModule.Downloads, WorkspaceModule.Queue, WorkspaceModule.Settings
+                WorkspaceModule.Downloads, WorkspaceModule.Spider, WorkspaceModule.Queue, WorkspaceModule.Settings
             ],
             enabled);
     }
@@ -80,6 +80,18 @@ public sealed class ShellViewModelTests
         shell.NavigateCommand.Execute(WorkspaceModule.Overlays);
         Assert.Same(overlays, shell.CurrentModule);
         Assert.Same(shell.OverlayModule, shell.CurrentModule);
+    }
+
+    [Fact]
+    public void Navigation_to_spider_preserves_module_instance()
+    {
+        var shell = ShellViewModelTestFactory.Create();
+        shell.NavigateCommand.Execute(WorkspaceModule.Spider);
+        var spider = shell.CurrentModule;
+        Assert.Same(shell.SpiderModule, spider);
+        shell.NavigateCommand.Execute(WorkspaceModule.Composition);
+        shell.NavigateCommand.Execute(WorkspaceModule.Spider);
+        Assert.Same(spider, shell.CurrentModule);
     }
 
     [Fact]

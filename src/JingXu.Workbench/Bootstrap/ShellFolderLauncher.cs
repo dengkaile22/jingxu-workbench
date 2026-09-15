@@ -18,4 +18,14 @@ public sealed class ShellFolderLauncher : IFolderLauncher
             UseShellExecute = true
         });
     }
+
+    public void OpenFile(string filePathOrUrl)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePathOrUrl);
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = filePathOrUrl,
+            UseShellExecute = true
+        });
+    }
 }

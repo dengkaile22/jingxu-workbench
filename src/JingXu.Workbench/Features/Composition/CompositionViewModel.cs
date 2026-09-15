@@ -761,11 +761,17 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         OnPropertyChanged(nameof(IsDoubleScreenStartEnabled));
         OnPropertyChanged(nameof(IsDoubleScreenSettingsEnabled));
         OnPropertyChanged(nameof(IsDoubleScreenRandomSettingsEnabled));
+        OnPropertyChanged(nameof(IsFourScreenSettingsEnabled));
         RefreshQualityHint();
     }
 
     partial void OnEnableDoubleScreenChanged(bool value)
     {
+        if (value)
+        {
+            EnableFourScreen = false;
+        }
+
         OnPropertyChanged(nameof(IsDoubleScreenStartEnabled));
         OnPropertyChanged(nameof(IsDoubleScreenSettingsEnabled));
         OnPropertyChanged(nameof(IsDoubleScreenRandomSettingsEnabled));
@@ -1196,6 +1202,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
     private async Task RefreshOverlayCompositePreviewCoreAsync(int generation, CancellationToken cancellationToken)
     {
         string? output = null;
+        TempResourceLease? pendingLease = null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1227,6 +1234,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
             output = Path.Combine(
                 GetOverlayPreviewDirectory(),
                 $"composition-composite-{_overlayPreviewSessionId}-{generation}.jpg");
+            pendingLease = TempResourceLease.Acquire(output);
             var request = new OverlayCompositePreviewRequest(
                 baseAsset.Path,
                 overlayLayer,
@@ -1261,6 +1269,10 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
             TryDeleteOverlayCompositePreview(output);
             ApplyOverlayCompositePreview(null, $"合成预览失败：{ex.GetBaseException().Message}", generation);
         }
+        finally
+        {
+            pendingLease?.Dispose();
+        }
     }
 
     private void ApplyOverlayCompositePreview(string? path, string hint, int generation)
@@ -1291,7 +1303,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
     }
 
     private static string GetOverlayPreviewDirectory() =>
-        Path.Combine(Path.GetTempPath(), "JingXu", "overlay-preview");
+        Path.Combine(WorkbenchDataPaths.GetTempDirectory(), "JingXu", "overlay-preview");
 
     private static void TryDeleteOverlayCompositePreview(string? path)
     {
@@ -1793,6 +1805,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         _activeEffectTemplate = template;
         EnableVariationEffects = !IsEffectivelyNone(template);
         SyncVariationItemSwitchesFromTemplate(template);
+        ApplyFourScreenTemplate(_effectTemplateSettingsById.GetValueOrDefault(template.Id)?.FourScreen);
         if (_effectTemplateSettingsById.TryGetValue(template.Id, out var settings))
         {
             VariationIntensityPercent = Math.Clamp(settings.VariationIntensityPercent, 1, 200);
@@ -1806,6 +1819,7 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
         new()
         {
             VariationIntensityPercent = Math.Clamp(VariationIntensityPercent, 1, 200),
+            FourScreen = CreateFourScreenSettings(),
             StickerTracks = tracks.Select(track => new StickerTrackTemplateDto
             {
                 Name = track.Name,
@@ -1995,6 +2009,29 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
             }
 
             doubleScreen = doubleScreenResult.Value;
+        }
+
+        FourScreenEffectPlan? fourScreen = null;
+        if (EnableVariationEffects && EnableFourScreen)
+        {
+            var fourScreenResult = FourScreenEffectPlan.Create(
+                FourScreenStartClipIndex,
+                FourScreenUseRandomCurrentFolder ? FourScreenSourceMode.RandomCurrentFolder : FourScreenSourceMode.CurrentClip,
+                FourScreenFeatherEnabled, FourScreenFeatherPixels);
+            if (!fourScreenResult.IsSuccess)
+            {
+                ValidationMessage = fourScreenResult.Error!;
+                return;
+            }
+
+            var maximumStartIndex = _executablePlans.Count == 0 ? 0 : _executablePlans.Min(plan => plan.Clips.Count);
+            if (FourScreenStartClipIndex > maximumStartIndex)
+            {
+                ValidationMessage = $"四屏起始视频必须在 1 到 {maximumStartIndex} 之间。";
+                return;
+            }
+
+            fourScreen = fourScreenResult.Value;
         }
 
         // 单文件 BGM（音频库关闭时的后备）
@@ -2201,7 +2238,9 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
             stickersPerPlan,
             SelectedProcessingMode,
             bgmPerPlan: useAudioLibrary ? bgmPerPlan : null,
-            doubleScreenSourceAssets: _assets);
+            doubleScreenSourceAssets: _assets,
+            fourScreen: fourScreen,
+            fourScreenSourceAssets: _assets);
 
         var jobs = requests
             .Select(RenderJob.CreateQueued)
@@ -2255,6 +2294,13 @@ public sealed partial class CompositionViewModel : WorkspaceModuleViewModel
                 ? $"羽化 {DoubleScreenFeatherPixels}px"
                 : "硬切";
             hints.Add($"双屏（第 {doubleScreen.StartClipIndex} 个视频起，{sourceHint}，{featherHint}）");
+        }
+
+        if (fourScreen is not null)
+        {
+            var sourceHint = FourScreenUseRandomCurrentFolder ? "主素材所在文件夹随机四格" : "当前视频同步四格";
+            var featherHint = FourScreenFeatherEnabled ? $"羽化 {FourScreenFeatherPixels}px" : "硬切";
+            hints.Add($"四屏（第 {fourScreen.StartClipIndex} 个视频起，{sourceHint}，{featherHint}）");
         }
 
         var totalStickerCount = stickersPerPlan.Sum(s => s.Count);

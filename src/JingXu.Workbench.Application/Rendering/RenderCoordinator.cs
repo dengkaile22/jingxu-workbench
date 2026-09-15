@@ -1,4 +1,5 @@
 using JingXu.Workbench.Application.Abstractions;
+using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Domain.Rendering;
 
 namespace JingXu.Workbench.Application.Rendering;
@@ -26,11 +27,13 @@ public sealed class RenderCoordinator : IAsyncDisposable
     private readonly Dictionary<Guid, CancellationTokenSource> _jobTokens = new();
     private readonly HashSet<Guid> _inflightJobs = new();
     private readonly Dictionary<Guid, long> _lastProgressPublishedAt = new();
+    private readonly Dictionary<Guid, (TempResourceLease Lease, string Path)> _subtitleResources = new();
 
     private List<RenderJob> _jobs;
     private int _maxConcurrency;
     private int _pendingConcurrency;
     private int _activeCount;
+    private Guid? _exclusiveJobId;
     private bool _paused;
     private bool _shutdownRequested;
     private Task _persistDrain = Task.CompletedTask;
@@ -99,7 +102,39 @@ public sealed class RenderCoordinator : IAsyncDisposable
                 updated = _jobs.Concat(jobs).ToList();
             }
 
-            await PersistAndPublishCoreAsync(updated, cancellationToken).ConfigureAwait(false);
+            var resources = new Dictionary<Guid, (TempResourceLease Lease, string Path)>();
+            try
+            {
+                foreach (var job in jobs)
+                {
+                    var path = job.Request?.SubtitleBurn?.SubtitleFilePath;
+                    if (path is not null && WorkbenchCacheCleanup.IsOwnedTempSubtitlePath(path) && !resources.ContainsKey(job.Id))
+                    {
+                        resources.Add(job.Id, (TempResourceLease.Acquire(path), path));
+                    }
+                }
+
+                if (await PersistAndPublishCoreAsync(updated, cancellationToken).ConfigureAwait(false))
+                {
+                    lock (_sync)
+                    {
+                        foreach (var (id, resource) in resources.ToArray())
+                        {
+                            if (_subtitleResources.TryAdd(id, resource))
+                            {
+                                resources.Remove(id);
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var resource in resources.Values)
+                {
+                    resource.Lease.Dispose();
+                }
+            }
         }
         finally
         {
@@ -233,6 +268,10 @@ public sealed class RenderCoordinator : IAsyncDisposable
         if (job.State is JobState.Queued)
         {
             await TransitionJobAsync(job, current => current.Cancel(), cancellationToken).ConfigureAwait(false);
+            if (GetJob(jobId)?.State == JobState.Cancelled)
+            {
+                ReleaseSubtitleResource(jobId, onlyIfIdle: true);
+            }
             RequestPump();
         }
     }
@@ -272,6 +311,11 @@ public sealed class RenderCoordinator : IAsyncDisposable
             token.Cancel();
         }
 
+        foreach (var job in Jobs.Where(static job => job.State == JobState.Queued))
+        {
+            ReleaseSubtitleResource(job.Id, onlyIfIdle: true);
+        }
+
         await _persistDrain.ConfigureAwait(false);
     }
 
@@ -289,7 +333,7 @@ public sealed class RenderCoordinator : IAsyncDisposable
     {
         lock (_sync)
         {
-            if (_shutdownRequested || _paused || _activeCount >= _maxConcurrency)
+            if (_shutdownRequested || _paused || _activeCount >= _maxConcurrency || _exclusiveJobId is not null)
             {
                 job = default!;
                 return false;
@@ -302,9 +346,48 @@ public sealed class RenderCoordinator : IAsyncDisposable
                 return false;
             }
 
+            var exclusive = RequiresExclusiveRender(_jobs[index].Request);
+            // 保持队列顺序。高分辨率四屏同时包含多个解码/合成帧池，等待其他任务释放资源后再启动。
+            if (exclusive && _activeCount > 0)
+            {
+                job = default!;
+                return false;
+            }
+
+            if (exclusive)
+            {
+                _exclusiveJobId = _jobs[index].Id;
+            }
+
             _activeCount++;
             _inflightJobs.Add(_jobs[index].Id);
             job = _jobs[index];
+            return true;
+        }
+    }
+
+    private static bool RequiresExclusiveRender(RenderRequest? request)
+    {
+        if (request?.FourScreen is null || request.Plan.Clips.Count == 0 ||
+            !request.FourScreen.AppliesTo(request.Plan.Clips.Count - 1))
+        {
+            return false;
+        }
+
+        var first = request.Plan.Clips[0].Asset.Info;
+        var customCanvas = !request.Aspect.InheritFromFirstClip &&
+            request.Aspect.TargetWidth is > 0 && request.Aspect.TargetHeight is > 0;
+        var width = customCanvas ? request.Aspect.TargetWidth!.Value : first.Width;
+        var height = customCanvas ? request.Aspect.TargetHeight!.Value : first.Height;
+        // 与编译器一致，四屏在应用导出分辨率之后计算；小素材放大也必须受保护。
+        try
+        {
+            var size = request.OutputVideoSettings.ResolveTargetSize(Math.Max(2, width & ~1), Math.Max(2, height & ~1));
+            return (long)size.Width * size.Height >= 1280L * 720;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // 损坏快照仍由执行器报告失败，不让资源估算异常中止整个队列。
             return true;
         }
     }
@@ -318,12 +401,13 @@ public sealed class RenderCoordinator : IAsyncDisposable
         }
 
         var shouldPump = true;
+        var firstTransitionFailed = false;
         try
         {
             if (!await TransitionJobAsync(queuedJob, current => current.BeginPrepare(), jobCts.Token)
                     .ConfigureAwait(false))
             {
-                shouldPump = false;
+                firstTransitionFailed = true;
                 return;
             }
 
@@ -360,9 +444,25 @@ public sealed class RenderCoordinator : IAsyncDisposable
                 var phase = percent is null
                     ? "渲染中…"
                     : $"渲染中 {percent.Value:0.#}%";
+                if (p.Speed > 0 && double.IsFinite(p.Speed))
+                {
+                    phase += $" · {p.Speed.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}×";
+                }
                 UpdateProgress(queuedJob.Id, percent, phase);
             });
-            var result = await _executor.ExecuteAsync(running, progress, jobCts.Token).ConfigureAwait(false);
+            RenderExecutionResult result;
+            try
+            {
+                result = await _executor.ExecuteAsync(running, progress, jobCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (jobCts.IsCancellationRequested)
+            {
+                result = RenderExecutionResult.Cancelled();
+            }
+            catch (Exception ex)
+            {
+                result = RenderExecutionResult.Failed($"渲染执行失败：{ex.GetBaseException().Message}");
+            }
 
             var latest = GetJob(queuedJob.Id);
             if (latest is null)
@@ -409,15 +509,26 @@ public sealed class RenderCoordinator : IAsyncDisposable
         }
         finally
         {
+            ReleaseSubtitleResource(queuedJob.Id);
             lock (_sync)
             {
                 _jobTokens.Remove(queuedJob.Id);
                 _inflightJobs.Remove(queuedJob.Id);
+                if (_exclusiveJobId == queuedJob.Id)
+                {
+                    _exclusiveJobId = null;
+                }
                 _lastProgressPublishedAt.Remove(queuedJob.Id);
                 _activeCount--;
                 if (_activeCount == 0)
                 {
                     _maxConcurrency = _pendingConcurrency;
+                }
+                // 释放执行槽与检查取消状态必须处于同一把锁下，避免取消发布和本次唤醒之间丢失调度。
+                // 持久化失败且仍 Queued 时不立即反复重试；已取消或移除则继续后项。
+                if (firstTransitionFailed)
+                {
+                    shouldPump = _jobs.FirstOrDefault(job => job.Id == queuedJob.Id)?.State != JobState.Queued;
                 }
             }
 
@@ -436,6 +547,26 @@ public sealed class RenderCoordinator : IAsyncDisposable
         }
     }
 
+    private void ReleaseSubtitleResource(Guid id, bool onlyIfIdle = false)
+    {
+        (TempResourceLease Lease, string Path) resource;
+        lock (_sync)
+        {
+            if (onlyIfIdle && _inflightJobs.Contains(id))
+            {
+                return;
+            }
+
+            if (!_subtitleResources.Remove(id, out resource))
+            {
+                return;
+            }
+        }
+
+        resource.Lease.Dispose();
+        TempResourceLease.TryDeleteUnusedSubtitle(resource.Path);
+    }
+
     /// <summary>当前渲染并发上限（1–4）。</summary>
     public int MaxConcurrency
     {
@@ -444,6 +575,18 @@ public sealed class RenderCoordinator : IAsyncDisposable
             lock (_sync)
             {
                 return _maxConcurrency;
+            }
+        }
+    }
+
+    /// <summary>正在执行的任务 Id。缓存清理必须跳过这些 staging，不能误删并发中的任务。</summary>
+    public IReadOnlyList<Guid> InflightJobIds
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _inflightJobs.ToList();
             }
         }
     }

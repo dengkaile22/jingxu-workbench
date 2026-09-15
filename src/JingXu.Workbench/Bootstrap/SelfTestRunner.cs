@@ -61,7 +61,8 @@ public static class SelfTestRunner
             new ExternalProcessRunner(),
             manifest);
 
-        var statuses = await diagnostics.DiagnoseAsync(cancellationToken);
+        // Run 在 WPF 启动线程同步等待；自检续体不能再排回被阻塞的 Dispatcher。
+        var statuses = await diagnostics.DiagnoseAsync(cancellationToken).ConfigureAwait(false);
         var missingRequired = statuses
             .Where(status => status.IsRequired && !status.IsAvailable)
             .Select(status => status.DisplayName)

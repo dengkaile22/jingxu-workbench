@@ -11,4 +11,5 @@ public sealed record MediaInfo(
     string VideoCodec,
     string? AudioCodec,
     bool HasAudio,
-    int RotationDegrees);
+    int RotationDegrees,
+    string? PixelFormat = null);

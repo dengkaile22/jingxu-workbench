@@ -4,7 +4,7 @@
   <Package
     Name="炳恒快速混剪"
     Manufacturer="炳恒"
-    Version="1.0.0.0"
+    Version="1.0.2.0"
     UpgradeCode="A7C4E2B1-9F3D-4E6A-8C5B-1D2E3F4A5B6C"
     Scope="perUserOrMachine"
     Language="2052"

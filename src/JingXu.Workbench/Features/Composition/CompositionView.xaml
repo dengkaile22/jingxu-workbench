@@ -883,6 +883,38 @@
                            VerticalAlignment="Center"
                            Margin="0,0,0,6" />
             </WrapPanel>
+            <WrapPanel Margin="0,0,0,6" IsEnabled="{Binding EnableVariationEffects}">
+                <CheckBox Content="四屏（2×2）"
+                          IsChecked="{Binding EnableFourScreen}"
+                          Margin="0,0,10,6"
+                          AutomationProperties.Name="四屏特效开关" />
+                <StackPanel Orientation="Horizontal" Margin="0,0,14,6"
+                            IsEnabled="{Binding IsFourScreenSettingsEnabled}">
+                    <TextBlock Text="从第" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                    <TextBox Text="{Binding FourScreenStartClipIndex, UpdateSourceTrigger=PropertyChanged}"
+                             Width="40" Margin="5,0" Padding="6,2"
+                             AutomationProperties.Name="四屏起始视频序号" />
+                    <TextBlock Text="个视频开始至结尾" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock Text="双屏与四屏只能选一项"
+                           Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" Margin="0,0,0,6" />
+            </WrapPanel>
+            <WrapPanel Margin="0,0,0,4" IsEnabled="{Binding IsFourScreenSettingsEnabled}">
+                <CheckBox Content="随机抽取主素材所在文件夹"
+                          IsChecked="{Binding FourScreenUseRandomCurrentFolder}" Margin="0,0,14,6"
+                          AutomationProperties.Name="四屏随机素材开关" />
+                <CheckBox Content="四屏横竖缝羽化"
+                          IsChecked="{Binding FourScreenFeatherEnabled}" Margin="0,0,14,6"
+                          AutomationProperties.Name="四屏羽化开关" />
+                <TextBlock Text="羽化强度" Style="{DynamicResource Text.Caption}" VerticalAlignment="Center" Margin="0,0,6,6" />
+                <Slider Minimum="0" Maximum="256" TickFrequency="8" IsSnapToTickEnabled="True"
+                        Value="{Binding FourScreenFeatherPixels}" Width="120" Margin="0,0,8,6"
+                        IsEnabled="{Binding FourScreenFeatherEnabled}" AutomationProperties.Name="四屏羽化强度" />
+                <TextBlock Text="{Binding FourScreenFeatherLabel}" Style="{DynamicResource Text.Mono}"
+                           VerticalAlignment="Center" Margin="0,0,0,6" />
+            </WrapPanel>
+            <TextBlock Text="普通四屏同源同步；随机四屏保留一个主格，其余三格随机抽取，素材不足时允许重复。仅保留主素材声音和背景音乐。"
+                       Style="{DynamicResource Text.Caption}" TextWrapping="Wrap" Margin="0,0,0,10" />
             <Grid Margin="0,0,0,12" IsEnabled="{Binding IsVariationIntensityEnabled}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />

@@ -19,6 +19,9 @@ public enum WorkspaceModule
     /// <summary>批量下载。</summary>
     Downloads,
 
+    /// <summary>选品爬虫。</summary>
+    Spider,
+
     /// <summary>任务队列。</summary>
     Queue,
 

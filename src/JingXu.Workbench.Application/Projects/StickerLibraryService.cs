@@ -62,8 +62,7 @@ public sealed class StickerLibraryService
 
     public static string DefaultLibraryPath =>
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu",
+            WorkbenchDataPaths.GetDataDirectory(),
             "sticker-library.json");
 
     public async Task<StickerLibraryDocument> LoadAsync(string? path = null, CancellationToken cancellationToken = default)

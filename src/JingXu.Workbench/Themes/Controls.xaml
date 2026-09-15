@@ -22,6 +22,7 @@
     <Geometry x:Key="Icon.Module.Queue">M6,7 H18 M6,12 H18 M6,17 H18</Geometry>
     <Geometry x:Key="Icon.Module.Settings">M4,8 H20 M4,16 H20 M8,8 A2,2 0 1 1 12,8 A2,2 0 1 1 8,8 M13,16 A2,2 0 1 1 17,16 A2,2 0 1 1 13,16</Geometry>
     <Geometry x:Key="Icon.Module.AudioLibrary">M6,4 V16 A3,3 0 1 0 9,16 V8 L18,6 V14 A3,3 0 1 0 21,14 V2 Z</Geometry>
+    <Geometry x:Key="Icon.Module.Spider">M12,2 V22 M2,12 H22 M12,5 A7,7 0 1 0 19,12 M12,8 A4,4 0 1 0 16,12</Geometry>
 
     <!-- 状态图标 -->
     <Geometry x:Key="Icon.Status.Draft">M12,7 A5,5 0 1 1 11.99,7 Z</Geometry>

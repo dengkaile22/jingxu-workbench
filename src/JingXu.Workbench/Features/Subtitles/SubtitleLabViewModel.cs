@@ -289,6 +289,12 @@ public sealed partial class SubtitleLabViewModel : WorkspaceModuleViewModel
     [RelayCommand(CanExecute = nameof(CanRender))]
     private async Task RenderAsync()
     {
+        try { await RenderCoreAsync().ConfigureAwait(true); }
+        catch (Exception ex) { IsBusy = false; StatusMessage = $"无法开始字幕任务：{ex.GetBaseException().Message}"; }
+    }
+
+    private async Task RenderCoreAsync()
+    {
         var outputPath = _filePicker.PickExportVideoPath(
             string.IsNullOrWhiteSpace(VideoPath) ? "字幕成片.mp4" : $"{Path.GetFileNameWithoutExtension(VideoPath)}_字幕.mp4");
         if (string.IsNullOrWhiteSpace(outputPath))
@@ -297,9 +303,10 @@ public sealed partial class SubtitleLabViewModel : WorkspaceModuleViewModel
         }
 
         var subtitlePath = Path.Combine(
-            Path.GetTempPath(),
+            JingXu.Workbench.Application.Projects.WorkbenchDataPaths.GetTempDirectory(),
             "jingxu-subtitle-burn",
             Guid.NewGuid().ToString("N") + ".ass");
+        using var pendingResource = JingXu.Workbench.Application.Projects.TempResourceLease.Acquire(subtitlePath);
         Directory.CreateDirectory(Path.GetDirectoryName(subtitlePath)!);
         var export = _workflow.ExportToFile(
             Cues.Select(x => x.ToCue()).ToArray(),
@@ -308,6 +315,8 @@ public sealed partial class SubtitleLabViewModel : WorkspaceModuleViewModel
         if (!export.IsSuccess)
         {
             StatusMessage = export.Error!;
+            pendingResource.Dispose();
+            JingXu.Workbench.Application.Projects.TempResourceLease.TryDeleteUnusedSubtitle(subtitlePath);
             return;
         }
 
@@ -337,6 +346,8 @@ public sealed partial class SubtitleLabViewModel : WorkspaceModuleViewModel
         }
         finally
         {
+            pendingResource.Dispose();
+            JingXu.Workbench.Application.Projects.TempResourceLease.TryDeleteUnusedSubtitle(subtitlePath);
             IsBusy = false;
         }
     }

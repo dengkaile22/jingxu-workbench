@@ -17,7 +17,7 @@ public sealed record RenderDecision(bool CanStreamCopy, IReadOnlyList<TranscodeR
             reasons.Add(TranscodeReason.Overlay);
         }
 
-        if (request.HasEffects)
+        if (request.HasEffects || request.DoubleScreen is not null || request.FourScreen is not null)
         {
             reasons.Add(TranscodeReason.Effects);
         }

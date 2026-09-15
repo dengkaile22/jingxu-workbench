@@ -1,4 +1,5 @@
 using JingXu.Workbench.Application.Abstractions;
+using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Application.Subtitles;
 using JingXu.Workbench.Domain.Common;
 using JingXu.Workbench.Domain.Subtitles;
@@ -70,12 +71,13 @@ public sealed class TesseractSubtitleOcrDetector : ISubtitleOcrDetector
             return Result<IReadOnlyList<DetectedSubtitleSegment>>.Success([]);
         }
 
-        var tempRoot = Path.Combine(Path.GetTempPath(), "jingxu-ocr", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempRoot);
+        var tempRoot = Path.Combine(JingXu.Workbench.Application.Projects.WorkbenchDataPaths.GetTempDirectory(), "jingxu-ocr", Guid.NewGuid().ToString("N"));
 
         try
         {
             progress?.Report("正在抽帧…");
+            using var resource = TempResourceLease.Acquire(tempRoot, isDirectory: true);
+            Directory.CreateDirectory(tempRoot);
             var framePaths = new List<string>();
             for (var i = 0; i < samples.Count; i++)
             {
@@ -130,6 +132,10 @@ public sealed class TesseractSubtitleOcrDetector : ISubtitleOcrDetector
             var segments = SubtitleRegionClusterer.Cluster(observations);
             progress?.Report($"检测完成，共 {segments.Count} 个区域。");
             return Result<IReadOnlyList<DetectedSubtitleSegment>>.Success(segments);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Result<IReadOnlyList<DetectedSubtitleSegment>>.Failure($"识别临时文件准备失败：{ex.Message}");
         }
         catch (OperationCanceledException)
         {

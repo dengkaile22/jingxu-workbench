@@ -10,6 +10,7 @@
         xmlns:downloads="clr-namespace:JingXu.Workbench.Features.Downloads"
         mc:Ignorable="d"
         xmlns:audio="clr-namespace:JingXu.Workbench.Features.AudioLibrary"
+        xmlns:spider="clr-namespace:JingXu.Workbench.Features.Spider"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         d:DataContext="{d:DesignInstance shell:ShellViewModel}"
@@ -59,6 +60,9 @@
         </DataTemplate>
         <DataTemplate DataType="{x:Type audio:AudioLibraryViewModel}">
             <audio:AudioLibraryView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type spider:SpiderViewModel}">
+            <spider:SpiderView />
         </DataTemplate>
     </Window.Resources>
 

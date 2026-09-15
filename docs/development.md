@@ -27,6 +27,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Install-DotNetSdk.ps
 
 ### 常用命令
 
+验证缓存清理和素材库操作时，先为当前 PowerShell 会话配置独立目录，避免测试访问日常数据：
+
+```powershell
+$env:JINGXU_DATA_DIRECTORY = Join-Path $PWD 'artifacts\test-data'
+$env:JINGXU_TEMP_DIRECTORY = Join-Path $PWD 'artifacts\test-temp'
+$env:PATH = "$PWD\runtime\ffmpeg;$env:PATH"
+```
+
+未设置这些变量时，应用仍使用 `%LOCALAPPDATA%\JingXu` 与系统临时目录。解决方案构建使用 `-m:1`，避免多个项目实例同时写入共享 `obj` 文件。
+
 ```powershell
 # 在 worktree 根目录（含 JingXu.Workbench.sln）执行
 dotnet restore JingXu.Workbench.sln --locked-mode
@@ -59,6 +69,7 @@ dotnet run --project src/JingXu.Workbench/JingXu.Workbench.csproj -- --overlay-s
 1. 将第三方二进制放入 `runtime/`（不提交 Git，见 `runtime/README.md`）
 2. `scripts/Resolve-Runtimes.ps1 -CacheDirectory runtime -PrintHashes` 生成 SHA-256
 3. 更新 `build/runtime-manifest.json` 后 staging 到 `artifacts/staging/runtime`
+4. 选品爬虫内置运行时：`scripts/Resolve-SpiderRuntime.ps1`（下载嵌入式 Python + `src/JingXu.Spider/requirements.txt` 依赖到 `runtime/python`）；发布脚本会把 `runtime/python` 与爬虫源码暂存到 `runtime/spider`。国内网络可加 `-PipIndexUrl https://pypi.tuna.tsinghua.edu.cn/simple`；重建用 `-Force`。
 
 ### 项目结构（实际）
 

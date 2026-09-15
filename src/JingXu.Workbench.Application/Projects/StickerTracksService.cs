@@ -32,8 +32,7 @@ public sealed class StickerTracksService
 
     public static string DefaultTracksPath =>
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu",
+            WorkbenchDataPaths.GetDataDirectory(),
             "sticker-tracks.json");
 
     public string StorePath => _defaultPath;

@@ -27,10 +27,14 @@ public static class ShellViewModelTestFactory
     }
 }
 
-/// <summary>记录被请求打开的目录，不触碰文件系统或资源管理器。</summary>
+/// <summary>记录被请求打开的目录/文件，不触碰文件系统或资源管理器。</summary>
 public sealed class RecordingFolderLauncher : IFolderLauncher
 {
     public List<string> Opened { get; } = [];
 
+    public List<string> OpenedFiles { get; } = [];
+
     public void Open(string directoryPath) => Opened.Add(directoryPath);
+
+    public void OpenFile(string filePathOrUrl) => OpenedFiles.Add(filePathOrUrl);
 }

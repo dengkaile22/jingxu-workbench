@@ -12,6 +12,42 @@ namespace JingXu.Workbench.Infrastructure.Tests.Rendering;
 public sealed class FfmpegRenderExecutorTests
 {
     [Fact]
+    public async Task Finished_render_preserves_a_subtitle_still_leased_by_another_job()
+    {
+        using var dir = new TemporaryDirectory();
+        var input = dir.File("clip.mp4", "clip");
+        var output = Path.Combine(dir.Root, "subtitle.mp4");
+        var subtitle = Path.Combine(JingXu.Workbench.Application.Projects.WorkbenchDataPaths.GetTempDirectory(),
+            "jingxu-subtitle-burn", Guid.NewGuid().ToString("N") + ".ass");
+        Directory.CreateDirectory(Path.GetDirectoryName(subtitle)!);
+        File.WriteAllText(subtitle, "[Script Info]\nScriptType: v4.00+");
+        using var resource = JingXu.Workbench.Application.Projects.TempResourceLease.Acquire(subtitle);
+        using var layout = RuntimeLayout.WithExecutables("app/runtime/ffmpeg/ffmpeg.exe");
+        var runner = new ScriptingProcessRunner
+        {
+            OnRun = (_, staging, _) =>
+            {
+                File.WriteAllText(Path.Combine(staging, "output.mp4"), "rendered");
+                return new ProcessResult(0, string.Empty, string.Empty);
+            }
+        };
+        var request = TestJobs.RequestFor([input], dir.Root) with
+        {
+            OutputPath = output,
+            SubtitleBurn = new JingXu.Workbench.Domain.Subtitles.SubtitleBurnInPlan(input, output, subtitle,
+                JingXu.Workbench.Domain.Subtitles.SubtitleFileFormat.Ass, 1080, 1920)
+        };
+        try
+        {
+            var result = await RenderExecutorFactory.Create(layout, runner, new FixedProbe(TimeSpan.FromSeconds(2)))
+                .ExecuteAsync(RenderJob.CreateQueued(request), null, default);
+            Assert.True(result.IsSuccess, result.FailureInfo?.Message);
+            Assert.True(File.Exists(subtitle), "另一任务仍持有字幕时，当前任务结束不能删除共享字幕。");
+        }
+        finally { if (File.Exists(subtitle)) { File.Delete(subtitle); } }
+    }
+
+    [Fact]
     public async Task Failed_render_never_replaces_existing_output()
     {
         using var dir = new TemporaryDirectory();
@@ -94,10 +130,11 @@ public sealed class FfmpegRenderExecutorTests
         Assert.False(result.IsSuccess);
         Assert.Contains("零字节", result.FailureInfo!.Message, StringComparison.Ordinal);
         Assert.False(File.Exists(output));
+        Assert.False(Directory.Exists(TestJobs.StagingPath(output, job.Id)));
     }
 
     [Fact]
-    public async Task Successful_render_moves_output_and_leaves_log_only_in_staging()
+    public async Task Successful_render_moves_output_and_removes_staging()
     {
         using var dir = new TemporaryDirectory();
         var clip = dir.File("clip.mp4", contents: "clip");
@@ -123,6 +160,7 @@ public sealed class FfmpegRenderExecutorTests
         var result = await executor.ExecuteAsync(job, progress: null, default);
         Assert.True(result.IsSuccess);
         Assert.Equal("rendered-bytes", File.ReadAllText(output));
+        Assert.False(Directory.Exists(TestJobs.StagingPath(output, job.Id)));
         var renderRequest = Assert.Single(
             runner.Requests,
             request => request.WorkingDirectory is not null);
@@ -181,6 +219,12 @@ public sealed class FfmpegRenderExecutorTests
         Assert.False(result.IsSuccess);
         Assert.Contains("退出码 1", result.FailureInfo!.Message, StringComparison.Ordinal);
         Assert.Contains("Invalid data found", result.FailureInfo.Message, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(TestJobs.StagingPath(output, job.Id)));
+        var diagnosticLog = Path.Combine(dir.Root, ".jingxu-logs", job.Id.ToString("N"), "render.log");
+        Assert.True(File.Exists(diagnosticLog), "失败后应保留完整诊断日志，同时回收媒体暂存。");
+        Assert.Contains("Invalid data found", File.ReadAllText(diagnosticLog), StringComparison.Ordinal);
+        Assert.Contains(diagnosticLog, result.FailureInfo.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(output));
     }
 
     [Fact]
@@ -218,6 +262,63 @@ public sealed class FfmpegRenderExecutorTests
         Assert.Contains("h264_qsv", runner.Requests[0].Arguments);
         Assert.Contains("libx264", runner.Requests[1].Arguments);
         Assert.Contains("已自动改用 CPU", result.Notice, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Nvenc_opening_encoder_failure_retries_once_with_cpu()
+    {
+        using var dir = new TemporaryDirectory();
+        var clip = dir.File("clip.mp4", contents: "clip");
+        var output = Path.Combine(dir.Root, "成片.mp4");
+        using var layout = RuntimeLayout.WithExecutables("app/runtime/ffmpeg/ffmpeg.exe");
+        var runner = new SequencedRenderRunner(
+            new ProcessResult(
+                1,
+                string.Empty,
+                "[h264_nvenc @ 000] Driver does not support the required nvenc API version.\nError while opening encoder for output stream #0:0"),
+            new ProcessResult(0, "progress=end\n", string.Empty));
+        var selector = new RecordingEncoderSelector(new VideoEncoderSelection(
+            VideoEncoderKind.H264Nvenc,
+            "NVIDIA GPU（NVENC）",
+            "使用 NVIDIA GPU（NVENC）完成。"));
+        var executor = RenderExecutorFactory.Create(
+            layout,
+            runner,
+            selector,
+            new FixedProbe(TimeSpan.FromSeconds(2)));
+        var request = TestJobs.RequestFor([clip], dir.Root) with
+        {
+            OutputPath = output,
+            ProcessingMode = VideoProcessingMode.Gpu
+        };
+
+        var result = await executor.ExecuteAsync(
+            RenderJob.CreateQueued(request),
+            progress: null,
+            default);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(2, runner.Requests.Count);
+        Assert.Contains("h264_nvenc", runner.Requests[0].Arguments);
+        Assert.Contains("libx264", runner.Requests[1].Arguments);
+        Assert.Equal([VideoEncoderKind.H264Nvenc], selector.RememberedFailures);
+    }
+
+    [Fact]
+    public void Hardware_encoder_failure_detects_nvenc_session_and_ignores_filter_errors()
+    {
+        Assert.True(FfmpegRenderExecutor.IsHardwareEncoderFailure(
+            VideoEncoderKind.H264Nvenc,
+            "[h264_nvenc @ 0] OpenEncodeSessionEx failed: invalid param"));
+        Assert.True(FfmpegRenderExecutor.IsHardwareEncoderFailure(
+            VideoEncoderKind.H264Nvenc,
+            "Cannot load nvcuda.dll"));
+        Assert.False(FfmpegRenderExecutor.IsHardwareEncoderFailure(
+            VideoEncoderKind.H264Qsv,
+            "Error reinitializing filters!"));
+        Assert.False(FfmpegRenderExecutor.IsHardwareEncoderFailure(
+            VideoEncoderKind.Libx264,
+            "[h264_nvenc] no capable devices found"));
     }
 
     [Fact]
@@ -268,13 +369,15 @@ public sealed class FfmpegRenderExecutorTests
             ProcessingMode = VideoProcessingMode.Gpu
         };
 
+        var job = RenderJob.CreateQueued(request);
         var result = await executor.ExecuteAsync(
-            RenderJob.CreateQueued(request),
+            job,
             progress: null,
             default);
 
         Assert.True(result.IsCancelled);
         Assert.Single(runner.Requests);
+        Assert.False(Directory.Exists(TestJobs.StagingPath(output, job.Id)));
     }
 
     [Fact]
@@ -307,6 +410,28 @@ public sealed class FfmpegRenderExecutorTests
         Assert.True(result.IsSuccess);
         Assert.Equal(0, selector.CallCount);
         Assert.Contains("copy", Assert.Single(runner.Requests).Arguments);
+    }
+
+    [Fact]
+    public async Task Failed_or_cancelled_render_does_not_leave_sibling_job_staging()
+    {
+        using var dir = new TemporaryDirectory();
+        var clip = dir.File("clip.mp4", contents: "clip");
+        var output = Path.Combine(dir.Root, "成片.mp4");
+        var otherId = Guid.NewGuid();
+        var otherStaging = TestJobs.StagingPath(output, otherId);
+        Directory.CreateDirectory(otherStaging);
+        File.WriteAllText(Path.Combine(otherStaging, "output.mp4"), "other-job");
+
+        using var layout = RuntimeLayout.WithExecutables("app/runtime/ffmpeg/ffmpeg.exe");
+        var executor = RenderExecutorFactory.WithProcessExitCode(1, stderr: "Conversion failed!");
+        var job = RenderJob.CreateQueued(TestJobs.RequestFor([clip], dir.Root) with { OutputPath = output });
+        var result = await executor.ExecuteAsync(job, progress: null, default);
+
+        Assert.False(result.IsSuccess);
+        Assert.False(Directory.Exists(TestJobs.StagingPath(output, job.Id)));
+        Assert.True(File.Exists(Path.Combine(otherStaging, "output.mp4")));
+        Assert.Equal("other-job", File.ReadAllText(Path.Combine(otherStaging, "output.mp4")));
     }
 }
 
@@ -342,6 +467,9 @@ internal static class TestJobs
             OutputAspect.InheritFirst,
             []);
     }
+
+    public static string StagingPath(string outputPath, Guid jobId) =>
+        Path.Combine(Path.GetDirectoryName(outputPath)!, ".jingxu-tmp", jobId.ToString("N"));
 }
 
 internal static class RenderExecutorFactory
@@ -478,6 +606,24 @@ internal sealed class FixedEncoderSelector(VideoEncoderSelection selection) : IV
         CallCount++;
         return Task.FromResult(selection);
     }
+}
+
+/// <summary>记录正式编码失败后被跳过的 GPU 编码器。</summary>
+internal sealed class RecordingEncoderSelector(VideoEncoderSelection selection) : IVideoEncoderSelector
+{
+    public List<VideoEncoderKind> RememberedFailures { get; } = [];
+
+    public Task<VideoEncoderSelection> SelectAsync(
+        string ffmpegExecutable,
+        VideoProcessingMode mode,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(selection);
+    }
+
+    public void RememberHardwareFailure(string ffmpegExecutable, VideoEncoderKind kind) =>
+        RememberedFailures.Add(kind);
 }
 
 internal sealed class SequencedRenderRunner(params IProcessResult[] results) : IExternalProcessRunner

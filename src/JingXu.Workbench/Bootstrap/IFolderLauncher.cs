@@ -7,4 +7,7 @@ public interface IFolderLauncher
 {
     /// <summary>在资源管理器中打开指定目录；目录不存在时先创建。</summary>
     void Open(string directoryPath);
+
+    /// <summary>用系统默认程序打开本地文件或 http/https 链接。</summary>
+    void OpenFile(string filePathOrUrl);
 }

@@ -7,6 +7,7 @@ using JingXu.Workbench.Features.Overlays;
 using JingXu.Workbench.Features.Queue;
 using JingXu.Workbench.Features.Settings;
 using JingXu.Workbench.Features.Downloads;
+using JingXu.Workbench.Features.Spider;
 using JingXu.Workbench.Features.AudioLibrary;
 using System.ComponentModel;
 
@@ -27,6 +28,7 @@ public sealed partial class ShellViewModel : ObservableObject
         OverlayEditorViewModel overlays,
         Stickers.StickerEditorViewModel stickers,
         DownloadViewModel downloads,
+        SpiderViewModel spider,
         RenderQueueViewModel queue,
         SettingsViewModel settings,
         AudioLibraryViewModel audioLibrary,
@@ -40,6 +42,7 @@ public sealed partial class ShellViewModel : ObservableObject
         CompositionModule = composition;
         OverlayModule = overlays;
         StickerModule = stickers;
+        SpiderModule = spider;
         Monitor = new GateMonitorViewModel(frameExtractor, uiDispatcher);
 
         // 预创建并缓存模块实例；导航在实例之间切换，不重建，保留各模块状态。
@@ -49,6 +52,7 @@ public sealed partial class ShellViewModel : ObservableObject
             [WorkspaceModule.Overlays] = overlays,
             [WorkspaceModule.Stickers] = stickers,
             [WorkspaceModule.Downloads] = downloads,
+            [WorkspaceModule.Spider] = spider,
             [WorkspaceModule.Queue] = queue,
             [WorkspaceModule.Settings] = settings,
             [WorkspaceModule.AudioLibrary] = audioLibrary
@@ -62,6 +66,7 @@ public sealed partial class ShellViewModel : ObservableObject
             new ShellModuleTab(WorkspaceModule.Stickers, "贴纸", "Icon.Module.Stickers", "切换到贴纸轨道模块", isEnabled: true),
             new ShellModuleTab(WorkspaceModule.AudioLibrary, "音频", "Icon.Module.AudioLibrary", "切换到音频库模块", isEnabled: true),
             new ShellModuleTab(WorkspaceModule.Downloads, "下载", "Icon.Module.Downloads", "切换到批量下载模块", isEnabled: true),
+            new ShellModuleTab(WorkspaceModule.Spider, "选品", "Icon.Module.Spider", "切换到选品爬虫模块", isEnabled: true),
             new ShellModuleTab(WorkspaceModule.Queue, "队列", "Icon.Module.Queue", "切换到任务队列模块", isEnabled: true),
             new ShellModuleTab(WorkspaceModule.Settings, "设置", "Icon.Module.Settings", "切换到设置模块", isEnabled: true)
         ];
@@ -107,6 +112,12 @@ public sealed partial class ShellViewModel : ObservableObject
 
     /// <summary>贴纸轨道模块实例。</summary>
     public Stickers.StickerEditorViewModel StickerModule { get; }
+
+    /// <summary>选品爬虫模块实例。</summary>
+    public SpiderViewModel SpiderModule { get; }
+
+    /// <summary>程序化导航到指定模块。</summary>
+    public void NavigateTo(WorkspaceModule target) => Navigate(target);
 
     /// <summary>当前激活的模块内容视图模型。</summary>
     [ObservableProperty]

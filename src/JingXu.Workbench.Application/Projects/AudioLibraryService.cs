@@ -53,8 +53,7 @@ public sealed class AudioLibraryService
 
     public static string DefaultLibraryPath =>
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu",
+            WorkbenchDataPaths.GetDataDirectory(),
             "audio-library.json");
 
     /// <summary>加载音频库（自动清理已失效的条目）。</summary>

@@ -6,8 +6,7 @@ public static class OverlayThumbnailStore
     /// <summary>缩略图根目录（%LOCALAPPDATA%\JingXu\overlay-thumbs）。</summary>
     public static string RootDirectory =>
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu",
+            WorkbenchDataPaths.GetDataDirectory(),
             "overlay-thumbs");
 
     /// <summary>按素材绝对路径派生稳定缩略图路径。</summary>

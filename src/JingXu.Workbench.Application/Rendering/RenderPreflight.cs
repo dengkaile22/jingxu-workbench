@@ -33,6 +33,11 @@ public static class RenderPreflight
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (request.DoubleScreen is not null && request.FourScreen is not null)
+        {
+            return Result<Unit>.Failure("双屏与四屏不能同时启用，请重新入队。");
+        }
+
         foreach (var clip in request.Plan.Clips)
         {
             if (!File.Exists(clip.Asset.Path))
@@ -61,6 +66,23 @@ public static class RenderPreflight
                 if (!File.Exists(selection.SourceAsset.Path))
                 {
                     return Result<Unit>.Failure($"找不到双屏辅助素材：{selection.SourceAsset.Path}");
+                }
+            }
+        }
+
+        if (request.FourScreen is not null)
+        {
+            var validation = request.FourScreen.ValidateForPlan(request.Plan);
+            if (!validation.IsSuccess)
+            {
+                return validation;
+            }
+
+            foreach (var cell in request.FourScreen.ClipSelections.SelectMany(selection => selection.Cells))
+            {
+                if (!File.Exists(cell.SourceAsset.Path))
+                {
+                    return Result<Unit>.Failure($"找不到四屏辅助素材：{cell.SourceAsset.Path}");
                 }
             }
         }

@@ -1,4 +1,5 @@
 using JingXu.Workbench.Application.Abstractions;
+using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Domain.Common;
 using JingXu.Workbench.Domain.Subtitles;
 using JingXu.Workbench.Infrastructure.Processes;
@@ -61,14 +62,15 @@ public sealed class WhisperRunner : ISpeechRecognizer
                 "未找到 whisper-cli。请将 whisper.cpp 放入 runtime/whisper/，在设置中指定路径，或加入系统 PATH。");
         }
 
-        var tempRoot = Path.Combine(Path.GetTempPath(), "jingxu-whisper", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempRoot);
+        var tempRoot = Path.Combine(JingXu.Workbench.Application.Projects.WorkbenchDataPaths.GetTempDirectory(), "jingxu-whisper", Guid.NewGuid().ToString("N"));
         var wavPath = Path.Combine(tempRoot, "audio.wav");
         var outputPrefix = Path.Combine(tempRoot, "result");
 
         try
         {
             RuntimeResolution ffmpeg;
+            using var resource = TempResourceLease.Acquire(tempRoot, isDirectory: true);
+            Directory.CreateDirectory(tempRoot);
             try
             {
                 ffmpeg = _runtimeResolver.Resolve("ffmpeg", _userRuntimeDirectory);
@@ -123,6 +125,10 @@ public sealed class WhisperRunner : ISpeechRecognizer
             var cues = WhisperSrtParser.Parse(await File.ReadAllTextAsync(srtPath, cancellationToken).ConfigureAwait(false));
             progress?.Report($"识别完成，共 {cues.Count} 条字幕。");
             return Result<IReadOnlyList<SubtitleCue>>.Success(cues);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Result<IReadOnlyList<SubtitleCue>>.Failure($"识别临时文件准备失败：{ex.Message}");
         }
         catch (OperationCanceledException)
         {

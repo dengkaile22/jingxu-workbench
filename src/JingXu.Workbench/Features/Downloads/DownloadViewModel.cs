@@ -218,8 +218,7 @@ public sealed partial class DownloadViewModel : WorkspaceModuleViewModel, IDispo
         try
         {
             var logDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "JingXu", "logs");
+                JingXu.Workbench.Application.Projects.WorkbenchDataPaths.GetDataDirectory(), "logs");
             Directory.CreateDirectory(logDir);
             var logPath = Path.Combine(logDir, $"download-{DateTime.Now:yyyyMMdd}.log");
             var msg = $"[{DateTime.Now:O}] 下载失败: {url}\r\n{ex.GetBaseException().GetType().Name}: {ex.GetBaseException().Message}\r\n{ex.GetBaseException().StackTrace}\r\n\r\n";

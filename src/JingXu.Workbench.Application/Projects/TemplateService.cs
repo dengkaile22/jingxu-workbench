@@ -61,6 +61,25 @@ public sealed class StickerTrackTemplateDto
     public FixedAspectRatio FixedAspectRatio { get; init; } = FixedAspectRatio.None;
 }
 
+/// <summary>四屏界面参数；旧模板缺少此对象时四屏默认关闭。</summary>
+public sealed class FourScreenSettingsDto
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; init; }
+
+    [JsonPropertyName("startClipIndex")]
+    public int StartClipIndex { get; init; } = 1;
+
+    [JsonPropertyName("useRandomCurrentFolder")]
+    public bool UseRandomCurrentFolder { get; init; }
+
+    [JsonPropertyName("featherEnabled")]
+    public bool FeatherEnabled { get; init; } = true;
+
+    [JsonPropertyName("featherPixels")]
+    public int FeatherPixels { get; init; } = FourScreenEffectPlan.DefaultFeatherPixels;
+}
+
 /// <summary>效果模板关联的界面处理参数。</summary>
 public sealed class EffectTemplateSettingsDto
 {
@@ -69,6 +88,9 @@ public sealed class EffectTemplateSettingsDto
 
     [JsonPropertyName("stickerTracks")]
     public IReadOnlyList<StickerTrackTemplateDto> StickerTracks { get; init; } = [];
+
+    [JsonPropertyName("fourScreen")]
+    public FourScreenSettingsDto? FourScreen { get; init; }
 }
 
 /// <summary>效果模板库文档。</summary>
@@ -118,8 +140,7 @@ public sealed class TemplateService
     /// <summary>默认模板库路径。</summary>
     public static string DefaultTemplatePath =>
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu",
+            WorkbenchDataPaths.GetDataDirectory(),
             "effect-templates.json");
 
     /// <summary>当前实例使用的默认路径。</summary>

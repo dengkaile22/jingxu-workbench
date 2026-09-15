@@ -26,14 +26,15 @@ public sealed record RenderRequest(
     MaterializedMainMaterialBoost? MainMaterialBoost = null,
     OutputVideoSettings OutputVideoSettings = default,
     DoubleScreenEffectPlan? DoubleScreen = null,
-    VideoProcessingMode ProcessingMode = VideoProcessingMode.Auto)
+    VideoProcessingMode ProcessingMode = VideoProcessingMode.Auto,
+    FourScreenEffectPlan? FourScreen = null)
 {
     /// <summary>是否包含可编译的蒙版层。</summary>
     public bool HasRenderableOverlays => HasOverlays && (OverlayLayers?.Count ?? 0) > 0;
 
     /// <summary>是否包含可编译的差异化画面效果或贴纸。</summary>
     public bool HasRenderableEffects =>
-        HasEffects && (Effect?.HasVisualAdjustments == true || (Stickers ?? []) is { Count: > 0 } || DoubleScreen is not null);
+        HasEffects && (Effect?.HasVisualAdjustments == true || (Stickers ?? []) is { Count: > 0 } || DoubleScreen is not null || FourScreen is not null);
 
     /// <summary>是否包含可编译的 BGM 混音。</summary>
     public bool HasRenderableBgm => HasBgm && Bgm is not null;

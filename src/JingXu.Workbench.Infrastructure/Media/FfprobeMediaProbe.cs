@@ -23,7 +23,7 @@ public sealed class FfprobeMediaProbe : IMediaProbe
         "-show_format",
         "-show_streams",
         "-show_entries",
-        "stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration:stream_tags=rotate:stream_side_data=rotation:format=duration"
+        "stream=index,codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,r_frame_rate,duration:stream_tags=rotate:stream_side_data=rotation:format=duration"
     ];
 
     private readonly IExternalProcessRunner _runner;

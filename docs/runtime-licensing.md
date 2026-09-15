@@ -22,6 +22,14 @@
 - 可执行文件：`runtime/tesseract/tesseract.exe`
 - 语言数据（如 `chi_sim`、`eng`）随包分发时须单独记录版本与许可。
 
+## 嵌入式 Python 与选品爬虫依赖（PSF-2.0 / BSD / Apache-2.0 / MIT）
+
+- **解释器：** `runtime/python/python.exe`，Windows embeddable 包，PSF License 2.0；由 `scripts/Resolve-SpiderRuntime.ps1` 按指定版本构建，未修改源码。
+- **第三方库：** `runtime/python/Lib/site-packages`，包括 DrissionPage（BSD-3-Clause）、requests（Apache-2.0）、openpyxl（MIT）、tabulate（MIT）、lxml（BSD-3-Clause）及其传递依赖。完整清单以 `src/JingXu.Spider/requirements.txt` 与安装结果为准，逐项许可见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
+- **爬虫源码：** 仓库目录 `src/JingXu.Spider/`（自有代码），发布时暂存到 `runtime/spider`。
+- **数据与隐私：** 浏览器登录态（Cookie）保存在 `%LocalAppData%\JingXu\Spider\browser_profile`，仅在用户主动使用「选品爬虫」时生成，不随安装包分发。
+- **合规责任：** 抓取行为需遵守目标平台服务条款与当地法律；商业分发前须由法务确认抓取与再分发边界。
+
 ## 字体
 
 - IBM Plex Mono：SIL Open Font License 1.1（应用内嵌资源）

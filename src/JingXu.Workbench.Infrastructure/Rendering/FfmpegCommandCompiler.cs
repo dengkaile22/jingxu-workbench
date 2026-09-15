@@ -5,6 +5,7 @@ using JingXu.Workbench.Application.Rendering;
 using JingXu.Workbench.Domain.Common;
 using JingXu.Workbench.Domain.Composition;
 using JingXu.Workbench.Domain.Effects;
+using JingXu.Workbench.Domain.Media;
 using JingXu.Workbench.Domain.Overlays;
 using JingXu.Workbench.Domain.Rendering;
 
@@ -19,6 +20,10 @@ public sealed record FfmpegCompileResult(
     IReadOnlyList<FfmpegAuxiliaryFile> AuxiliaryFiles,
     IReadOnlyList<FfmpegInputAlias> InputAliases)
 {
+    public int HardwareDecodedInputs { get; init; }
+    public int HardwareScaledInputs { get; init; }
+    public string ProcessingDescription { get; init; } = "解码与缩放使用 CPU；蒙版与合成使用 CPU。";
+
     /// <summary>读取内联 <c>-filter_complex</c> 或脚本辅助文件中的滤镜图。</summary>
     public string? TryGetFilterComplex()
     {
@@ -57,11 +62,26 @@ public static class FfmpegCommandCompiler
         string ffmpegExecutable,
         RenderRequest request,
         string tempOutputPath,
-        VideoEncoderKind encoder = VideoEncoderKind.Libx264)
+        VideoEncoderKind encoder = VideoEncoderKind.Libx264,
+        HardwareVideoProcessingPlan? processingPlan = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ffmpegExecutable);
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(tempOutputPath);
+
+        if (request.DoubleScreen is not null && request.FourScreen is not null)
+        {
+            throw new InvalidOperationException("双屏与四屏不能同时启用。");
+        }
+
+        if (request.FourScreen is not null)
+        {
+            var validation = request.FourScreen.ValidateForPlan(request.Plan);
+            if (!validation.IsSuccess)
+            {
+                throw new InvalidOperationException(validation.Error);
+            }
+        }
 
         if (request.Plan.Clips.Count == 0)
         {
@@ -71,7 +91,8 @@ public static class FfmpegCommandCompiler
         var decision = RenderDecision.For(request);
         return decision.CanStreamCopy
             ? CompileStreamCopy(ffmpegExecutable, request, tempOutputPath)
-            : CompileTranscode(ffmpegExecutable, request, tempOutputPath, encoder);
+            : CompileTranscode(ffmpegExecutable, request, tempOutputPath, encoder,
+                request.ProcessingMode == VideoProcessingMode.Cpu ? HardwareVideoProcessingPlan.Software : processingPlan ?? HardwareVideoProcessingPlan.Software);
     }
 
     /// <summary>验证命令行长度是否在 Windows 保守预算内。</summary>
@@ -103,14 +124,18 @@ public static class FfmpegCommandCompiler
         return new FfmpegCompileResult(
             new FfmpegCommand(ffmpegExecutable, arguments),
             [new FfmpegAuxiliaryFile("concat.txt", listContent)],
-            []);
+            [])
+        {
+            ProcessingDescription = "无损直拷，不进行解码、缩放或合成。"
+        };
     }
 
     private static FfmpegCompileResult CompileTranscode(
         string ffmpegExecutable,
         RenderRequest request,
         string tempOutputPath,
-        VideoEncoderKind encoder)
+        VideoEncoderKind encoder,
+        HardwareVideoProcessingPlan processingPlan)
     {
         var (canvasWidth, canvasHeight) = OutputCanvasResolver.Resolve(request);
         var (targetWidth, targetHeight) = request.OutputVideoSettings.ResolveTargetSize(canvasWidth, canvasHeight);
@@ -120,15 +145,29 @@ public static class FfmpegCommandCompiler
         var profile = ResolveTranscodeProfile(request.Profile);
         var aliaser = new FfmpegPathAliaser();
 
-        // 这里使用 libx264 + 软件 filter_complex。不要强制自动硬解，否则部分驱动会输出
-        // 无法直接进入 scale/crop/overlay 等软件滤镜的硬件帧，导致渲染初始化失败。
+        // 兼容输入先在 GPU 解码/缩放，显式回传软件帧后进入 crop/overlay；最终编码保持独立选择。
         // 所有 -i 使用 staging 短相对路径，避免深目录/中文长路径撑爆 CreateProcess argv。
         var arguments = new List<string> { "-y" };
+        var hardwareInputs = new HashSet<int>();
 
-        foreach (var clip in request.Plan.Clips)
+        void AppendVideoInput(MediaAsset asset, int inputIndex, bool loop)
         {
-            arguments.Add("-i");
-            arguments.Add(aliaser.Alias(clip.Asset.Path));
+            // 循环会重建解码器的硬件帧上下文；FFmpeg 8.1/QSV 可能重建整个合成图甚至崩溃。
+            if (!loop && processingPlan.ShouldUseInput(asset.Info, request.ProcessingMode, request.Aspect.FitMode, targetWidth, targetHeight))
+            {
+                if (hardwareInputs.Count == 0) { arguments.InsertRange(1, processingPlan.DeviceArguments); }
+                hardwareInputs.Add(inputIndex);
+                arguments.AddRange(processingPlan.InputArguments);
+            }
+            // 每个输入控制软件解码线程，避免多素材时每路都按 CPU 核数扩张帧缓存。
+            arguments.AddRange(["-threads", "2"]);
+            if (loop) { arguments.AddRange(["-stream_loop", "-1"]); }
+            arguments.AddRange(["-i", aliaser.Alias(asset.Path)]);
+        }
+
+        for (var clipIndex = 0; clipIndex < request.Plan.Clips.Count; clipIndex++)
+        {
+            AppendVideoInput(request.Plan.Clips[clipIndex].Asset, clipIndex, loop: false);
         }
 
         var nextInputIndex = request.Plan.Clips.Count;
@@ -153,6 +192,7 @@ public static class FfmpegCommandCompiler
                 var sourceAlias = aliaser.Alias(selection.SourceAsset.Path);
                 if (!doubleScreenSourceInputIndices.TryGetValue(sourceAlias, out var sourceInputIndex))
                 {
+                    arguments.AddRange(["-threads", "2"]);
                     arguments.Add("-stream_loop");
                     arguments.Add("-1");
                     arguments.Add("-i");
@@ -162,6 +202,34 @@ public static class FfmpegCommandCompiler
                 }
 
                 doubleScreenInputIndices.Add(selection.ClipIndex, sourceInputIndex);
+            }
+        }
+
+        var fourScreenInputIndices = new Dictionary<(int ClipIndex, FourScreenPosition Position), int>();
+        var fourScreenSourceInputs = new Dictionary<(int ClipIndex, string Alias), int>();
+        if (request.FourScreen is not null)
+        {
+            foreach (var selection in request.FourScreen.ClipSelections.OrderBy(selection => selection.ClipIndex))
+            {
+                var mainPath = Path.GetFullPath(request.Plan.Clips[selection.ClipIndex].Asset.Path);
+                foreach (var cell in selection.Cells.OrderBy(cell => cell.Position))
+                {
+                    if (string.Equals(Path.GetFullPath(cell.SourceAsset.Path), mainPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var sourceAlias = aliaser.Alias(cell.SourceAsset.Path);
+                    var sourceKey = (selection.ClipIndex, sourceAlias);
+                    if (!fourScreenSourceInputs.TryGetValue(sourceKey, out var sourceInputIndex))
+                    {
+                        AppendVideoInput(cell.SourceAsset, nextInputIndex, loop: true);
+                        sourceInputIndex = nextInputIndex++;
+                        fourScreenSourceInputs.Add(sourceKey, sourceInputIndex);
+                    }
+
+                    fourScreenInputIndices.Add((selection.ClipIndex, cell.Position), sourceInputIndex);
+                }
             }
         }
 
@@ -225,7 +293,10 @@ public static class FfmpegCommandCompiler
             bgmInputIndex,
             stickerInputIndices,
             stickerBaseLabel,
-            doubleScreenInputIndices);
+            doubleScreenInputIndices,
+            fourScreenInputIndices,
+            processingPlan,
+            hardwareInputs);
         // 将滤镜图写入 sidecar，避免 Windows CreateProcess ~32K 命令行上限
         // （蒙版/贴纸/特效叠加后 filter_complex 常达数万字符）。
         arguments.Add("-filter_complex_script");
@@ -252,10 +323,19 @@ public static class FfmpegCommandCompiler
         arguments.Add("-nostats");
         arguments.Add(Path.GetFileName(tempOutputPath));
 
+        var hardwareScaleCount = filter.Split("scale_qsv=", StringSplitOptions.None).Length
+            + filter.Split("scale_cuda=", StringSplitOptions.None).Length - 2;
         return new FfmpegCompileResult(
             new FfmpegCommand(ffmpegExecutable, arguments),
             [new FfmpegAuxiliaryFile(FilterComplexScriptFileName, filter)],
-            aliaser.Aliases);
+            aliaser.Aliases)
+        {
+            HardwareDecodedInputs = hardwareInputs.Count,
+            HardwareScaledInputs = hardwareScaleCount,
+            ProcessingDescription = hardwareInputs.Count == 0
+                ? "本任务输入使用 CPU 解码与缩放；蒙版与合成使用 CPU。"
+                : $"{processingPlan.DisplayName} 硬解 {hardwareInputs.Count} 路输入；GPU 缩放 {hardwareScaleCount} 路；显式回传后由 CPU 完成蒙版与合成。"
+        };
     }
 
     /// <summary>
@@ -280,7 +360,10 @@ public static class FfmpegCommandCompiler
         int? bgmInputIndex,
         IReadOnlyList<int> stickerInputIndices,
         string stickerBaseLabel,
-        Dictionary<int, int> doubleScreenInputIndices)
+        Dictionary<int, int> doubleScreenInputIndices,
+        Dictionary<(int ClipIndex, FourScreenPosition Position), int> fourScreenInputIndices,
+        HardwareVideoProcessingPlan processingPlan,
+        HashSet<int> hardwareInputs)
     {
         var plan = request.Plan;
         var builder = new StringBuilder();
@@ -288,6 +371,15 @@ public static class FfmpegCommandCompiler
         var mixOverlayLayers = CollectMixOverlayLayers(request, overlayInputBase);
         var needsOverlayAudioMix = mixOverlayLayers.Count > 0;
         var concatAudioLabel = request.HasRenderableBgm || needsOverlayAudioMix ? "a_base" : "aout";
+
+        // 同片段内辅助输入只解码一次；跨片段独立输入，避免后续 concat 消费者积压当前片段帧。
+        foreach (var group in fourScreenInputIndices.GroupBy(entry => entry.Value))
+        {
+            builder.Append(CultureInfo.InvariantCulture, $"[{group.Key}:v]");
+            if (hardwareInputs.Contains(group.Key)) { builder.Append(HardwareVideoProcessingPlan.DownloadFilter).Append(','); }
+            // 所有同源格子共用此标签，下游完成一次缩放后再分格；不创建主动吸帧的 nullsink 支路。
+            builder.Append(CultureInfo.InvariantCulture, $"null[fsext{group.Key}];");
+        }
 
         for (var index = 0; index < plan.Clips.Count; index++)
         {
@@ -299,6 +391,12 @@ public static class FfmpegCommandCompiler
                 targetHeight,
                 index);
 
+            if (hardwareInputs.Contains(index))
+            {
+                fitFilter = processingPlan.BuildMainFitFilter(clip.Asset.Info, request.Aspect.FitMode, targetWidth, targetHeight, index)
+                    ?? fitFilter.Replace($"[{index}:v]", $"[{index}:v]{HardwareVideoProcessingPlan.DownloadFilter}[gpu{index}];[gpu{index}]", StringComparison.Ordinal);
+            }
+
             builder.Append(fitFilter);
 
             var scaleFactor = ResolveClipScaleFactor(request, index);
@@ -308,7 +406,12 @@ public static class FfmpegCommandCompiler
             }
 
             var doubleScreenApplies = request.DoubleScreen?.AppliesTo(index) == true;
-            var fittedVideoLabel = doubleScreenApplies ? $"v{index}fit" : $"v{index}";
+            var fourScreenApplies = request.FourScreen?.AppliesTo(index) == true;
+            var fittedVideoLabel = doubleScreenApplies || fourScreenApplies ? $"v{index}fit" : $"v{index}";
+            if (fourScreenApplies)
+            {
+                builder.Append(CultureInfo.InvariantCulture, $"trim=duration={durationSeconds},setpts=PTS-STARTPTS,");
+            }
             builder.Append(
                 CultureInfo.InvariantCulture,
                 $"fps={fpsText},setsar=1,format=yuv420p[{fittedVideoLabel}];");
@@ -348,6 +451,17 @@ public static class FfmpegCommandCompiler
                         targetHeight,
                         featherPixels));
                 }
+            }
+
+            if (fourScreenApplies)
+            {
+                var auxiliaryLabels = fourScreenInputIndices.Keys
+                    .Where(key => key.ClipIndex == index)
+                    .ToDictionary(key => key.Position, key => $"fsext{fourScreenInputIndices[key]}");
+                builder.Append(FourScreenFilterCompiler.Compile(
+                    request.FourScreen!.SelectionFor(index)!, targetWidth, targetHeight,
+                    request.FourScreen.FeatherEnabled, request.FourScreen.FeatherPixels,
+                    durationSeconds, fpsText, auxiliaryLabels));
             }
 
             if (clip.Asset.Info.HasAudio)

@@ -23,7 +23,7 @@ public sealed class HardwareEncoderRenderTests
 
         Assert.True(rendered.Result.IsSuccess, rendered.Result.FailureInfo?.Message);
         Assert.True(File.Exists(rendered.OutputPath));
-        Assert.Contains("CPU（libx264）", File.ReadAllText(rendered.LogPath), StringComparison.Ordinal);
+        Assert.Contains("CPU（libx264）", rendered.Result.Notice, StringComparison.Ordinal);
         var outputInfo = await RenderInfrastructure.CreateMediaProbe(workspace.AppRoot)
             .ProbeAsync(rendered.OutputPath, default);
         Assert.True(outputInfo.Duration >= TimeSpan.FromMilliseconds(750));
@@ -54,7 +54,7 @@ public sealed class HardwareEncoderRenderTests
 
         Assert.True(rendered.Result.IsSuccess, rendered.Result.FailureInfo?.Message);
         Assert.True(File.Exists(rendered.OutputPath));
-        Assert.Contains(selection.DisplayName, File.ReadAllText(rendered.LogPath), StringComparison.Ordinal);
+        Assert.Contains(selection.DisplayName, rendered.Result.Notice, StringComparison.Ordinal);
         var outputInfo = await RenderInfrastructure.CreateMediaProbe(workspace.AppRoot)
             .ProbeAsync(rendered.OutputPath, default);
         Assert.True(outputInfo.Duration >= TimeSpan.FromMilliseconds(750));

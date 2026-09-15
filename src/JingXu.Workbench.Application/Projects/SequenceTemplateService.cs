@@ -64,8 +64,7 @@ public sealed class SequenceTemplateService
     /// <summary>默认序号模板库路径。</summary>
     public static string DefaultTemplatePath =>
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu",
+            WorkbenchDataPaths.GetDataDirectory(),
             "sequence-templates.json");
 
     /// <summary>当前实例使用的默认路径。</summary>

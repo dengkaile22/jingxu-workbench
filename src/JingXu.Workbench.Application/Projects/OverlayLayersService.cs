@@ -32,8 +32,7 @@ public sealed class OverlayLayersService
 
     public static string DefaultLayersPath =>
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu",
+            WorkbenchDataPaths.GetDataDirectory(),
             "overlay-layers.json");
 
     public string StorePath => _defaultPath;

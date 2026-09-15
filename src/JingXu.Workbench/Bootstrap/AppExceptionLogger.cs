@@ -119,8 +119,7 @@ internal static class AppExceptionLogger
         try
         {
             var logDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "JingXu",
+                JingXu.Workbench.Application.Projects.WorkbenchDataPaths.GetDataDirectory(),
                 "logs");
             Directory.CreateDirectory(logDirectory);
 

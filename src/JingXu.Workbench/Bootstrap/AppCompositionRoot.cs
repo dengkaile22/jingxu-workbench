@@ -11,13 +11,17 @@ using JingXu.Workbench.Features.Overlays;
 using JingXu.Workbench.Features.Queue;
 using JingXu.Workbench.Features.Settings;
 using JingXu.Workbench.Features.Shell;
+using JingXu.Workbench.Features.Spider;
 using JingXu.Workbench.Features.Stickers;
 using JingXu.Workbench.Infrastructure.Bootstrap;
 using JingXu.Workbench.Infrastructure.Downloads;
 using JingXu.Workbench.Infrastructure.Media;
 using JingXu.Workbench.Infrastructure.Persistence;
 using JingXu.Workbench.Infrastructure.Processes;
+using JingXu.Workbench.Domain.Rendering;
+using JingXu.Workbench.Infrastructure.Rendering;
 using JingXu.Workbench.Infrastructure.Runtime;
+using JingXu.Workbench.Infrastructure.Spider;
 
 namespace JingXu.Workbench.Bootstrap;
 
@@ -32,6 +36,9 @@ public sealed class AppCompositionRoot
     private readonly IMediaFilePicker _mediaFilePicker;
     private readonly IOutputFolderPicker _outputFolderPicker;
     private readonly OverlayWorkbenchState _overlayState;
+    private readonly IExternalProcessRunner _processRunner;
+    private readonly HardwareVideoEncoderSelector _encoderSelector;
+    private readonly HardwareVideoProcessingSelector _processingSelector;
 
     public AppCompositionRoot()
         : this(new ShellFolderLauncher(), CreateDefaultMediaProbe(), new WpfMediaFilePicker(), new WpfOutputFolderPicker())
@@ -52,6 +59,9 @@ public sealed class AppCompositionRoot
         _mediaFilePicker = mediaFilePicker ?? new WpfMediaFilePicker();
         _outputFolderPicker = outputFolderPicker ?? new WpfOutputFolderPicker();
         _overlayState = overlayState ?? new OverlayWorkbenchState();
+        _processRunner = new ExternalProcessRunner();
+        _encoderSelector = new HardwareVideoEncoderSelector(_processRunner);
+        _processingSelector = new HardwareVideoProcessingSelector(_processRunner);
         UiDispatcher = uiDispatcher ?? new WpfUiDispatcher();
         RenderCoordinator = RenderCoordinator.Create(
             renderExecutor ?? CreateDefaultRenderExecutor(),
@@ -126,20 +136,57 @@ public sealed class AppCompositionRoot
         var downloader = new HttpClientVideoDownloader();
         var urlResolver = new SmartVideoUrlResolver();
         var downloads = new DownloadViewModel(downloader, urlResolver, UiDispatcher);
+        var spiderService = new PythonSpiderService(runner, appRoot, FindOnPath);
+        ShellViewModel? shellRef = null;
+        var spider = new SpiderViewModel(spiderService, downloads, UiDispatcher, _folderLauncher, mod => shellRef?.NavigateTo(mod));
         var queue = new RenderQueueViewModel(UiDispatcher);
         queue.BindCoordinator(RenderCoordinator);
         var settings = new SettingsViewModel(
             new RuntimeDiagnosticService(appRoot, resolver, runner),
-            RenderCoordinator);
+            RenderCoordinator,
+            _encoderSelector,
+            _processingSelector);
         // 音频库初始化后在后台加载库数据
         _ = audioLibrary.LoadAsync(CancellationToken.None);
-        return new ShellViewModel(composition, overlays, stickers, downloads, queue, settings, audioLibrary, _folderLauncher, frameExtractor, UiDispatcher);
+        shellRef = new ShellViewModel(composition, overlays, stickers, downloads, spider, queue, settings, audioLibrary, _folderLauncher, frameExtractor, UiDispatcher);
+        return shellRef;
     }
 
-    private static IRenderExecutor CreateDefaultRenderExecutor()
+    /// <summary>
+    /// 启动后在后台探测 GPU 编码器，避免第一次转码才排队等探针。
+    /// 失败只记日志，不影响窗口显示。
+    /// </summary>
+    public void WarmGpuEncoderProbe() => _ = WarmGpuEncoderProbeAsync();
+
+    private async Task WarmGpuEncoderProbeAsync()
+    {
+        try
+        {
+            var appRoot = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var resolver = new RuntimeResolver(appRoot, FindOnPath);
+            var ffmpeg = resolver.Resolve("ffmpeg", userDirectory: null);
+            await _encoderSelector
+                .SelectAsync(ffmpeg.Path, VideoProcessingMode.Auto, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (RuntimeToolNotFoundException)
+        {
+            // 没有 FFmpeg 时无法探测；设置页会提示安装运行时。
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceWarning($"启动时探测 GPU 编码器失败：{ex.GetBaseException().Message}");
+        }
+    }
+
+    private IRenderExecutor CreateDefaultRenderExecutor()
     {
         var appRoot = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return RenderInfrastructure.CreateFfmpegRenderExecutor(appRoot);
+        return RenderInfrastructure.CreateFfmpegRenderExecutor(
+            appRoot,
+            runner: _processRunner,
+            encoderSelector: _encoderSelector,
+            processingSelector: _processingSelector);
     }
 
     private static FfprobeMediaProbe CreateDefaultMediaProbe()

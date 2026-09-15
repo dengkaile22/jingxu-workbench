@@ -3,12 +3,16 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using JingXu.Workbench.Application.Abstractions;
+using JingXu.Workbench.Application.Projects;
 
 namespace JingXu.Workbench.Infrastructure.Downloads;
 
 public sealed class HttpClientVideoDownloader : IVideoDownloader
 {
     private static readonly HttpClient Client = CreateClient();
+    private readonly HttpClient _client;
+
+    public HttpClientVideoDownloader(HttpClient? client = null) => _client = client ?? Client;
 
     private const string DesktopUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
@@ -49,8 +53,8 @@ public sealed class HttpClientVideoDownloader : IVideoDownloader
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var request = strategy.CreateRequest(url);
-                var response = await Client.SendAsync(
+                using var request = strategy.CreateRequest(url);
+                var response = await _client.SendAsync(
                     request,
                     HttpCompletionOption.ResponseHeadersRead,
                     cancellationToken).ConfigureAwait(false);
@@ -101,49 +105,97 @@ public sealed class HttpClientVideoDownloader : IVideoDownloader
             var totalBytes = successfulResponse.Content.Headers.ContentLength;
             var totalBytesValue = totalBytes.HasValue ? totalBytes.Value : -1L;
 
-            var dir = Path.GetDirectoryName(outputPath);
-            if (!string.IsNullOrWhiteSpace(dir))
+            // 半成品与最终文件同卷，避免下载到其他盘时仍消耗系统盘，并保证替换操作原子完成。
+            outputPath = Path.GetFullPath(outputPath);
+            var partDirectory = Path.Combine(Path.GetDirectoryName(outputPath)!, PartDirectoryName);
+            var partPath = Path.Combine(partDirectory, Guid.NewGuid().ToString("N") + ".part");
+            using var resource = TempResourceLease.Acquire(partPath);
+            Directory.CreateDirectory(partDirectory);
+
+            try
             {
-                Directory.CreateDirectory(dir);
-            }
-
-            await using var contentStream = await successfulResponse.Content
-                .ReadAsStreamAsync(cancellationToken)
-                .ConfigureAwait(false);
-            await using var fileStream = new FileStream(
-                outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-
-            var buffer = new byte[81920];
-            var totalRead = 0L;
-            var lastReport = DateTime.UtcNow;
-            var lastRead = 0L;
-
-            while (true)
-            {
-                var bytesRead = await contentStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-                if (bytesRead == 0)
+                await using var contentStream = await successfulResponse.Content
+                    .ReadAsStreamAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                await using (var fileStream = new FileStream(
+                    partPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
                 {
-                    break;
+                    var buffer = new byte[81920];
+                    var totalRead = 0L;
+                    var lastReport = DateTime.UtcNow;
+                    var lastRead = 0L;
+
+                    while (true)
+                    {
+                        var bytesRead = await contentStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                        if (bytesRead == 0)
+                        {
+                            break;
+                        }
+
+                        await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
+                        totalRead += bytesRead;
+
+                        var now = DateTime.UtcNow;
+                        var elapsed = (now - lastReport).TotalSeconds;
+                        if (elapsed >= 0.2)
+                        {
+                            var speed = (totalRead - lastRead) / Math.Max(elapsed, 0.001);
+                            var percent = totalBytesValue > 0
+                                ? Math.Clamp((double)totalRead / totalBytesValue * 100.0, 0, 100)
+                                : 0;
+                            progress.Report(new DownloadProgress(totalRead, totalBytes, speed, percent));
+                            lastReport = now;
+                            lastRead = totalRead;
+                        }
+                    }
                 }
 
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
-                totalRead += bytesRead;
-
-                var now = DateTime.UtcNow;
-                var elapsed = (now - lastReport).TotalSeconds;
-                if (elapsed >= 0.2)
+                var destDir = Path.GetDirectoryName(outputPath);
+                if (!string.IsNullOrWhiteSpace(destDir))
                 {
-                    var speed = (totalRead - lastRead) / Math.Max(elapsed, 0.001);
-                    var percent = totalBytesValue > 0
-                        ? Math.Clamp((double)totalRead / totalBytesValue * 100.0, 0, 100)
-                        : 0;
-                    progress.Report(new DownloadProgress(totalRead, totalBytes, speed, percent));
-                    lastReport = now;
-                    lastRead = totalRead;
+                    Directory.CreateDirectory(destDir);
                 }
-            }
 
-            progress.Report(new DownloadProgress(totalRead, totalBytes, 0, 100));
+                if (File.Exists(outputPath))
+                {
+                    File.Replace(partPath, outputPath, destinationBackupFileName: null);
+                }
+                else
+                {
+                    File.Move(partPath, outputPath);
+                }
+
+                progress.Report(new DownloadProgress(
+                    new FileInfo(outputPath).Length,
+                    totalBytes,
+                    0,
+                    100));
+            }
+            catch (Exception)
+            {
+                TryDeletePart(partPath);
+                throw;
+            }
+        }
+    }
+
+    internal const string PartDirectoryName = ".jingxu-download";
+
+    private static void TryDeletePart(string partPath)
+    {
+        try
+        {
+            if (File.Exists(partPath))
+            {
+                File.Delete(partPath);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 

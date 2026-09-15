@@ -2,6 +2,7 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using JingXu.Workbench.Application.Abstractions;
+using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Features.Composition;
 
 namespace JingXu.Workbench.Features.Shell;
@@ -16,6 +17,14 @@ public sealed partial class GateMonitorViewModel : ObservableObject
     private string? _pendingFileName;
     private string? _pendingResolution;
     private string? _pendingDuration;
+    private TempResourceLease? _previewResource;
+
+    partial void OnPreviewImagePathChanged(string? value)
+    {
+        var previous = _previewResource;
+        _previewResource = string.IsNullOrWhiteSpace(value) ? null : TempResourceLease.Acquire(value);
+        previous?.Dispose();
+    }
 
     public GateMonitorViewModel(IMediaFrameExtractor frameExtractor, IUiDispatcher uiDispatcher)
     {
@@ -68,6 +77,7 @@ public sealed partial class GateMonitorViewModel : ObservableObject
 
         _uiDispatcher.Invoke(() =>
         {
+            var previousImage = PreviewImagePath;
             IsIdle = false;
             IsLoading = true;
             HasVideoPlayback = false;
@@ -76,6 +86,7 @@ public sealed partial class GateMonitorViewModel : ObservableObject
             PreviewImagePath = null;
             MonitorCaption = $"正在预览 · {material.FileName}";
             MonitorHint = $"{material.ResolutionText} · {material.DurationText}";
+            TryDeleteOwnedGatePreview(previousImage);
         });
 
         _pendingVideoPath = material.SourcePath;
@@ -127,18 +138,44 @@ public sealed partial class GateMonitorViewModel : ObservableObject
 
     private async Task LoadStaticFrameAsync(int generation, string videoPath, CancellationToken cancellationToken)
     {
-        var outputDir = Path.Combine(Path.GetTempPath(), "jingxu-gate-preview");
+        try { await LoadStaticFrameCoreAsync(generation, videoPath, cancellationToken).ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            _uiDispatcher.Invoke(() =>
+            {
+                if (generation != _loadGeneration) { return; }
+                IsLoading = false;
+                HasStaticFrame = false;
+                HasVideoPlayback = false;
+                PreviewImagePath = null;
+                MonitorCaption = $"预览受限 · {_pendingFileName}";
+                MonitorHint = $"预览失败：{ex.GetBaseException().Message}";
+            });
+        }
+    }
+
+    private async Task LoadStaticFrameCoreAsync(int generation, string videoPath, CancellationToken cancellationToken)
+    {
+        var outputDir = Path.Combine(JingXu.Workbench.Application.Projects.WorkbenchDataPaths.GetTempDirectory(), "jingxu-gate-preview");
         Directory.CreateDirectory(outputDir);
         var outputPath = Path.Combine(outputDir, $"{Guid.NewGuid():N}.jpg");
+        using var pendingResource = TempResourceLease.Acquire(outputPath);
 
         var result = await _frameExtractor
             .ExtractFirstFrameAsync(videoPath, outputPath, cancellationToken)
             .ConfigureAwait(false);
 
+        if (generation != _loadGeneration)
+        {
+            TryDeleteOwnedGatePreview(outputPath);
+            return;
+        }
+
         _uiDispatcher.Invoke(() =>
         {
             if (generation != _loadGeneration)
             {
+                TryDeleteOwnedGatePreview(outputPath);
                 return;
             }
 
@@ -148,13 +185,16 @@ public sealed partial class GateMonitorViewModel : ObservableObject
 
             if (result.IsSuccess)
             {
+                var previous = PreviewImagePath;
                 HasStaticFrame = true;
                 PreviewImagePath = result.Value;
+                TryDeleteOwnedGatePreview(previous);
                 MonitorCaption = $"正在预览 · {_pendingFileName}";
                 MonitorHint = $"{_pendingResolution} · {_pendingDuration} · 首帧静图";
                 return;
             }
 
+            TryDeleteOwnedGatePreview(outputPath);
             HasStaticFrame = false;
             PreviewImagePath = null;
             MonitorCaption = $"预览受限 · {_pendingFileName}";
@@ -172,6 +212,7 @@ public sealed partial class GateMonitorViewModel : ObservableObject
 
         _uiDispatcher.Invoke(() =>
         {
+            var previousImage = PreviewImagePath;
             IsIdle = true;
             IsLoading = false;
             HasVideoPlayback = false;
@@ -180,7 +221,38 @@ public sealed partial class GateMonitorViewModel : ObservableObject
             PreviewImagePath = null;
             MonitorCaption = "监视器空闲";
             MonitorHint = "离线就绪 · 导入素材后在此预览画面";
+            TryDeleteOwnedGatePreview(previousImage);
         });
+    }
+
+    /// <summary>只删 %TEMP%\jingxu-gate-preview 下本监视器生成的 JPEG。</summary>
+    private static void TryDeleteOwnedGatePreview(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            var previewDirectory = Path.GetFullPath(Path.Combine(JingXu.Workbench.Application.Projects.WorkbenchDataPaths.GetTempDirectory(), "jingxu-gate-preview"))
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            var fullPath = Path.GetFullPath(path);
+            if (!fullPath.StartsWith(previewDirectory, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(Path.GetExtension(fullPath), ".jpg", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (File.Exists(fullPath))
+            {
+                File.Delete(fullPath);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+        }
     }
 
     private static bool ShouldPreferStaticFrame(string? videoCodec, string sourcePath)

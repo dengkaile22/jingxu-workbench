@@ -1,8 +1,11 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using JingXu.Workbench.Application.Abstractions;
+using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Application.Rendering;
 using JingXu.Workbench.Domain.Common;
+using JingXu.Workbench.Domain.Media;
 using JingXu.Workbench.Domain.Rendering;
 using JingXu.Workbench.Infrastructure.Media;
 using JingXu.Workbench.Infrastructure.Processes;
@@ -26,6 +29,8 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
     private readonly string? _userRuntimeDirectory;
     private readonly Func<string, long>? _availableDiskBytes;
     private readonly IVideoEncoderSelector _encoderSelector;
+    private readonly IVideoProcessingSelector? _processingSelector;
+    private readonly RenderDiskSpaceReservations _diskReservations;
 
     public FfmpegRenderExecutor(
         IExternalProcessRunner runner,
@@ -33,7 +38,9 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
         RuntimeResolver runtimeResolver,
         string? userRuntimeDirectory = null,
         Func<string, long>? availableDiskBytes = null,
-        IVideoEncoderSelector? encoderSelector = null)
+        IVideoEncoderSelector? encoderSelector = null,
+        RenderDiskSpaceReservations? diskReservations = null,
+        IVideoProcessingSelector? processingSelector = null)
     {
         ArgumentNullException.ThrowIfNull(runner);
         ArgumentNullException.ThrowIfNull(probe);
@@ -44,12 +51,61 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
         _userRuntimeDirectory = userRuntimeDirectory;
         _availableDiskBytes = availableDiskBytes;
         _encoderSelector = encoderSelector ?? new HardwareVideoEncoderSelector(runner);
+        _processingSelector = processingSelector;
+        _diskReservations = diskReservations ?? new RenderDiskSpaceReservations();
     }
 
     /// <inheritdoc />
     public async Task<RenderExecutionResult> ExecuteAsync(
         RenderJob job,
         IProgress<RenderProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        if (job.Request is null)
+        {
+            return RenderExecutionResult.Failed("渲染任务缺少请求快照，无法执行。");
+        }
+
+        var outputDirectory = Path.GetDirectoryName(Path.GetFullPath(job.Request.OutputPath))!;
+        var stagingRoot = Path.Combine(outputDirectory, TempDirectoryName, job.Id.ToString("N"));
+        TempResourceLease? resource = null;
+        try
+        {
+            resource = TempResourceLease.Acquire(stagingRoot, isDirectory: true);
+            using var diskReservation = AcquireDiskReservation(job, stagingRoot);
+            var result = await ExecuteCoreAsync(job, progress, diskReservation, cancellationToken).ConfigureAwait(false);
+            if (!result.IsSuccess && Directory.Exists(stagingRoot))
+            {
+                var logPath = RenderDiagnosticStore.Preserve(job, stagingRoot,
+                    result.FailureInfo?.Message ?? "任务已取消。");
+                if (logPath is not null && result.FailureInfo is not null)
+                {
+                    result = result with { FailureInfo = new RenderFailure(result.FailureInfo.Message + "\n诊断日志：" + logPath) };
+                }
+            }
+
+            return result;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return RenderExecutionResult.Failed($"渲染资源准备失败：{ex.Message}");
+        }
+        finally
+        {
+            if (resource is not null)
+            {
+                TryDeleteOwnedStaging(job.Id, stagingRoot);
+                TryDeleteOwnedTempSubtitle(job.Request.SubtitleBurn?.SubtitleFilePath);
+                resource.Dispose();
+            }
+        }
+    }
+
+    private async Task<RenderExecutionResult> ExecuteCoreAsync(
+        RenderJob job,
+        IProgress<RenderProgress>? progress,
+        RenderDiskSpaceReservations.Reservation? diskReservation,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(job);
@@ -86,6 +142,8 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
             }
 
             Directory.CreateDirectory(stagingRoot);
+            // 登记 staging 位置，便于启动时清掉「素材旁分镜输出」下因崩溃留下的孤儿目录。
+            StagingLeaseStore.Track(job.Id, stagingRoot);
 
             var isStreamCopy =
                 request.SubtitleBurn is null &&
@@ -100,6 +158,20 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
                     : await _encoderSelector
                         .SelectAsync(ffmpeg.Path, request.ProcessingMode, cancellationToken)
                         .ConfigureAwait(false);
+            var (processingCanvasWidth, processingCanvasHeight) = OutputCanvasResolver.Resolve(request);
+            var processingTarget = request.OutputVideoSettings.ResolveTargetSize(processingCanvasWidth, processingCanvasHeight);
+            var shouldProbeProcessing = request.ProcessingMode == VideoProcessingMode.Gpu
+                || (request.ProcessingMode == VideoProcessingMode.Auto && request.Plan.Clips.Any(clip =>
+                    HardwareVideoProcessingPlan.HasDownscaleOpportunity(clip.Asset.Info, request.Aspect.FitMode,
+                        processingTarget.Width, processingTarget.Height)));
+            var processingPlan = _processingSelector is not null && !isStreamCopy
+                && request.SubtitleBurn is null && shouldProbeProcessing
+                ? await _processingSelector.SelectAsync(ffmpeg.Path, request.ProcessingMode, selection.Kind, cancellationToken).ConfigureAwait(false)
+                : HardwareVideoProcessingPlan.Software;
+            if (processingPlan.Kind != HardwareVideoProcessingKind.Software)
+            {
+                request = await RefreshLegacyPixelFormatsAsync(request, cancellationToken).ConfigureAwait(false);
+            }
 
             FfmpegCompileResult compileResult;
             TimeSpan expectedDuration;
@@ -123,7 +195,8 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
                     ffmpeg.Path,
                     request,
                     tempOutputPath,
-                    selection.Kind);
+                    selection.Kind,
+                    processingPlan);
                 expectedDuration = request.Plan.Duration;
             }
 
@@ -135,16 +208,15 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
 
             try
             {
-                StagingInputMaterializer.Materialize(stagingRoot, compileResult.InputAliases);
+                StagingInputMaterializer.Materialize(stagingRoot, compileResult.InputAliases,
+                    (path, bytes) => ReserveCopyWithCleanup(diskReservation, path, bytes, job));
             }
             catch (FileNotFoundException ex)
             {
-                CleanupMedia(stagingRoot, preserveLog: true);
                 return RenderExecutionResult.Failed(ex.Message);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                CleanupMedia(stagingRoot, preserveLog: true);
                 return RenderExecutionResult.Failed($"无法准备 staging 输入别名：{ex.Message}");
             }
 
@@ -161,24 +233,62 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
             catch (OperationCanceledException)
             {
                 await WriteLogAsync(logPath, "任务已取消。", CancellationToken.None).ConfigureAwait(false);
-                CleanupMedia(stagingRoot, preserveLog: true);
                 return RenderExecutionResult.Cancelled();
             }
 
             var log = new StringBuilder();
             log.AppendLine("=== 编码器选择 ===");
             log.AppendLine(selection.DisplayName);
+            log.AppendLine("=== 视频处理阶段 ===");
+            log.AppendLine(compileResult.ProcessingDescription);
             log.AppendLine();
             AppendAttemptLog(
                 log,
                 selection.Kind == VideoEncoderKind.Libx264 ? "CPU / 直拷尝试" : "GPU 尝试",
                 processResult);
 
-            string? successNotice = selection.Notice;
+            string? successNotice = compileResult.HardwareDecodedInputs > 0
+                || (_processingSelector is not null && !isStreamCopy && request.SubtitleBurn is null)
+                ? selection.Notice + " " + compileResult.ProcessingDescription
+                : selection.Notice;
+            if (processResult.ExitCode != 0 && compileResult.HardwareDecodedInputs > 0
+                && (HardwareVideoProcessingFailure.IsHardwareFailure(processResult.StandardError)
+                    || IsHardwareEncoderFailure(selection.Kind, processResult.StandardError)))
+            {
+                // 先移除输入硬解/缩放，保留已选硬编；不能把输入设备问题直接归咎于编码器。
+                TryDelete(tempOutputPath);
+                log.AppendLine();
+                log.AppendLine("=== 回退软件解码，保留所选编码器 ===");
+                var softwareDecode = FfmpegCommandCompiler.Compile(ffmpeg.Path, request, tempOutputPath, selection.Kind);
+                var decodeBudget = RenderPreflight.CheckCommandBudget(softwareDecode.Command.EstimatedCommandLineLength);
+                if (!decodeBudget.IsSuccess)
+                {
+                    await WriteLogAsync(logPath, log.ToString(), cancellationToken).ConfigureAwait(false);
+                    return RenderExecutionResult.Failed(decodeBudget.Error!);
+                }
+
+                try
+                {
+                    // 输入别名与首轮一致，仅重写滤镜辅助文件。
+                    processResult = await RunProcessAttemptAsync(softwareDecode, stagingRoot, expectedDuration, progress, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    log.AppendLine("软件解码回退过程中任务已取消。");
+                    await WriteLogAsync(logPath, log.ToString(), CancellationToken.None).ConfigureAwait(false);
+                    return RenderExecutionResult.Cancelled();
+                }
+                log.AppendLine(softwareDecode.ProcessingDescription);
+                AppendAttemptLog(log, "CPU 解码 / 保留编码器尝试", processResult);
+                successNotice = $"GPU 硬解或缩放不可用，已使用 CPU 解码；保留 {selection.DisplayName} 编码完成。";
+            }
+
             if (processResult.ExitCode != 0 &&
                 selection.Kind != VideoEncoderKind.Libx264 &&
                 IsHardwareEncoderFailure(selection.Kind, processResult.StandardError))
             {
+                // 本会话记住坏编码器，后续任务直接改探 QSV/AMF 或 CPU，避免每单都先 GPU 失败。
+                _encoderSelector.RememberHardwareFailure(ffmpeg.Path, selection.Kind);
                 TryDelete(tempOutputPath);
                 log.AppendLine();
                 log.AppendLine("=== 自动回退 CPU ===");
@@ -195,24 +305,22 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
                 if (!cpuBudget.IsSuccess)
                 {
                     await WriteLogAsync(logPath, log.ToString(), cancellationToken).ConfigureAwait(false);
-                    CleanupMedia(stagingRoot, preserveLog: true);
                     return RenderExecutionResult.Failed(cpuBudget.Error!);
                 }
 
                 try
                 {
-                    StagingInputMaterializer.Materialize(stagingRoot, cpuCompileResult.InputAliases);
+                    StagingInputMaterializer.Materialize(stagingRoot, cpuCompileResult.InputAliases,
+                        (path, bytes) => ReserveCopyWithCleanup(diskReservation, path, bytes, job));
                 }
                 catch (FileNotFoundException ex)
                 {
                     await WriteLogAsync(logPath, log.ToString(), cancellationToken).ConfigureAwait(false);
-                    CleanupMedia(stagingRoot, preserveLog: true);
                     return RenderExecutionResult.Failed(ex.Message);
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     await WriteLogAsync(logPath, log.ToString(), cancellationToken).ConfigureAwait(false);
-                    CleanupMedia(stagingRoot, preserveLog: true);
                     return RenderExecutionResult.Failed($"无法准备 staging 输入别名：{ex.Message}");
                 }
 
@@ -229,7 +337,6 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
                 {
                     log.AppendLine("CPU 回退过程中任务已取消。");
                     await WriteLogAsync(logPath, log.ToString(), CancellationToken.None).ConfigureAwait(false);
-                    CleanupMedia(stagingRoot, preserveLog: true);
                     return RenderExecutionResult.Cancelled();
                 }
 
@@ -241,7 +348,6 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
             {
                 await WriteLogAsync(logPath, log.ToString(), cancellationToken)
                     .ConfigureAwait(false);
-                CleanupMedia(stagingRoot, preserveLog: true);
                 return RenderExecutionResult.Failed(MapProcessFailure(processResult.ExitCode, processResult.StandardError));
             }
 
@@ -252,28 +358,99 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
                 .ConfigureAwait(false);
             if (!validation.IsSuccess)
             {
-                CleanupMedia(stagingRoot, preserveLog: true);
                 return RenderExecutionResult.Failed(validation.Error!);
             }
 
             MoveToFinalOutput(tempOutputPath, outputPath);
-            CleanupStagingDirectory(stagingRoot, preserveLog: true);
             return RenderExecutionResult.Success(successNotice);
         }
         catch (OperationCanceledException)
         {
-            CleanupMedia(stagingRoot, preserveLog: true);
             return RenderExecutionResult.Cancelled();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            CleanupMedia(stagingRoot, preserveLog: true);
             return RenderExecutionResult.Failed($"写入输出文件失败：{ex.Message}");
         }
         catch (Exception ex)
         {
-            CleanupMedia(stagingRoot, preserveLog: true);
             return RenderExecutionResult.Failed($"渲染编译失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>旧快照没有像素格式时只补本轮主片编译信息，不改变持久化计划、时长或画幅。</summary>
+    private async Task<RenderRequest> RefreshLegacyPixelFormatsAsync(RenderRequest request, CancellationToken cancellationToken)
+    {
+        var known = new Dictionary<string, MediaInfo?>(StringComparer.OrdinalIgnoreCase);
+        var clips = request.Plan.Clips.ToArray();
+        for (var index = 0; index < clips.Length; index++)
+        {
+            var asset = clips[index].Asset;
+            if (!string.IsNullOrWhiteSpace(asset.Info.PixelFormat)
+                || !string.Equals(asset.Info.VideoCodec, "h264", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if (!known.TryGetValue(asset.Path, out var current))
+            {
+                try { current = await _probe.ProbeAsync(asset.Path, cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    Trace.TraceWarning($"无法补充素材像素格式，继续使用软件解码：{ex.Message}");
+                    current = null;
+                }
+                known[asset.Path] = current;
+            }
+            if (current is not null && current.Width == asset.Info.Width && current.Height == asset.Info.Height
+                && current.RotationDegrees == asset.Info.RotationDegrees
+                && string.Equals(current.VideoCodec, asset.Info.VideoCodec, StringComparison.OrdinalIgnoreCase))
+            {
+                clips[index] = clips[index] with { Asset = asset with { Info = asset.Info with { PixelFormat = current.PixelFormat } } };
+            }
+        }
+        return request with { Plan = request.Plan with { Clips = clips } };
+    }
+
+    private RenderDiskSpaceReservations.Reservation? AcquireDiskReservation(RenderJob job, string stagingRoot)
+    {
+        if (_availableDiskBytes is null)
+        {
+            return null;
+        }
+
+        var temporaryOutput = Path.Combine(stagingRoot, "output.mp4");
+        var estimated = RenderPreflight.EstimateRequiredBytes(job.Request!);
+        try
+        {
+            return _diskReservations.Acquire(temporaryOutput, estimated, _availableDiskBytes);
+        }
+        catch (IOException)
+        {
+            // 清理只跟随本软件失效资源登记；活跃任务（包括本任务）受租约保护。
+            WorkbenchCacheCleanup.Cleanup(
+                extraSearchRoots: [Path.GetDirectoryName(job.Request!.OutputPath)!],
+                protectedJobIds: [job.Id],
+                includeOverlayThumbCache: false);
+            return _diskReservations.Acquire(temporaryOutput, estimated, _availableDiskBytes);
+        }
+    }
+
+    private static void ReserveCopyWithCleanup(RenderDiskSpaceReservations.Reservation? reservation,
+        string path, long bytes, RenderJob job)
+    {
+        if (reservation is null)
+        {
+            return;
+        }
+
+        try { reservation.ReserveCopy(path, bytes); }
+        catch (IOException)
+        {
+            WorkbenchCacheCleanup.Cleanup(
+                extraSearchRoots: [Path.GetDirectoryName(job.Request!.OutputPath)!],
+                protectedJobIds: [job.Id], includeOverlayThumbCache: false);
+            reservation.ReserveCopy(path, bytes);
         }
     }
 
@@ -476,6 +653,12 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
     private static string MapProcessFailure(int exitCode, string stderr)
     {
         var summary = SummarizeStderr(stderr);
+        if (exitCode == -12 || ContainsAny(summary, "cannot allocate memory", "out of memory"))
+        {
+            var detail = string.IsNullOrWhiteSpace(summary) ? string.Empty : $" 原因：{summary}";
+            return $"FFmpeg 内存申请失败，退出码 {exitCode}。请关闭其他占用内存的程序，或降低输出分辨率后重试。{detail}";
+        }
+
         return string.IsNullOrWhiteSpace(summary)
             ? $"FFmpeg 渲染失败，退出码 {exitCode}。"
             : $"FFmpeg 渲染失败，退出码 {exitCode}：{summary}";
@@ -494,24 +677,44 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
             return string.Empty;
         }
 
+        string? lastUsefulLine = null;
         for (var index = lines.Length - 1; index >= 0; index--)
         {
-            if (!IsGenericFfmpegFailureTrailer(lines[index]))
+            var line = lines[index];
+            if (IsGenericFfmpegFailureTrailer(line))
             {
-                return lines[index];
+                continue;
+            }
+
+            lastUsefulLine ??= line;
+            // FFmpeg 收尾时还会打印统计、弃用警告；优先展示真正的失败原因。
+            if (ContainsAny(line, "error", "failed", "invalid", "cannot", "could not",
+                    "no such file", "permission denied", "not found", "unable", "out of memory"))
+            {
+                return line;
             }
         }
 
-        return lines[^1];
+        return lastUsefulLine ?? string.Empty;
     }
 
-    private static bool IsGenericFfmpegFailureTrailer(string line) =>
-        line.Equals("Conversion failed!", StringComparison.OrdinalIgnoreCase) ||
-        line.Equals("Error reinitializing filters!", StringComparison.OrdinalIgnoreCase) ||
-        line.Equals("Error while filtering: Invalid argument", StringComparison.OrdinalIgnoreCase) ||
-        line.Contains("Qavg:", StringComparison.OrdinalIgnoreCase) ||
-        line.StartsWith("video:", StringComparison.OrdinalIgnoreCase) ||
-        line.StartsWith("frame=", StringComparison.OrdinalIgnoreCase);
+    private static bool IsGenericFfmpegFailureTrailer(string line)
+    {
+        // 新版 FFmpeg 的统计行带有 [out#0/mp4 @ ...] 前缀，不能只匹配行首 video:。
+        while (line.StartsWith('[') && line.IndexOf(']') is var end && end >= 0)
+        {
+            line = line[(end + 1)..].TrimStart();
+        }
+
+        return line.Equals("Conversion failed!", StringComparison.OrdinalIgnoreCase) ||
+            line.Equals("Error reinitializing filters!", StringComparison.OrdinalIgnoreCase) ||
+            line.Equals("Error while filtering: Invalid argument", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("Qavg:", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("video:", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("frame=", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("Task finished with error code:", StringComparison.OrdinalIgnoreCase) ||
+            line.StartsWith("Terminating thread with return code", StringComparison.OrdinalIgnoreCase);
+    }
 
     internal static bool IsHardwareEncoderFailure(VideoEncoderKind encoder, string stderr)
     {
@@ -539,7 +742,12 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
             stderr,
             "no capable devices found",
             "cannot load nvcuda",
+            "cannot load nvencodeapi",
             "error initializing output stream",
+            "error while opening encoder",
+            "openencodesession",
+            "native frames context",
+            "nvenc api",
             "failed to initialise",
             "failed to initialize",
             "device setup failed",
@@ -548,7 +756,8 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
             "initializing an internal mfx session",
             "failed to create mfx session",
             "amf failed to initialise",
-            "encoder initialization failed");
+            "encoder initialization failed",
+            "out of memory");
     }
 
     private static bool ContainsAny(string value, params string[] tokens) =>
@@ -587,66 +796,87 @@ public sealed class FfmpegRenderExecutor : IRenderExecutor
         await File.WriteAllTextAsync(logPath, content, cancellationToken).ConfigureAwait(false);
     }
 
-    private static void CleanupMedia(string stagingRoot, bool preserveLog)
+    /// <summary>
+    /// 删除本任务 staging。文件被占用时吞掉 IO 异常并保留 lease，下次启动再扫；不得抛出以免卡住状态机。
+    /// </summary>
+    private static void TryDeleteOwnedStaging(Guid jobId, string stagingRoot)
     {
-        if (!Directory.Exists(stagingRoot))
-        {
-            return;
-        }
-
-        foreach (var file in Directory.EnumerateFiles(stagingRoot))
-        {
-            if (preserveLog && Path.GetFileName(file).Equals("render.log", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            TryDelete(file);
-        }
+        TryDeleteDirectoryBestEffort(stagingRoot);
+        // 共享 .jingxu-tmp 父目录交给协调后的清理器；其他任务可能正在其中创建自己的目录。
+        // 清理失败的路径由外层 TempResourceLease 在释放时登记为失效资源，供后续回收。
+        StagingLeaseStore.Untrack(jobId);
     }
 
-    private static void CleanupStagingDirectory(string stagingRoot, bool preserveLog)
+    /// <summary>字幕实验室的临时 ASS 在烧录结束后删除；用户自选字幕路径绝不动。</summary>
+    private static void TryDeleteOwnedTempSubtitle(string? subtitlePath)
     {
-        if (!Directory.Exists(stagingRoot))
+        if (!WorkbenchCacheCleanup.IsOwnedTempSubtitlePath(subtitlePath) || subtitlePath is null)
         {
             return;
         }
 
-        if (preserveLog)
-        {
-            foreach (var file in Directory.EnumerateFiles(stagingRoot))
-            {
-                if (!Path.GetFileName(file).Equals("render.log", StringComparison.OrdinalIgnoreCase))
-                {
-                    TryDelete(file);
-                }
-            }
-
-            return;
-        }
-
-        TryDeleteDirectory(stagingRoot);
+        TempResourceLease.TryDeleteUnusedSubtitle(subtitlePath);
     }
 
     private static void TryDelete(string path)
     {
         try
         {
-            File.Delete(path);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
-        catch (IOException)
+        catch (IOException ex)
         {
+            Trace.TraceWarning($"无法删除临时文件 {path}：{ex.Message}");
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
+            Trace.TraceWarning($"无权删除临时文件 {path}：{ex.Message}");
         }
     }
 
-    private static void TryDeleteDirectory(string path)
+    private static void TryDeleteDirectoryBestEffort(string path)
     {
         try
         {
-            Directory.Delete(path, recursive: true);
+            if (!Directory.Exists(path))
+            {
+                return;
+            }
+
+            foreach (var file in Directory.GetFiles(path, "*", SearchOption.AllDirectories))
+            {
+                TryDelete(file);
+            }
+
+            foreach (var dir in Directory.GetDirectories(path, "*", SearchOption.AllDirectories)
+                         .OrderByDescending(static d => d.Length))
+            {
+                TryDeleteDirectoryIfEmpty(dir);
+            }
+
+            TryDeleteDirectoryIfEmpty(path);
+        }
+        catch (IOException ex)
+        {
+            Trace.TraceWarning($"无法删除暂存目录 {path}：{ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Trace.TraceWarning($"无权删除暂存目录 {path}：{ex.Message}");
+        }
+    }
+
+    private static void TryDeleteDirectoryIfEmpty(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any())
+            {
+                Directory.Delete(path, recursive: false);
+            }
         }
         catch (IOException)
         {

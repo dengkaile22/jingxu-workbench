@@ -7,6 +7,23 @@ namespace JingXu.Workbench.Application.Tests.Rendering;
 public sealed class RenderCoordinatorTests
 {
     [Fact]
+    public async Task Unexpected_executor_exception_becomes_failed_and_next_job_completes()
+    {
+        var jobs = await RenderCoordinatorTestDriver.RunToIdleAsync(new ThrowFirstExecutor(), RenderJobs.Create(2), maxConcurrency: 1);
+        Assert.Single(jobs, job => job.State == JobState.Failed && job.Error!.Contains("登记失败", StringComparison.Ordinal));
+        Assert.Single(jobs, job => job.State == JobState.Completed);
+    }
+
+    private sealed class ThrowFirstExecutor : IRenderExecutor
+    {
+        private int _calls;
+        public Task<RenderExecutionResult> ExecuteAsync(RenderJob job, IProgress<RenderProgress>? progress, CancellationToken cancellationToken) =>
+            Interlocked.Increment(ref _calls) == 1
+                ? throw new IOException("临时资源登记失败")
+                : Task.FromResult(RenderExecutionResult.Success());
+    }
+
+    [Fact]
     public async Task Never_runs_more_than_configured_concurrency()
     {
         var executor = new GateRenderExecutor();

@@ -77,7 +77,8 @@ public static class FfprobeJsonParser
             videoCodec,
             audio?.CodecName,
             audio is not null,
-            rotation);
+            rotation,
+            video.PixFmt);
     }
 
     private static TimeSpan ResolveDuration(string? streamDuration, string? formatDuration)
@@ -185,6 +186,7 @@ public static class FfprobeJsonParser
     {
         public string? CodecType { get; init; }
         public string? CodecName { get; init; }
+        public string? PixFmt { get; init; }
         public int? Width { get; init; }
         public int? Height { get; init; }
         public string? AvgFrameRate { get; init; }

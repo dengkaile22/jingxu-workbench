@@ -1,4 +1,5 @@
 using System.Windows;
+using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Bootstrap;
 
 namespace JingXu.Workbench;
@@ -43,5 +44,21 @@ public partial class App
         var window = new ShellWindow { DataContext = shell };
         MainWindow = window;
         window.Show();
+        // 窗口出来后再后台探测 GPU，不挡住启动；结果与渲染执行器共享缓存。
+        compositionRoot.WarmGpuEncoderProbe();
+        _ = CleanupStartupOrphansAsync();
+    }
+
+    private static async Task CleanupStartupOrphansAsync()
+    {
+        try
+        {
+            // 先显示窗口；跨进程资源登记保证后台扫描不会删除新建或其他实例的活跃文件。
+            await Task.Run(() => WorkbenchCacheCleanup.CleanupStartupOrphans()).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceWarning($"启动时清理临时文件失败：{ex.GetBaseException().Message}");
+        }
     }
 }

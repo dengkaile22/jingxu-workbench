@@ -56,8 +56,7 @@ public sealed class OverlayLibraryService
     /// <summary>默认库文件路径。</summary>
     public static string DefaultLibraryPath =>
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu",
+            WorkbenchDataPaths.GetDataDirectory(),
             "overlay-library.json");
 
     /// <summary>加载素材库；文件不存在时返回空库。</summary>

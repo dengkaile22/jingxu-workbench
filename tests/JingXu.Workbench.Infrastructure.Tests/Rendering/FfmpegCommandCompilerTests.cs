@@ -92,6 +92,7 @@ public sealed class FfmpegCommandCompilerTests
         Assert.Contains("-c", result.Command.Arguments);
         Assert.Contains("copy", result.Command.Arguments);
         Assert.Contains("concat.txt", result.AuxiliaryFiles.Select(x => x.FileName));
+        Assert.Contains("不进行解码", result.ProcessingDescription, StringComparison.Ordinal);
         Assert.Empty(result.InputAliases);
         Assert.Equal("temp.mp4", result.Command.Arguments[^1]);
     }
@@ -133,6 +134,7 @@ public sealed class FfmpegCommandCompilerTests
 
         AssertArgumentPair(result.Command.Arguments, "-c:v", codec);
         AssertArgumentPair(result.Command.Arguments, qualitySwitch, qualityValue);
+        AssertArgumentPair(result.Command.Arguments, "-pix_fmt", "yuv420p");
         Assert.DoesNotContain("-hwaccel", result.Command.Arguments);
     }
 
@@ -159,6 +161,23 @@ public sealed class FfmpegCommandCompilerTests
         AssertArgumentPair(nvenc.Command.Arguments, "-preset", "p5");
         AssertArgumentPair(qsv.Command.Arguments, "-preset", "medium");
         AssertArgumentPair(amf.Command.Arguments, "-quality", "balanced");
+    }
+
+    [Fact]
+    public void Fast_and_high_profiles_keep_vendor_speed_quality_presets()
+    {
+        var fast = CompilerTestPlans.TranscodeTwoClip() with { Profile = RenderProfile.Fast };
+        var high = CompilerTestPlans.TranscodeTwoClip() with { Profile = RenderProfile.High };
+
+        var nvencFast = FfmpegCommandCompiler.Compile(@"C:\ffmpeg.exe", fast, @"C:\out\fast.mp4", VideoEncoderKind.H264Nvenc);
+        var nvencHigh = FfmpegCommandCompiler.Compile(@"C:\ffmpeg.exe", high, @"C:\out\high.mp4", VideoEncoderKind.H264Nvenc);
+
+        AssertArgumentPair(nvencFast.Command.Arguments, "-preset", "p2");
+        AssertArgumentPair(nvencFast.Command.Arguments, "-cq", "26");
+        AssertArgumentPair(nvencHigh.Command.Arguments, "-preset", "p6");
+        AssertArgumentPair(nvencHigh.Command.Arguments, "-cq", "18");
+        Assert.DoesNotContain("-hwaccel", nvencFast.Command.Arguments);
+        Assert.DoesNotContain("-hwaccel", nvencHigh.Command.Arguments);
     }
 
     [Fact]

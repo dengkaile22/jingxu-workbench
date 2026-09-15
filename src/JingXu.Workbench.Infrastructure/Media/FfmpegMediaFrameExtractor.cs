@@ -1,4 +1,5 @@
 using JingXu.Workbench.Application.Abstractions;
+using JingXu.Workbench.Application.Projects;
 using JingXu.Workbench.Domain.Common;
 using JingXu.Workbench.Domain.Overlays;
 using JingXu.Workbench.Infrastructure.Processes;
@@ -31,9 +32,11 @@ public sealed class FfmpegMediaFrameExtractor : IMediaFrameExtractor
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(videoPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputJpegPath);
-
+        var keepOutput = false;
+        var startedWriting = false;
         try
         {
+            using var resource = TempResourceLease.Acquire(outputJpegPath);
             var ffmpeg = _resolver.Resolve("ffmpeg", _userRuntimeDirectory);
             EnsureParentDirectory(outputJpegPath);
             string[] arguments =
@@ -47,6 +50,7 @@ public sealed class FfmpegMediaFrameExtractor : IMediaFrameExtractor
             ];
 
             var request = ProcessRequest.Create(ffmpeg.Path, arguments);
+            startedWriting = true;
             var result = await _runner.RunAsync(request, progress: null, cancellationToken).ConfigureAwait(false);
             if (result.ExitCode != 0)
             {
@@ -61,6 +65,7 @@ public sealed class FfmpegMediaFrameExtractor : IMediaFrameExtractor
                 return Result<string>.Failure("首帧文件未生成或为零字节。");
             }
 
+            keepOutput = true;
             return Result<string>.Success(outputJpegPath);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -74,6 +79,14 @@ public sealed class FfmpegMediaFrameExtractor : IMediaFrameExtractor
         catch (Exception ex)
         {
             return Result<string>.Failure($"首帧抽取失败：{ex.GetBaseException().Message}");
+        }
+        finally
+        {
+            // 失败/取消留下的半成品 JPEG 不是用户素材，应删；成功则保留给预览/缩略图使用。
+            if (!keepOutput && startedWriting)
+            {
+                TryDeletePartialOutput(outputJpegPath);
+            }
         }
     }
 
@@ -97,8 +110,11 @@ public sealed class FfmpegMediaFrameExtractor : IMediaFrameExtractor
             return Result<string>.Failure("蒙版素材不存在，无法生成叠层预览。");
         }
 
+        var keepPreview = false;
+        var startedWriting = false;
         try
         {
+            using var resource = TempResourceLease.Acquire(request.OutputJpegPath);
             var ffmpeg = _resolver.Resolve("ffmpeg", _userRuntimeDirectory);
             EnsureParentDirectory(request.OutputJpegPath);
 
@@ -145,6 +161,7 @@ public sealed class FfmpegMediaFrameExtractor : IMediaFrameExtractor
             ]);
 
             var processRequest = ProcessRequest.Create(ffmpeg.Path, arguments);
+            startedWriting = true;
             var result = await _runner.RunAsync(processRequest, progress: null, cancellationToken)
                 .ConfigureAwait(false);
             if (result.ExitCode != 0)
@@ -160,6 +177,7 @@ public sealed class FfmpegMediaFrameExtractor : IMediaFrameExtractor
                 return Result<string>.Failure("叠层预览文件未生成或为零字节。");
             }
 
+            keepPreview = true;
             return Result<string>.Success(request.OutputJpegPath);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -174,6 +192,13 @@ public sealed class FfmpegMediaFrameExtractor : IMediaFrameExtractor
         {
             return Result<string>.Failure($"叠层预览生成失败：{ex.GetBaseException().Message}");
         }
+        finally
+        {
+            if (!keepPreview && startedWriting)
+            {
+                TryDeletePartialOutput(request.OutputJpegPath);
+            }
+        }
     }
 
     private static void EnsureParentDirectory(string filePath)
@@ -182,6 +207,24 @@ public sealed class FfmpegMediaFrameExtractor : IMediaFrameExtractor
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
+        }
+    }
+
+    /// <summary>失败或取消时删除半成品 JPEG；成功路径不得调用。</summary>
+    private static void TryDeletePartialOutput(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 }

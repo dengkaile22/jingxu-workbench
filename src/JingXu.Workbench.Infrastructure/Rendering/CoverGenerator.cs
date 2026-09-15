@@ -68,14 +68,34 @@ public static class CoverGenerator
 
         if (result.ExitCode != 0)
         {
+            TryDeletePartialCover(outputJpegPath);
             return Result<string>.Failure($"封面生成失败：{result.StandardError.Trim()}");
         }
 
         if (!File.Exists(outputJpegPath) || new FileInfo(outputJpegPath).Length == 0)
         {
+            TryDeletePartialCover(outputJpegPath);
             return Result<string>.Failure("封面文件未生成或为零字节。");
         }
 
         return Result<string>.Success(outputJpegPath);
+    }
+
+    /// <summary>封面生成失败时删除半成品 JPEG；成功封面是用户可见产物，不得删除。</summary>
+    private static void TryDeletePartialCover(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 }

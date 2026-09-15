@@ -29,6 +29,9 @@ public interface IProcessRequest
 
     /// <summary>子进程的调度优先级。</summary>
     ExternalProcessPriority Priority { get; }
+
+    /// <summary>标准输出/标准错误的文本编码；为空时使用系统默认代码页。</summary>
+    System.Text.Encoding? OutputEncoding => null;
 }
 
 /// <summary>

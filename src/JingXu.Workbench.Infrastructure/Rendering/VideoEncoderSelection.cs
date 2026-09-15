@@ -29,4 +29,16 @@ public interface IVideoEncoderSelector
         string ffmpegExecutable,
         VideoProcessingMode mode,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 正式 GPU 编码已证明该编码器不可用时，本会话内跳过它，后续任务改探下一候选或 CPU。
+    /// </summary>
+    void RememberHardwareFailure(string ffmpegExecutable, VideoEncoderKind kind)
+    {
+    }
+
+    /// <summary>清空某 FFmpeg 路径上的探测缓存与跳过名单（设置页刷新诊断）。</summary>
+    void ResetProbe(string ffmpegExecutable)
+    {
+    }
 }

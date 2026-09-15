@@ -44,6 +44,28 @@
 - **项目主页：** https://github.com/tesseract-ocr/tesseract
 - **源代码：** https://github.com/tesseract-ocr/tesseract
 
+## 嵌入式 Python（选品爬虫运行时）
+
+- **显示名称：** CPython（Windows embeddable package）
+- **相对路径：** `runtime/python/python.exe`
+- **版本：** 由 `scripts/Resolve-SpiderRuntime.ps1` 的 `-Version` 决定（默认 3.12.10）
+- **许可证：** PSF License 2.0
+- **官方下载：** https://www.python.org/downloads/windows/
+- **许可文本：** https://docs.python.org/3/license.html
+
+应用以独立进程调用，不修改 Python 源码。分发包同时包含从 PyPI 安装的第三方库（无修改），随包清单见 `runtime/python/Lib/site-packages`：
+
+| 组件 | 许可证 | 来源 |
+|------|--------|------|
+| DrissionPage | BSD-3-Clause | https://github.com/g1879/DrissionPage |
+| requests | Apache-2.0 | https://github.com/psf/requests |
+| openpyxl | MIT | https://openpyxl.readthedocs.io/ |
+| tabulate | MIT | https://github.com/astanin/python-tabulate |
+| lxml | BSD-3-Clause | https://lxml.de/ |
+| 其余传递依赖（websocket-client、psutil、tldextract、cssselect、click、et_xmlfile 等） | BSD / Apache-2.0 / MIT | PyPI 元数据与各项目仓库 |
+
+**用户须知：** 选品爬虫会访问抖音/快手公开页面并保存浏览器登录态（`%LocalAppData%\JingXu\Spider\browser_profile`，含 Cookie）。请确保使用方式符合目标平台服务条款与当地法律；该目录属敏感数据，不应提交到版本库或随包分发。
+
 ## 界面字体
 
 - **IBM Plex Mono**（等宽数字/时间码）：SIL Open Font License 1.1

@@ -29,6 +29,12 @@ public sealed class ExternalProcessRunner : IExternalProcessRunner
             CreateNoWindow = true
         };
 
+        if (request.OutputEncoding is { } outputEncoding)
+        {
+            startInfo.StandardOutputEncoding = outputEncoding;
+            startInfo.StandardErrorEncoding = outputEncoding;
+        }
+
         foreach (var argument in request.Arguments)
         {
             startInfo.ArgumentList.Add(argument);

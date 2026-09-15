@@ -3,6 +3,7 @@ using JingXu.Workbench.Domain.Effects;
 using JingXu.Workbench.Domain.Media;
 using JingXu.Workbench.Domain.Overlays;
 using JingXu.Workbench.Domain.Rendering;
+using JingXu.Workbench.Application.Projects;
 
 namespace JingXu.Workbench.Application.Rendering;
 
@@ -12,10 +13,7 @@ namespace JingXu.Workbench.Application.Rendering;
 public static class RenderRequestFactory
 {
     /// <summary>默认项目根目录（多来源任务的「分镜输出」父目录）。</summary>
-    public static string DefaultProjectDirectory =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "JingXu");
+    public static string DefaultProjectDirectory => WorkbenchDataPaths.GetDataDirectory();
 
     /// <summary>导入前的占位默认目录（多来源策略：项目根下的「分镜输出」）。</summary>
     public static string DefaultOutputDirectory =>
@@ -78,7 +76,9 @@ public static class RenderRequestFactory
         OutputVideoSettings outputVideoSettings = default,
         DoubleScreenEffectPlan? doubleScreen = null,
         VideoProcessingMode processingMode = VideoProcessingMode.Auto,
-        IReadOnlyList<MediaAsset>? doubleScreenSourceAssets = null) =>
+        IReadOnlyList<MediaAsset>? doubleScreenSourceAssets = null,
+        FourScreenEffectPlan? fourScreen = null,
+        IReadOnlyList<MediaAsset>? fourScreenSourceAssets = null) =>
         CreateForPlans(
             plans,
             outputDirectory,
@@ -95,7 +95,9 @@ public static class RenderRequestFactory
             doubleScreen: doubleScreen,
             stickersPerPlan: null,
             processingMode: processingMode,
-            doubleScreenSourceAssets: doubleScreenSourceAssets);
+            doubleScreenSourceAssets: doubleScreenSourceAssets,
+            fourScreen: fourScreen,
+            fourScreenSourceAssets: fourScreenSourceAssets);
 
 
     /// <summary>
@@ -119,11 +121,18 @@ public static class RenderRequestFactory
         IReadOnlyList<IReadOnlyList<ImageSticker>>? stickersPerPlan = null,
         VideoProcessingMode processingMode = VideoProcessingMode.Auto,
         IReadOnlyList<BgmMixPlan>? bgmPerPlan = null,
-        IReadOnlyList<MediaAsset>? doubleScreenSourceAssets = null)
+        IReadOnlyList<MediaAsset>? doubleScreenSourceAssets = null,
+        FourScreenEffectPlan? fourScreen = null,
+        IReadOnlyList<MediaAsset>? fourScreenSourceAssets = null)
     {
         ArgumentNullException.ThrowIfNull(plans);
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(aspect);
+
+        if (doubleScreen is not null && fourScreen is not null)
+        {
+            throw new ArgumentException("双屏与四屏不能同时启用。", nameof(fourScreen));
+        }
 
         if (overlayLayersPerPlan is not null && overlayLayersPerPlan.Count != plans.Count)
         {
@@ -167,7 +176,7 @@ public static class RenderRequestFactory
         RenderRequest CreateRequest(CompositionPlan plan, string outputPath, IReadOnlyList<OverlayLayer> layers, IReadOnlyList<ImageSticker> planStickers, int planIndex)
         {
             var hasOverlays = layers.Count > 0;
-            var planHasEffects = usesStandardEffect || planStickers.Count > 0 || doubleScreen is not null;
+            var planHasEffects = usesStandardEffect || planStickers.Count > 0 || doubleScreen is not null || fourScreen is not null;
             DoubleScreenEffectPlan? planDoubleScreen = doubleScreen;
             if (doubleScreen is not null && doubleScreen.SourceMode == DoubleScreenSourceMode.RandomCurrentFolder)
             {
@@ -181,6 +190,18 @@ public static class RenderRequestFactory
                 }
 
                 planDoubleScreen = materialized.Value!;
+            }
+
+            FourScreenEffectPlan? planFourScreen = null;
+            if (fourScreen is not null)
+            {
+                var materialized = fourScreen.MaterializeForPlan(plan, fourScreenSourceAssets ?? [], planIndex);
+                if (!materialized.IsSuccess)
+                {
+                    throw new InvalidOperationException(materialized.Error);
+                }
+
+                planFourScreen = materialized.Value!;
             }
 
             MaterializedEffect? effect = null;
@@ -217,7 +238,8 @@ public static class RenderRequestFactory
                 MainMaterialBoost: materializedBoost,
                 OutputVideoSettings: outputVideoSettings,
                 DoubleScreen: planDoubleScreen,
-                ProcessingMode: processingMode);
+                ProcessingMode: processingMode,
+                FourScreen: planFourScreen);
         }
 
         if (plans.Count == 1)

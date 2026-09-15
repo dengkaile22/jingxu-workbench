@@ -26,6 +26,27 @@ public sealed class AtomicJsonStoreTests : IDisposable
         new(ProjectDocument.CurrentSchemaVersion, committer);
 
     [Fact]
+    public async Task Background_cache_cleanup_does_not_remove_a_closed_file_waiting_for_atomic_commit()
+    {
+        var path = Path.Combine(_tempDir, "effect-templates.json");
+        await CreateStore(new CleanupDuringCommit()).SaveAsync(path,
+            ProjectDocument.Create("保存过程中清理", _tempDir), DocumentAccessMode.ReadWrite, default);
+        var loaded = await CreateStore().LoadAsync(path, default);
+        Assert.Equal("保存过程中清理", loaded.Document.Name);
+    }
+
+    private sealed class CleanupDuringCommit : IFileCommitter
+    {
+        public void Commit(string tempPath, string targetPath)
+        {
+            var root = Path.GetDirectoryName(targetPath)!;
+            WorkbenchCacheCleanup.Cleanup(root, Path.Combine(root, "temp"));
+            Assert.True(File.Exists(tempPath), "后台清理不得删除刚关闭、等待原子提交的库文件。");
+            new AtomicFileCommitter().Commit(tempPath, targetPath);
+        }
+    }
+
+    [Fact]
     public async Task Save_then_load_round_trips_schema_version_and_unicode()
     {
         var store = CreateStore();

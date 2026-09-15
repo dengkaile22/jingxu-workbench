@@ -7,7 +7,8 @@ namespace JingXu.Workbench.Infrastructure.Rendering;
 /// </summary>
 internal static class StagingInputMaterializer
 {
-    public static void Materialize(string stagingRoot, IReadOnlyList<FfmpegInputAlias> aliases)
+    public static void Materialize(string stagingRoot, IReadOnlyList<FfmpegInputAlias> aliases,
+        Action<string, long>? beforeCopy = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stagingRoot);
         ArgumentNullException.ThrowIfNull(aliases);
@@ -21,11 +22,11 @@ internal static class StagingInputMaterializer
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            LinkOrCopy(alias.AbsolutePath, destination);
+            LinkOrCopy(alias.AbsolutePath, destination, beforeCopy);
         }
     }
 
-    private static void LinkOrCopy(string source, string destination)
+    private static void LinkOrCopy(string source, string destination, Action<string, long>? beforeCopy)
     {
         if (!File.Exists(source))
         {
@@ -47,6 +48,7 @@ internal static class StagingInputMaterializer
             // 无权限创建符号链接时回退复制。
         }
 
+        beforeCopy?.Invoke(destination, new FileInfo(source).Length);
         File.Copy(source, destination, overwrite: true);
     }
 

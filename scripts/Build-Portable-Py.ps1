@@ -2,7 +2,7 @@
 param(
     # 运行时缓存目录（含 ffmpeg/whisper/tesseract/python）
     [string] $RuntimeDirectory = "",
-    # 输出目录；默认 artifacts/py-release
+    # 输出目录；默认 artifacts/release（与 .NET 版统一到同一交付目录）
     [string] $OutputDirectory = "",
     # 不做 ZIP 与哈希（仅本地快速验证）
     [switch] $SkipArchive,
@@ -60,7 +60,8 @@ if ([string]::IsNullOrWhiteSpace($RuntimeDirectory)) {
     $RuntimeDirectory = Join-Path $repoRoot 'runtime'
 }
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-    $OutputDirectory = Join-Path $repoRoot 'artifacts\py-release'
+    # 与 .NET 版统一到 artifacts/release，交付只认一个目录。
+    $OutputDirectory = Join-Path $repoRoot 'artifacts\release'
 }
 
 Write-Host '=== 1. 检查打包依赖 ==='
@@ -190,18 +191,26 @@ if (-not $SkipSelfTest) {
 }
 
 Write-Host '=== 7. 生成交付物 ==='
-if (Test-Path $OutputDirectory) { Remove-Item $OutputDirectory -Recurse -Force }
-New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+# 交付目录与 .NET 版共用 artifacts/release，因此绝不能整目录删除
+# （那会连带删掉 .NET 版的 MSI 与便携包）；只覆盖本次要产出的同名文件。
+if (-not (Test-Path $OutputDirectory)) {
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+}
 
 $zipName = "$appName-Py-Portable-win-x64.zip"
 $zipPath = Join-Path $OutputDirectory $zipName
 if (-not $SkipArchive) {
+    if (Test-Path $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
     Compress-Archive -Path (Join-Path $stagedApp '*') -DestinationPath $zipPath -CompressionLevel Optimal
     $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    Set-Content -Path (Join-Path $OutputDirectory 'SHA256SUMS.txt') `
-        -Value "$zipHash  $zipName`r`n" -Encoding UTF8
+
+    # 校验和写到独立文件，避免覆盖 .NET 版维护的 SHA256SUMS.txt。
+    $sumsName = 'SHA256SUMS-PyPortable.txt'
+    Set-Content -Path (Join-Path $OutputDirectory $sumsName) `
+        -Value "$zipHash  $zipName" -Encoding UTF8
     Write-Host "  ZIP：$zipPath"
     Write-Host "  SHA-256：$zipHash"
+    Write-Host "  校验和：$(Join-Path $OutputDirectory $sumsName)"
 } else {
     Write-Warning '  已跳过 ZIP 打包（-SkipArchive）'
 }

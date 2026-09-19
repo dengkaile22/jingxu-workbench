@@ -61,11 +61,6 @@ if ($wix -like '*wix.exe') {
 
     $namedMsiPath = Join-Path $releaseDir '炳恒快速混剪-win-x64.msi'
     Copy-Item $msiPath $namedMsiPath -Force
-
-    # 同步到项目根目录 dist/ 交付目录
-    $distDir = Join-Path $repoRoot 'dist'
-    if (-not (Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir -Force | Out-Null }
-    Copy-Item $namedMsiPath (Join-Path $distDir '炳恒快速混剪-win-x64.msi') -Force
 }
 else {
     Write-Warning 'BLOCKER: Legacy candle/light detected. This repository requires WiX Toolset 6 (wix.exe).'
@@ -78,11 +73,7 @@ $sumsContent = "$msiHash  炳恒快速混剪-win-x64.msi`r`n$msiHash  JingXu.Wor
 $releaseSums = Join-Path $releaseDir 'SHA256SUMS.txt'
 Set-Content -Path $releaseSums -Value $sumsContent -Encoding UTF8
 
-$distSums = Join-Path (Join-Path $repoRoot 'dist') 'SHA256SUMS.txt'
-Set-Content -Path $distSums -Value "$msiHash  炳恒快速混剪-win-x64.msi`r`n" -Encoding UTF8
-
 Write-Host "MSI Package generated: $namedMsiPath"
-Write-Host "Dist MSI Package: $(Join-Path $distDir '炳恒快速混剪-win-x64.msi')"
 Write-Host "SHA-256 (MSI): $msiHash"
 
 exit 0

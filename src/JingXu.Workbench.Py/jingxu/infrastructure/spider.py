@@ -17,6 +17,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -25,6 +27,9 @@ from jingxu.infrastructure.paths import data_directory
 
 SPIDER_ENV_DIR = "JINGXU_SPIDER_DIR"
 SPIDER_ENV_PYTHON = "JINGXU_SPIDER_PYTHON"
+
+# 单次抓取的兜底超时（秒）。真实抓取要逐账号翻页，这里只防挂死。
+DEFAULT_RUN_TIMEOUT_SECONDS = 1800.0
 
 # CLI 依赖模块（缺失时给出可操作提示，与爬虫 requirements.txt 对应）
 REQUIRED_MODULES = ("DrissionPage", "requests", "openpyxl")
@@ -456,10 +461,50 @@ def parse_result_payload(payload: dict) -> SpiderRunResult:
     )
 
 
+# 失败摘要里要跳过的"噪声行"：版本横幅、网址、纯分隔线等。
+_NOISE_MARKERS = ("版本:", "版本：", "version", "http://", "https://", "===", "---")
+_ERROR_MARKERS = (
+    "traceback",
+    "error",
+    "exception",
+    "failed",
+    "failure",
+    "错误",
+    "失败",
+    "异常",
+    "无法",
+    "拒绝",
+    "超时",
+)
+
+
+def summarise_failure(lines: Sequence[str], *, exit_code: int | None = None) -> str:
+    """从输出尾部挑出最有信息量的一行作为失败原因。
+
+    直接取最后一行会把爬虫的版本横幅（如 ``版本: 4.1.1.4``）当成错误原因，
+    实测误导性很强。这里优先返回含错误关键字的行，其次返回最后一行非噪声内容。
+    """
+    cleaned = [line.strip() for line in lines if line and line.strip()]
+    if not cleaned:
+        return f"退出码 {exit_code}" if exit_code is not None else "无输出"
+
+    for line in reversed(cleaned):
+        lowered = line.lower()
+        if any(marker in lowered for marker in _ERROR_MARKERS):
+            return line
+
+    for line in reversed(cleaned):
+        if not any(marker in line for marker in _NOISE_MARKERS):
+            return line
+    return cleaned[-1]
+
+
 class SpiderRunner:
     """以子进程执行一次抓取；支持取消。"""
 
-    def __init__(self, *, timeout: float | None = None) -> None:
+    def __init__(self, *, timeout: float | None = DEFAULT_RUN_TIMEOUT_SECONDS) -> None:
+        # 真实抓取要逐个打开账号主页翻页，几分钟很正常；这里只作为兜底，
+        # 避免异常挂死时无限等待（None 表示不限制，仅供测试使用）。
         self._timeout = timeout
 
     def run(
@@ -499,7 +544,15 @@ class SpiderRunner:
 
         environment_variables = dict(os.environ)
         environment_variables.update(
-            {"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+            {
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+                # 禁止写 __pycache__：安装到 Program Files 后爬虫源码目录是只读的
+                # （或不该被污染），而写字节码失败会在部分 Python 版本上产生告警；
+                # 更重要的是避免安装目录里混入运行期生成物。
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
         )
         try:
             process = subprocess.Popen(
@@ -516,12 +569,22 @@ class SpiderRunner:
             return SpiderRunResult(success=False, message=f"无法启动爬虫：{error}")
 
         tail: list[str] = []
+        deadline = None if self._timeout is None else time.monotonic() + self._timeout
         try:
             assert process.stdout is not None
             for line in process.stdout:
                 if cancel_event is not None and cancel_event.is_set():
                     process.terminate()
                     return SpiderRunResult(success=False, message="抓取已取消。")
+                # 超时必须在这里判断：把 timeout 只交给 wait() 是无效的，
+                # 因为只要子进程还在输出，这个 for 循环就永远不返回
+                # （实测 timeout=30 仍跑了 84 秒）。
+                if deadline is not None and time.monotonic() > deadline:
+                    process.kill()
+                    return SpiderRunResult(
+                        success=False,
+                        message=f"抓取超时（超过 {self._timeout:.0f} 秒），已终止。",
+                    )
                 text = line.rstrip()
                 if text:
                     tail.append(text)
@@ -537,8 +600,10 @@ class SpiderRunner:
                 process.kill()
 
         if code != 0:
-            detail = tail[-1] if tail else f"退出码 {code}"
-            return SpiderRunResult(success=False, message=f"抓取失败：{detail}")
+            return SpiderRunResult(
+                success=False,
+                message=f"抓取失败：{summarise_failure(tail, exit_code=code)}",
+            )
 
         if not json_out.is_file():
             return SpiderRunResult(success=False, message="爬虫未生成结果文件，请查看日志。")

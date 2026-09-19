@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string] $Configuration = 'Release',
     [string] $RuntimeCacheDirectory = "",
@@ -24,7 +24,6 @@ $artifactsRoot = Join-Path $repoRoot 'artifacts'
 $publishDir = Join-Path (Join-Path $artifactsRoot 'publish') 'win-x64'
 $stagingPortableDir = Join-Path (Join-Path $artifactsRoot 'staging') 'portable'
 $releaseDir = Join-Path $artifactsRoot 'release'
-$distDir = Join-Path $repoRoot 'dist'
 $installerDir = Join-Path (Join-Path $repoRoot 'build') 'Installer'
 $srcRoot = Join-Path $repoRoot 'src'
 $project = Join-Path (Join-Path $srcRoot 'JingXu.Workbench') 'JingXu.Workbench.csproj'
@@ -111,11 +110,9 @@ if (-not (Test-Path $wix)) {
 }
 
 if (-not (Test-Path $releaseDir)) { New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null }
-if (-not (Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir -Force | Out-Null }
 
 $msiPath = Join-Path $releaseDir 'JingXu.Workbench.msi'
 $namedMsiPath = Join-Path $releaseDir '炳恒快速混剪-win-x64.msi'
-$distMsiPath = Join-Path $distDir '炳恒快速混剪-win-x64.msi'
 
 $productWxs = Join-Path $installerDir 'Product.wxs'
 $packageWxs = Join-Path $installerDir 'Package.wxs'
@@ -126,17 +123,14 @@ $licenseFile = (Resolve-Path (Join-Path $installerDir 'License.rtf')).Path
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Copy-Item $msiPath $namedMsiPath -Force
-Copy-Item $namedMsiPath $distMsiPath -Force
 
-$msiHash = (Get-FileHash -Path $distMsiPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$distSums = Join-Path $distDir 'SHA256SUMS.txt'
-Set-Content -Path $distSums -Value "$msiHash  炳恒快速混剪-win-x64.msi`r`n" -Encoding UTF8
+$msiHash = (Get-FileHash -Path $namedMsiPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
 $releaseSums = Join-Path $releaseDir 'SHA256SUMS.txt'
 Set-Content -Path $releaseSums -Value "$msiHash  炳恒快速混剪-win-x64.msi`r`n$msiHash  JingXu.Workbench.msi`r`n" -Encoding UTF8
 
 Write-Host '=== 发布完成 (MSI Installer Ready) ==='
-Write-Host "安装包位置: $distMsiPath"
-Write-Host "文件大小: $([math]::Round((Get-Item $distMsiPath).Length / 1MB, 2)) MB"
+Write-Host "安装包位置: $namedMsiPath"
+Write-Host "文件大小: $([math]::Round((Get-Item $namedMsiPath).Length / 1MB, 2)) MB"
 Write-Host "SHA-256: $msiHash"
 exit 0

@@ -5,15 +5,24 @@
 
 ## 交付物
 
+**Python 版与 .NET 版统一输出到 `artifacts/release/`**，交付只认这一个目录。
+为避免互相覆盖，各脚本维护各自的校验和文件：
+
 | 文件 | 说明 |
 |------|------|
-| `artifacts/py-release/炳恒快速混剪-Py-win-x64.msi` | MSI 安装包（开始菜单 + 桌面快捷方式，可卸载） |
-| `artifacts/py-release/SHA256SUMS-Py.txt` | MSI SHA-256 校验和 |
-| `artifacts/py-release/炳恒快速混剪-Py-Portable-win-x64.zip` | 自包含便携包（解压即用，双击 exe 启动） |
-| `artifacts/py-release/SHA256SUMS.txt` | 便携包 SHA-256 校验和 |
-| `artifacts/py-build/炳恒快速混剪/` | 未压缩的便携目录（可直接运行，便于排查） |
+| `artifacts/release/炳恒快速混剪-Py-win-x64.msi` | Python 版 MSI（开始菜单 + 桌面快捷方式，可卸载） |
+| `artifacts/release/SHA256SUMS-Py.txt` | Python 版 MSI 校验和 |
+| `artifacts/release/炳恒快速混剪-Py-Portable-win-x64.zip` | Python 版便携包（解压即用） |
+| `artifacts/release/SHA256SUMS-PyPortable.txt` | Python 版便携包校验和 |
+| `artifacts/release/炳恒快速混剪-win-x64.msi`、`SHA256SUMS.txt` | .NET 版产物（由 .NET 流水线维护） |
+| `artifacts/py-build/炳恒快速混剪/` | 未压缩的便携目录（构建中间产物，便于排查） |
 
 命名中的 `Py` 用于与 .NET 版产物区分，避免两者混用。
+
+> 历史 `dist/` 交付目录已废弃（内容与 `artifacts/release/` 完全相同）；
+> 打包脚本不再向其同步，`Build-Installer.ps1` / `Publish-Msi.ps1` 均只写
+> `artifacts/release/`。注意 `Build-Portable-Py.ps1` 只覆盖本次产出的同名文件，
+> **不会**整目录清理，以免误删 .NET 版交付物。
 
 ## 构建 MSI 安装包
 
@@ -27,7 +36,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.p
 | 开关 | 用途 |
 |------|------|
 | `-PortableDirectory <路径>` | 指定便携目录来源 |
-| `-OutputDirectory <路径>` | 指定 MSI 输出目录（默认 `artifacts/py-release`） |
+| `-OutputDirectory <路径>` | 指定 MSI 输出目录（默认 `artifacts/release`） |
 | `-ProductVersion 1.0.2.0` | MSI ProductVersion（四段数字） |
 | `-SkipPortableBuild` | 便携目录缺失时直接失败，不自动打包 |
 
@@ -80,7 +89,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps
 | 开关 | 用途 |
 |------|------|
 | `-RuntimeDirectory <路径>` | 指定运行时缓存目录（默认仓库 `runtime/`） |
-| `-OutputDirectory <路径>` | 指定产物目录（默认 `artifacts/py-release`） |
+| `-OutputDirectory <路径>` | 指定产物目录（默认 `artifacts/release`） |
 | `-SkipArchive` | 只产出未压缩目录（本地快速验证） |
 | `-SkipSelfTest` | 跳过启动自检（**不可用于正式发布**） |
 
@@ -136,7 +145,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps
 - **仅 Windows x64**：本流程未验证 macOS/Linux。PyInstaller spec 与构建脚本都是
   Windows 形态（`.exe`、robocopy、ZIP 命名），跨平台交付需要另立脚本。
 - **未接入 `Verify-Release.ps1`**：该脚本目前只校验 .NET 版产物。如需统一出口，
-  应扩展它同时检查 `artifacts/py-release/`。
+  应扩展它同时检查 `artifacts/release/` 中的 Python 版产物。
 
 ## 与 .NET 版产物的关系
 
@@ -145,6 +154,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps
 | 版本 | 产物 | 入口 |
 |------|------|------|
 | .NET/WPF | `artifacts/release/炳恒快速混剪-win-x64.msi`、`…Portable-win-x64.zip` | `炳恒快速混剪.exe` |
-| Python | `artifacts/py-release/炳恒快速混剪-Py-Portable-win-x64.zip` | `炳恒快速混剪.exe` |
+| Python | `artifacts/release/炳恒快速混剪-Py-Portable-win-x64.zip` | `炳恒快速混剪.exe` |
 
 安装 MSI 与解压便携包不要放在同一目录，避免 `runtime/` 相互覆盖。

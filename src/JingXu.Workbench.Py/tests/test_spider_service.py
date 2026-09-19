@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from jingxu.infrastructure.spider import (
     detect_platform,
     parse_accounts_text,
     parse_result_payload,
+    summarise_failure,
 )
 
 
@@ -374,6 +376,90 @@ def test_runner_reports_nonzero_exit(monkeypatch) -> None:  # noqa: ANN001
 
     assert result.success is False
     assert "ImportError" in result.message
+
+
+# ── 失败摘要（曾把版本横幅当成错误原因）────────────────────────────────────
+
+
+def test_summarise_failure_skips_version_banner() -> None:
+    """实测踩过：最后一行是「版本: 4.1.1.4」，被当成失败原因展示给用户。"""
+    lines = ["版本: 4.1.1.4", "正在启动浏览器...", "浏览器启动失败：未找到可用的 Chromium 内核"]
+    assert summarise_failure(lines, exit_code=1) == "浏览器启动失败：未找到可用的 Chromium 内核"
+
+
+def test_summarise_failure_prefers_error_keyword_line() -> None:
+    lines = ["版本: 1.0", "Traceback (most recent call last):", "ImportError: no module named x"]
+    assert summarise_failure(lines, exit_code=1) == "ImportError: no module named x"
+
+
+def test_summarise_failure_falls_back_to_exit_code_when_empty() -> None:
+    assert summarise_failure([], exit_code=2) == "退出码 2"
+    assert summarise_failure(["", "   "], exit_code=3) == "退出码 3"
+
+
+def test_summarise_failure_handles_only_noise() -> None:
+    # 全是噪声时回退到最后一行，而不是抛异常或返回空
+    assert summarise_failure(["版本: 1.0", "==="], exit_code=1) == "==="
+
+
+def test_runner_uses_bounded_default_timeout() -> None:
+    """默认必须有兜底超时，否则子进程挂死会无限等待。"""
+    assert spider_service.DEFAULT_RUN_TIMEOUT_SECONDS > 0
+
+
+class _SlowProcess:
+    """持续输出但不结束的假进程，用于验证超时真的生效。"""
+
+    def __init__(self) -> None:
+        self.stdout = self
+        self.killed = False
+        self._count = 0
+
+    def __iter__(self):  # noqa: ANN204
+        return self
+
+    def __next__(self):  # noqa: ANN204
+        self._count += 1
+        if self._count > 2000:
+            raise StopIteration
+        time.sleep(0.02)
+        return "still working\n"
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+    def poll(self) -> int | None:
+        return None
+
+    def terminate(self) -> None:
+        pass
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def test_runner_timeout_applies_while_streaming(monkeypatch) -> None:  # noqa: ANN001
+    """超时必须对读取循环生效——只交给 wait() 无效（实测 30s 限制仍跑了 84s）。"""
+    process = _SlowProcess()
+    monkeypatch.setattr(
+        spider_service,
+        "check_environment",
+        lambda **_: spider_service.SpiderEnvironment(
+            available=True, message="ok", directory=Path.cwd(), python="python"
+        ),
+    )
+    monkeypatch.setattr(spider_service.subprocess, "Popen", lambda *a, **k: process)
+
+    started = time.monotonic()
+    result = spider_service.SpiderRunner(timeout=0.3).run(
+        SpiderConfig(accounts=(SpiderAccount(platform="douyin", url_or_id="a"),))
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.success is False
+    assert "超时" in result.message
+    assert elapsed < 5.0, f"超时未生效，耗时 {elapsed:.1f}s"
+    assert process.killed is True
 
 
 def test_runner_reports_missing_result_file(monkeypatch) -> None:  # noqa: ANN001

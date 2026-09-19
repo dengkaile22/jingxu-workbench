@@ -21,13 +21,20 @@
 
 ## 2. 交付物
 
+**统一交付目录：`artifacts/release/`**（与 .NET 版同目录，各自维护校验和文件；
+历史 `dist/` 目录已废弃删除）。
+
 | 文件 | 说明 |
 |------|------|
-| `artifacts/py-release/炳恒快速混剪-Py-Portable-win-x64.zip` | 405,800,687 字节 |
-| `artifacts/py-release/SHA256SUMS.txt` | `ed18d8ab6bda53ebaa0b9347c7bf3d241853def2e52870a05772fc2614f17bd7` |
-| `artifacts/py-build/炳恒快速混剪/` | 未压缩便携目录，789.6 MB |
+| `artifacts/release/炳恒快速混剪-Py-win-x64.msi` | MSI 安装包（与 .NET 版可并存安装，可卸载） |
+| `artifacts/release/炳恒快速混剪-Py-Portable-win-x64.zip` | 便携包（解压即用） |
+| `artifacts/release/SHA256SUMS-Py.txt`、`SHA256SUMS-PyPortable.txt` | 上述两者的 SHA-256 |
 
-解压即用：双击 `炳恒快速混剪.exe`。
+> 具体哈希值随每次构建变化，**以交付目录中的校验和文件为准**，本文不再固定记录
+> （早先版本曾在此写死哈希，产物重建后即失效）。构建脚本见
+> [release-python.md](release-python.md)。
+
+解压即用：双击 `炳恒快速混剪.exe`；MSI 安装后从开始菜单或桌面启动。
 
 ---
 

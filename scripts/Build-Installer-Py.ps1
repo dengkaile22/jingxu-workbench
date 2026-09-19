@@ -2,7 +2,7 @@
 param(
     # 便携目录（默认取 Build-Portable-Py.ps1 的产物）
     [string] $PortableDirectory = "",
-    # 输出目录；默认 artifacts/py-release
+    # 输出目录；默认 artifacts/release（与 .NET 版统一到同一交付目录）
     [string] $OutputDirectory = "",
     # 产品版本（写入 MSI ProductVersion，四段数字）
     [string] $ProductVersion = "1.0.2.0",
@@ -58,7 +58,8 @@ if ([string]::IsNullOrWhiteSpace($PortableDirectory)) {
     $PortableDirectory = Join-Path $PortableDirectory $appName
 }
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-    $OutputDirectory = Join-Path $repoRoot 'artifacts\py-release'
+    # 与 .NET 版统一到 artifacts/release，交付只认一个目录。
+    $OutputDirectory = Join-Path $repoRoot 'artifacts\release'
 }
 
 Write-Host '=== 1. 检查前置条件 ==='

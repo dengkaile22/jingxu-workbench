@@ -4,9 +4,9 @@
 
 描述便携包与 MSI 安装程序的目标产物与脚本。运行时哈希等 **开发现状** 见 [modules/runtime-packaging-status.md](modules/runtime-packaging-status.md) 与 [acceptance-report.md](acceptance-report.md)。
 
-> **Python 版（PySide6）另有独立打包链路**，产物与本文互不覆盖，见
+> **Python 版（PySide6）另有独立打包链路**，两者统一输出到 `artifacts/release/`，见
 > [release-python.md](release-python.md)（`scripts/Build-Portable-Py.ps1` +
-> `scripts/jingxu.spec`，输出到 `artifacts/py-release/`）。
+> `scripts/jingxu.spec` + `scripts/Build-Installer-Py.ps1`）。
 
 ## 目标设计
 

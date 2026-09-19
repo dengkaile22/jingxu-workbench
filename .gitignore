@@ -1,4 +1,4 @@
-﻿.superpowers/
+.superpowers/
 .worktrees/
 .tools/
 .vs/
@@ -38,12 +38,11 @@ venv/
 *.part.mp4
 
 # Python 版打包产物（PyInstaller / 便携目录 / 本地构建缓存）
+# 交付目录统一为 artifacts/release（已由第 8 行的 artifacts/ 覆盖），
+# 因此这里只列 PyInstaller 自身的中间产物。
 /build-py/
 /src/JingXu.Workbench.Py/build/
 /src/JingXu.Workbench.Py/dist/
-artifacts/py-build/
-artifacts/py-release/
-artifacts/py-*
 *.spec.bak
 
 # Python 运行期数据（用户数据与工作临时文件不入库）

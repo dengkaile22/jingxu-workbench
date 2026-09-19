@@ -37,7 +37,12 @@ def extract_sequence_index(file_name: str) -> int | None:
 
 @dataclass(frozen=True, slots=True)
 class MediaAsset:
-    """已探测的本地视频素材。"""
+    """已探测的本地视频素材。
+
+    ``pixel_format`` 与 ``rotation_degrees`` 供硬件解码白名单判定使用
+    （对齐 .NET ``MediaInfo.PixelFormat`` / ``RotationDegrees``）：
+    只有 8 位 H.264 + yuv420p + 无旋转 + 偶数尺寸才允许走 GPU 解码。
+    """
 
     path: Path
     duration: float
@@ -47,6 +52,8 @@ class MediaAsset:
     has_audio: bool
     video_codec: str = ""
     audio_codec: str = ""
+    pixel_format: str = ""
+    rotation_degrees: int = 0
     sequence_index: int | None = None
     asset_id: str = ""
 

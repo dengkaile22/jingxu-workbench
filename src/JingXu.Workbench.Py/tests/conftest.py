@@ -17,7 +17,12 @@ def make_asset(
     height: int = 360,
     fps: float = 30.0,
     has_audio: bool = True,
+    video_codec: str = "h264",
+    audio_codec: str | None = None,
+    pixel_format: str = "yuv420p",
+    rotation_degrees: int = 0,
 ) -> MediaAsset:
+    """构造测试素材；默认参数落在硬件解码白名单内（h264/yuv420p/无旋转/偶数）。"""
     return MediaAsset(
         path=Path("materials") / name,
         duration=duration,
@@ -25,8 +30,10 @@ def make_asset(
         height=height,
         fps=fps,
         has_audio=has_audio,
-        video_codec="h264",
-        audio_codec="aac" if has_audio else "",
+        video_codec=video_codec,
+        audio_codec=audio_codec if audio_codec is not None else ("aac" if has_audio else ""),
+        pixel_format=pixel_format,
+        rotation_degrees=rotation_degrees,
         sequence_index=extract_sequence_index(name),
         asset_id=name,
     )

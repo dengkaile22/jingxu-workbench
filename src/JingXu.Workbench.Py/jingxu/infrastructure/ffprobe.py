@@ -30,6 +30,36 @@ def _parse_fraction(value: str | None) -> float:
         return 0.0
 
 
+def _parse_rotation(video_stream: dict) -> int:
+    """解析显示旋转角度（0–359 的整数）。
+
+    优先读 ``side_data_list`` 里的 Display Matrix rotation（新版 ffprobe），
+    回退到 ``tags.rotate``（旧版）。旋转非零的素材一律退出硬件解码白名单，
+    因此这里只要求"能可靠判断是否为零"，不做方向归一化。
+    """
+    side_data = video_stream.get("side_data_list") or []
+    for entry in side_data:
+        if not isinstance(entry, dict):
+            continue
+        raw = entry.get("rotation")
+        if raw in (None, ""):
+            continue
+        try:
+            value = abs(float(raw))
+        except (TypeError, ValueError):
+            continue
+        return int(round(value)) % 360
+
+    tags = video_stream.get("tags") or {}
+    raw_tag = tags.get("rotate") if isinstance(tags, dict) else None
+    if raw_tag in (None, ""):
+        return 0
+    try:
+        return int(round(abs(float(raw_tag)))) % 360
+    except (TypeError, ValueError):
+        return 0
+
+
 def parse_probe_payload(payload: dict, path: Path) -> MediaAsset:
     """把 ffprobe JSON 解析为 :class:`MediaAsset`（便于单测）。"""
     streams = payload.get("streams") or []
@@ -60,6 +90,8 @@ def parse_probe_payload(payload: dict, path: Path) -> MediaAsset:
         has_audio=audio_stream is not None,
         video_codec=str(video_stream.get("codec_name") or ""),
         audio_codec=str(audio_stream.get("codec_name") or "") if audio_stream else "",
+        pixel_format=str(video_stream.get("pix_fmt") or ""),
+        rotation_degrees=_parse_rotation(video_stream),
         sequence_index=extract_sequence_index(path.name),
         asset_id=uuid.uuid4().hex,
     )

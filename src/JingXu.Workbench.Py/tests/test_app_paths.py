@@ -234,19 +234,19 @@ def test_frozen_component_resolution_stays_inside_portable_directory(
 
 def test_spider_directory_found_next_to_frozen_executable(tmp_path: Path, monkeypatch) -> None:
     """冻结后选品爬虫应能在 exe 同级 runtime/spider 找到。"""
-    from jingxu.ui.spider_page import find_spider_directory
+    from jingxu.infrastructure.spider import spider_directory
 
     fake_exe = tmp_path / "portable" / "app.exe"
     spider = tmp_path / "portable" / "runtime" / "spider"
     fake_exe.parent.mkdir(parents=True, exist_ok=True)
     fake_exe.write_bytes(b"stub")
     spider.mkdir(parents=True)
-    (spider / "run.py").write_text("", encoding="utf-8")
+    (spider / "cli.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(fake_exe))
     monkeypatch.delenv("JINGXU_SPIDER_DIR", raising=False)
 
-    assert find_spider_directory() == spider
+    assert spider_directory() == spider
 
 
 # ── 报告文件（打包发布验收依赖）────────────────────────────────────────────

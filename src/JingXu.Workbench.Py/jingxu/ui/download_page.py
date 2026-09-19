@@ -204,7 +204,7 @@ class DownloadPage(QWidget):
         self._status.setText(f"已加入 {len(jobs)} 个下载任务。")
 
     def enqueue_urls(self, urls: list[str]) -> int:
-        """外部（选品爬虫）注入链接：直接入队并启动下载，返回入队数量。"""
+        """外部（选品抓取）注入链接：直接入队并启动下载，返回入队数量。"""
         cleaned = [url.strip() for url in urls if url and url.strip()]
         if not cleaned:
             return 0

@@ -479,6 +479,7 @@ class ShellWindow(QMainWindow):
         self._audio_page.library_changed.connect(self._sync_audio_library)
         self._download_page = DownloadPage(self._download_queue)
         self._download_page.files_downloaded.connect(self._add_materials)
+        # 选品抓取是独立模块，但界面用主程序自己的控件与主题（不再内嵌爬虫 GUI）。
         self._spider_page = SpiderPage()
         self._spider_page.videos_discovered.connect(self._on_spider_videos)
         self._settings_page = SettingsPage(self._ffmpeg, self._ffprobe, self._encoder_registry, self._queue)
@@ -1183,9 +1184,6 @@ class ShellWindow(QMainWindow):
         page = pages.get(module_id)
         if page is None:
             return
-
-        if module_id == MODULE_SPIDER:
-            self._spider_page.ensure_loaded()
 
         is_composition = module_id == MODULE_COMPOSITION
         self._gate_holder.setVisible(is_composition)

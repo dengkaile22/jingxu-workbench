@@ -20,6 +20,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 
 from jingxu.infrastructure.app_paths import search_roots
@@ -303,15 +304,62 @@ def config_path() -> Path:
     return data_directory() / "Spider" / "config.json"
 
 
-class SpiderConfigStore:
-    """账号与门槛的 JSON 持久化。"""
+def results_path() -> Path:
+    """最近一次抓取结果的落盘位置。"""
+    return data_directory() / "Spider" / "last_result.json"
 
-    def __init__(self, path: Path | None = None) -> None:
+
+def exports_directory() -> Path:
+    """报表导出目录（与传给爬虫 --export-dir 的值保持一致）。"""
+    return data_directory() / "Spider" / "exports"
+
+
+def profile_directory() -> Path:
+    """浏览器登录态目录（首次扫码登录后复用，无需重复登录）。"""
+    return data_directory() / "Spider" / "browser_profile"
+
+
+def validate_date_filters(filters: SpiderFilters) -> str:
+    """校验自定义日期范围；返回空串表示通过，否则返回中文提示。
+
+    界面用的是自由文本输入，此前不校验就传给爬虫，写错格式只会在抓取中途
+    以晦涩错误失败，因此提前拦下。
+    """
+    if filters.time_mode != "range":
+        return ""
+
+    parsed: dict[str, datetime] = {}
+    for label, raw in (("起始", filters.start_date), ("结束", filters.end_date)):
+        if not raw:
+            continue
+        try:
+            parsed[label] = datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError:
+            return f"{label}日期格式应为 YYYY-MM-DD，当前为「{raw}」。"
+
+    if "起始" in parsed and "结束" in parsed and parsed["起始"] > parsed["结束"]:
+        return "起始日期不能晚于结束日期。"
+    return ""
+
+
+class SpiderConfigStore:
+    """账号、门槛与最近一次抓取结果的 JSON 持久化。
+
+    结果也要落盘：抓取过程要开浏览器翻页，耗时以分钟计，若应用关闭就丢失，
+    用户只能重跑一遍。
+    """
+
+    def __init__(self, path: Path | None = None, *, results: Path | None = None) -> None:
         self._path = Path(path) if path else config_path()
+        self._results_path = Path(results) if results else self._path.with_name("last_result.json")
 
     @property
     def path(self) -> Path:
         return self._path
+
+    @property
+    def results_path(self) -> Path:
+        return self._results_path
 
     def load(self) -> SpiderConfig:
         if not self._path.is_file():
@@ -327,6 +375,26 @@ class SpiderConfigStore:
         self._path.write_text(
             json.dumps(config.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
+    def save_result(self, result: SpiderRunResult) -> None:
+        """保存抓取结果；无内容的失败结果不覆盖已有结果。"""
+        if not result.has_payload:
+            return
+        self._results_path.parent.mkdir(parents=True, exist_ok=True)
+        self._results_path.write_text(
+            json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def load_result(self) -> SpiderRunResult | None:
+        """读取上次结果；不存在或损坏时返回 ``None``。"""
+        if not self._results_path.is_file():
+            return None
+        try:
+            payload = json.loads(self._results_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        result = SpiderRunResult.from_dict(payload)
+        return result if result.has_payload else None
 
 
 def build_arguments(
@@ -385,6 +453,48 @@ class SpiderRunResult:
     items: tuple[dict, ...] = ()
     excel_path: str = ""
     json_path: str = ""
+    finished_at: str = ""
+
+    @property
+    def has_payload(self) -> bool:
+        """是否有可复用的抓取内容（用于判断是否值得落盘/恢复）。"""
+        return bool(self.retained or self.items)
+
+    @property
+    def finished_at_display(self) -> str:
+        """完成时间的可读形式（落盘为 ISO，展示为「MM-DD HH:MM」）。"""
+        if not self.finished_at:
+            return ""
+        try:
+            moment = datetime.fromisoformat(self.finished_at)
+        except ValueError:
+            return self.finished_at
+        return moment.strftime("%m-%d %H:%M")
+
+    def to_dict(self) -> dict:
+        return {
+            "success": self.success,
+            "message": self.message,
+            "retained": list(self.retained),
+            "items": list(self.items),
+            "excelPath": self.excel_path,
+            "jsonPath": self.json_path,
+            "finishedAt": self.finished_at,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "SpiderRunResult":
+        if not isinstance(payload, dict):
+            return cls(success=False, message="结果格式无效。")
+        return cls(
+            success=bool(payload.get("success")),
+            message=str(payload.get("message") or ""),
+            retained=tuple(item for item in (payload.get("retained") or []) if isinstance(item, dict)),
+            items=tuple(item for item in (payload.get("items") or []) if isinstance(item, dict)),
+            excel_path=str(payload.get("excelPath") or payload.get("excel_path") or ""),
+            json_path=str(payload.get("jsonPath") or payload.get("json_path") or ""),
+            finished_at=str(payload.get("finishedAt") or payload.get("finished_at") or ""),
+        )
 
     @property
     def video_urls(self) -> tuple[str, ...]:
@@ -396,6 +506,31 @@ class SpiderRunResult:
         seen: set[str] = set()
         urls: list[str] = []
         for entry in (*self.retained, *self.items):
+            for url in _urls_in(entry):
+                if url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+        return tuple(urls)
+
+    @property
+    def effective_entries(self) -> tuple[tuple[bool, dict], ...]:
+        """结果表要展示的条目：``(是否为保留商品, 条目)``。
+
+        有保留商品时优先展示它们（那是用户真正要下载的）；否则回落到全部带货
+        记录，避免出现「抓到了东西但表格是空的」。
+        """
+        if self.retained:
+            return tuple((True, entry) for entry in self.retained)
+        return tuple((False, entry) for entry in self.items)
+
+    def urls_for_entries(self, entries: Sequence[dict]) -> tuple[str, ...]:
+        """按给定条目提取去重后的下载链接（保序）。
+
+        供「只把勾选的商品送入下载」使用；结果表里选中的行会映射回原始条目。
+        """
+        seen: set[str] = set()
+        urls: list[str] = []
+        for entry in entries:
             for url in _urls_in(entry):
                 if url not in seen:
                     seen.add(url)
@@ -521,12 +656,17 @@ class SpiderRunner:
         if not config.enabled_accounts:
             return SpiderRunResult(success=False, message="请先添加并启用至少一个对标账号。")
 
+        # 日期范围提前校验：界面是自由文本输入，写错格式只会在抓取中途失败。
+        date_issue = validate_date_filters(config.filters)
+        if date_issue:
+            return SpiderRunResult(success=False, message=date_issue)
+
         directory = environment.directory
         workdir = Path(tempfile.mkdtemp(prefix="jingxu-spider-"))
         json_out = workdir / "result.json"
         config_file = workdir / "config.json"
-        profile_dir = data_directory() / "Spider" / "browser_profile"
-        export_dir = data_directory() / "Spider" / "exports"
+        profile_dir = profile_directory()
+        export_dir = exports_directory()
         profile_dir.mkdir(parents=True, exist_ok=True)
         export_dir.mkdir(parents=True, exist_ok=True)
 
@@ -614,7 +754,11 @@ class SpiderRunner:
             return SpiderRunResult(success=False, message=f"结果无法解析：{error}")
 
         result = parse_result_payload(payload)
-        return replace(result, json_path=str(json_out))
+        return replace(
+            result,
+            json_path=str(json_out),
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
 
 
 def _cli_config_document(config: SpiderConfig) -> dict:

@@ -20,6 +20,7 @@ from jingxu.infrastructure.spider import (
     parse_accounts_text,
     parse_result_payload,
     summarise_failure,
+    validate_date_filters,
 )
 
 
@@ -376,6 +377,187 @@ def test_runner_reports_nonzero_exit(monkeypatch) -> None:  # noqa: ANN001
 
     assert result.success is False
     assert "ImportError" in result.message
+
+
+# ── 结果落盘（抓取耗时以分钟计，关掉应用不该丢）────────────────────────────
+
+
+def _sample_result(**overrides) -> SpiderRunResult:  # noqa: ANN003
+    payload = {
+        "success": True,
+        "message": "抓取完成：保留 1 款商品",
+        "retained": ({"name": "生姜洗发水", "account_count": 3, "video_url": "https://v/a"},),
+        "items": ({"video_url": "https://v/b"},),
+        "excel_path": "C:/exports/report.xlsx",
+        "finished_at": "2026-09-19T22:50:00",
+    }
+    payload.update(overrides)
+    return SpiderRunResult(**payload)
+
+
+def test_result_store_roundtrip(tmp_path: Path) -> None:
+    store = SpiderConfigStore(tmp_path / "config.json")
+    store.save_result(_sample_result())
+
+    restored = store.load_result()
+    assert restored is not None
+    assert restored.retained[0]["name"] == "生姜洗发水"
+    assert restored.excel_path == "C:/exports/report.xlsx"
+    assert restored.finished_at == "2026-09-19T22:50:00"
+
+
+def test_result_store_writes_next_to_config(tmp_path: Path) -> None:
+    """结果文件与配置同目录，便于一起备份/清理。"""
+    store = SpiderConfigStore(tmp_path / "Spider" / "config.json")
+    assert store.results_path == tmp_path / "Spider" / "last_result.json"
+
+
+def test_result_store_skips_empty_failures(tmp_path: Path) -> None:
+    """无内容的失败不应覆盖已有结果（否则一次网络抖动就清空上次成果）。"""
+    store = SpiderConfigStore(tmp_path / "config.json")
+    store.save_result(_sample_result())
+    store.save_result(SpiderRunResult(success=False, message="抓取失败：超时"))
+
+    restored = store.load_result()
+    assert restored is not None
+    assert restored.retained[0]["name"] == "生姜洗发水"
+
+
+def test_result_store_returns_none_when_missing(tmp_path: Path) -> None:
+    assert SpiderConfigStore(tmp_path / "config.json").load_result() is None
+
+
+def test_result_store_returns_none_for_broken_json(tmp_path: Path) -> None:
+    store = SpiderConfigStore(tmp_path / "config.json")
+    store.results_path.write_text("{not json", encoding="utf-8")
+    assert store.load_result() is None
+
+
+def test_result_display_time_is_compact() -> None:
+    assert _sample_result().finished_at_display == "09-19 22:50"
+
+
+def test_result_display_time_tolerates_garbage() -> None:
+    assert _sample_result(finished_at="不是时间").finished_at_display == "不是时间"
+    assert _sample_result(finished_at="").finished_at_display == ""
+
+
+# ── 可下载条目与选中提取 ────────────────────────────────────────────────────
+
+
+def test_effective_entries_prefers_retained() -> None:
+    """有保留商品时只展示它们（那才是用户要下载的）。"""
+    result = _sample_result()
+    entries = result.effective_entries
+    assert len(entries) == 1
+    assert entries[0][0] is True
+    assert entries[0][1]["name"] == "生姜洗发水"
+
+
+def test_effective_entries_falls_back_to_items() -> None:
+    """没有保留商品时回落到全部带货记录，避免「抓到了但表格是空的」。"""
+    result = _sample_result(retained=())
+    entries = result.effective_entries
+    assert len(entries) == 1
+    assert entries[0][0] is False
+    assert entries[0][1]["video_url"] == "https://v/b"
+
+
+def test_urls_for_entries_only_returns_selected() -> None:
+    """只送勾选商品——此前是强制全发。"""
+    result = SpiderRunResult(
+        success=True,
+        message="ok",
+        retained=(
+            {"name": "A", "video_url": "https://v/a"},
+            {"name": "B", "video_url": "https://v/b"},
+            {"name": "C", "video_url": "https://v/c"},
+        ),
+    )
+    assert result.urls_for_entries([result.retained[1]]) == ("https://v/b",)
+    assert result.urls_for_entries(list(result.retained)) == (
+        "https://v/a",
+        "https://v/b",
+        "https://v/c",
+    )
+    assert result.urls_for_entries([]) == ()
+
+
+def test_urls_for_entries_dedupes_across_entries() -> None:
+    result = SpiderRunResult(
+        success=True,
+        message="ok",
+        retained=({"video_url": "https://same"}, {"video_url": "https://same"}),
+    )
+    assert result.urls_for_entries(list(result.retained)) == ("https://same",)
+
+
+# ── 日期范围校验 ────────────────────────────────────────────────────────────
+
+
+def test_validate_date_filters_ignores_non_range_modes() -> None:
+    assert validate_date_filters(SpiderFilters(time_mode="days", start_date="乱写")) == ""
+    assert validate_date_filters(SpiderFilters(time_mode="all", end_date="乱写")) == ""
+
+
+def test_validate_date_filters_allows_empty_range() -> None:
+    assert validate_date_filters(SpiderFilters(time_mode="range")) == ""
+
+
+def test_validate_date_filters_rejects_bad_format() -> None:
+    message = validate_date_filters(SpiderFilters(time_mode="range", start_date="2026/01/01"))
+    assert "YYYY-MM-DD" in message
+    assert "2026/01/01" in message
+
+
+def test_validate_date_filters_rejects_reversed_range() -> None:
+    message = validate_date_filters(
+        SpiderFilters(time_mode="range", start_date="2026-05-01", end_date="2026-01-01")
+    )
+    assert "不能晚于" in message
+
+
+def test_validate_date_filters_accepts_valid_range() -> None:
+    assert (
+        validate_date_filters(
+            SpiderFilters(time_mode="range", start_date="2026-01-01", end_date="2026-05-01")
+        )
+        == ""
+    )
+
+
+def test_runner_rejects_bad_date_before_launching(monkeypatch) -> None:  # noqa: ANN001
+    """格式错误应在启动浏览器之前拦下，而不是抓取中途才报晦涩错误。"""
+    launched: list[object] = []
+    monkeypatch.setattr(
+        spider_service,
+        "check_environment",
+        lambda **_: spider_service.SpiderEnvironment(
+            available=True, message="ok", directory=Path.cwd(), python="python"
+        ),
+    )
+    monkeypatch.setattr(spider_service.subprocess, "Popen", lambda *a, **k: launched.append(a))
+
+    result = spider_service.SpiderRunner().run(
+        SpiderConfig(
+            accounts=(SpiderAccount(platform="douyin", url_or_id="a"),),
+            filters=SpiderFilters(time_mode="range", start_date="01-01-2026"),
+        )
+    )
+
+    assert result.success is False
+    assert "YYYY-MM-DD" in result.message
+    assert launched == []
+
+
+# ── 目录约定 ────────────────────────────────────────────────────────────────
+
+
+def test_exports_and_profile_directories_are_under_data_dir(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
+    monkeypatch.setenv("JINGXU_DATA_DIRECTORY", str(tmp_path))
+    assert spider_service.exports_directory() == tmp_path / "Spider" / "exports"
+    assert spider_service.profile_directory() == tmp_path / "Spider" / "browser_profile"
+    assert spider_service.results_path() == tmp_path / "Spider" / "last_result.json"
 
 
 # ── 失败摘要（曾把版本横幅当成错误原因）────────────────────────────────────

@@ -18,7 +18,11 @@ from jingxu.infrastructure.spider import (  # noqa: E402
     SpiderEnvironment,
     SpiderRunResult,
 )
-from jingxu.ui.spider_page import SpiderPage  # noqa: E402
+from jingxu.ui.spider_page import (  # noqa: E402
+    RESULT_CHECK_COLUMN,
+    RESULT_NAME_COLUMN,
+    SpiderPage,
+)
 
 
 @pytest.fixture(scope="module")
@@ -225,7 +229,7 @@ def test_run_starts_and_finishes(qapp, tmp_path: Path) -> None:  # noqa: ANN001
     assert page._cancel_button.isEnabled() is False
     assert "保留 1 款商品" in page._result_caption.text()
     assert page._results_table.rowCount() == 1
-    assert page._results_table.item(0, 0).text() == "生姜洗发水"
+    assert page._results_table.item(0, RESULT_NAME_COLUMN).text() == "生姜洗发水"
     assert page._send_button.isEnabled() is True
     assert "测试日志" in page._log.toPlainText()
 
@@ -325,3 +329,166 @@ def test_log_box_hidden_until_toggled(qapp, tmp_path: Path) -> None:  # noqa: AN
     page._toggle_log()
     assert page._log.isHidden() is True
     assert page._log_toggle.text() == "显示运行日志"
+
+
+# ── 结果落盘与恢复 ──────────────────────────────────────────────────────────
+
+
+def _two_product_result() -> SpiderRunResult:
+    return SpiderRunResult(
+        success=True,
+        message="抓取完成：保留 2 款商品",
+        finished_at="2026-09-19T22:50:00",
+        retained=(
+            {"name": "商品A", "account_count": 3, "total_occurrences": 5, "video_url": "https://v/a"},
+            {"name": "商品B", "account_count": 2, "video_url": "https://v/b"},
+        ),
+    )
+
+
+def test_finished_run_is_persisted(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+
+    page._on_run_finished(_two_product_result())
+
+    restored = SpiderConfigStore(page._store.path).load_result()
+    assert restored is not None
+    assert len(restored.retained) == 2
+
+
+def test_page_restores_last_result(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """抓取耗时以分钟计，重开应用应看到上次结果而不是空表。"""
+    store = _store(tmp_path)
+    store.save_result(_two_product_result())
+
+    page = SpiderPage(
+        store=store,
+        check_environment=lambda: SpiderEnvironment(available=True, message="就绪"),
+    )
+
+    assert page._results_table.rowCount() == 2
+    assert "上次抓取（09-19 22:50）" in page._result_caption.text()
+    assert page.last_result is not None
+    assert page._send_button.isEnabled() is True
+
+
+def test_page_without_saved_result_stays_empty(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    assert page._results_table.rowCount() == 0
+    assert page.last_result is None
+    assert page._send_button.isEnabled() is False
+
+
+# ── 结果勾选：只送选中商品 ──────────────────────────────────────────────────
+
+
+def test_results_carry_checkboxes_selected_by_default(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    from PySide6.QtCore import Qt
+
+    page = _page(tmp_path)
+    page._on_run_finished(_two_product_result())
+
+    for row in range(page._results_table.rowCount()):
+        item = page._results_table.item(row, RESULT_CHECK_COLUMN)
+        assert item is not None
+        assert item.checkState() == Qt.CheckState.Checked
+    assert "已选 2/2 款" in page._selection_caption.text()
+
+
+def test_unchecking_row_narrows_selection_and_send(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """此前「结果送入下载」强制全发，无法只下载其中几款。"""
+    from PySide6.QtCore import Qt
+
+    page = _page(tmp_path)
+    page._on_run_finished(_two_product_result())
+    captured: list[list[str]] = []
+    page.videos_discovered.connect(lambda urls: captured.append(list(urls)))
+
+    page._results_table.item(1, RESULT_CHECK_COLUMN).setCheckState(Qt.CheckState.Unchecked)
+    page._send_last_result()
+
+    assert captured == [["https://v/a"]]
+    assert "已送入下载 1 个链接" in page._result_caption.text()
+
+
+def test_select_all_becomes_partial_then_checked(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """全选框必须与行状态同步，否则再点它不触发信号、看起来像坏了。"""
+    from PySide6.QtCore import Qt
+
+    page = _page(tmp_path)
+    page._on_run_finished(_two_product_result())
+
+    page._results_table.item(1, RESULT_CHECK_COLUMN).setCheckState(Qt.CheckState.Unchecked)
+    assert page._select_all.checkState() == Qt.CheckState.PartiallyChecked
+
+    page._select_all.click()  # 部分选中时点击 = 全选
+    assert page._select_all.checkState() == Qt.CheckState.Checked
+    assert "已选 2/2 款" in page._selection_caption.text()
+
+
+def test_select_all_clears_selection(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    from PySide6.QtCore import Qt
+
+    page = _page(tmp_path)
+    page._on_run_finished(_two_product_result())
+
+    page._select_all.click()  # 已全选时点击 = 清空
+    assert page._select_all.checkState() == Qt.CheckState.Unchecked
+    assert "已选 0/2 款" in page._selection_caption.text()
+
+
+def test_send_with_nothing_checked_warns(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._on_run_finished(_two_product_result())
+    captured: list[list[str]] = []
+    page.videos_discovered.connect(lambda urls: captured.append(list(urls)))
+
+    page._select_all.click()  # 清空全部
+    page._send_last_result()
+
+    assert captured == []
+    assert page._result_caption.objectName() == "CaptionWarn"
+    assert "勾选" in page._result_caption.text()
+
+
+def test_bad_date_range_blocks_run(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """日期格式错误应在本地拦下，不启动浏览器。"""
+    from jingxu.infrastructure.spider import SpiderFilters
+
+    runner = _FakeRunner(SpiderRunResult(success=True, message="ok"))
+    config = SpiderConfig(
+        accounts=(SpiderAccount(platform="douyin", url_or_id="a"),),
+        filters=SpiderFilters(time_mode="range", start_date="2026/01/01"),
+    )
+    page = _page(tmp_path, runner=runner, config=config)
+
+    page._start_crawl()
+
+    assert runner.calls == []
+    assert "YYYY-MM-DD" in page._result_caption.text()
+
+
+def test_results_fall_back_to_items_when_nothing_retained(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """没有保留商品时展示全部记录，避免「抓到了但表格是空的」。"""
+    page = _page(tmp_path)
+    page._on_run_finished(
+        SpiderRunResult(
+            success=True,
+            message="无保留商品",
+            items=({"video_url": "https://v/only"},),
+        )
+    )
+
+    assert page._results_table.rowCount() == 1
+    assert page._send_button.isEnabled() is True
+
+
+def test_result_table_shows_dash_for_missing_counts(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._on_run_finished(
+        SpiderRunResult(success=True, message="ok", retained=({"name": "只有名字"},))
+    )
+
+    assert page._results_table.item(0, RESULT_NAME_COLUMN).text() == "只有名字"
+    # 缺失值显示破折号，便于分辨「没有」与「取不到」
+    assert page._results_table.item(0, RESULT_NAME_COLUMN + 1).text() == "—"

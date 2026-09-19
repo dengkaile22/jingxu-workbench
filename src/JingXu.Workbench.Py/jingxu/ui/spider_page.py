@@ -16,8 +16,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -46,8 +46,11 @@ from jingxu.ui.widgets import (
 
 ACCOUNT_COLUMNS = ("启用", "平台", "备注名", "链接 / ID")
 ACCOUNT_COLUMN_WIDTHS = (52, 64, 150, 320)
-RESULT_COLUMNS = ("商品", "跨账号数", "出现次数", "价格区间")
-RESULT_COLUMN_WIDTHS = (360, 96, 96, 120)
+# 结果表第一列是勾选：只把选中的商品送入下载（此前是强制全发）。
+RESULT_COLUMNS = ("选", "商品", "跨账号数", "出现次数", "价格区间")
+RESULT_COLUMN_WIDTHS = (40, 320, 96, 96, 120)
+RESULT_CHECK_COLUMN = 0
+RESULT_NAME_COLUMN = 1
 
 
 class SpiderBridge(QObject):
@@ -90,6 +93,7 @@ class SpiderPage(QWidget):
         self._check_environment = check_environment or spider_service.check_environment
         self._config = self._store.load()
         self._rows: list[spider_service.SpiderAccount] = []
+        self._result_entries: list[dict] = []
         self._running = False
         self._cancel = threading.Event()
         self._last_result: spider_service.SpiderRunResult | None = None
@@ -137,11 +141,14 @@ class SpiderPage(QWidget):
         layout.addSpacing(6)
         layout.addWidget(self._build_results_table())
         layout.addSpacing(6)
+        layout.addLayout(self._build_result_actions())
+        layout.addSpacing(6)
         layout.addWidget(self._build_log_box())
 
         self._apply_config_to_form()
         self._refresh_accounts()
         self._refresh_environment()
+        self._restore_last_result()
 
     # ────────────────────────────── 构建 ──────────────────────────────
 
@@ -318,13 +325,36 @@ class SpiderPage(QWidget):
         self._results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._results_table.verticalHeader().setVisible(False)
-        self._results_table.setFixedHeight(140)
+        self._results_table.setFixedHeight(150)
         header = self._results_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
         for column, width in enumerate(RESULT_COLUMN_WIDTHS):
             self._results_table.setColumnWidth(column, width)
+        self._results_table.itemChanged.connect(self._on_result_item_changed)
         return self._results_table
+
+    def _build_result_actions(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        self._select_all = QCheckBox("全选")
+        self._select_all.setChecked(True)
+        # 三态：行勾选变化时回写，避免全选框与行状态脱钩——用户取消一行后
+        # 全选框若仍显示「已勾选」，再点它不会触发任何信号，看起来像坏了。
+        self._select_all.setTristate(True)
+        self._select_all.setToolTip("勾选或取消「结果送入下载」时包含的商品。")
+        self._select_all.clicked.connect(self._on_select_all_clicked)
+        row.addWidget(self._select_all)
+
+        self._selection_caption = Caption("")
+        row.addWidget(self._selection_caption, stretch=1)
+
+        self._open_exports = SecondaryButton("打开报表目录")
+        self._open_exports.setToolTip("打开导出的 Excel 报表所在目录。")
+        self._open_exports.clicked.connect(self._open_exports_directory)
+        row.addWidget(self._open_exports)
+        return row
 
     def _build_log_box(self) -> QWidget:
         box = QWidget()
@@ -510,6 +540,12 @@ class SpiderPage(QWidget):
             self._set_result_caption("请先添加并启用至少一个对标账号。", warn=True)
             return
 
+        # 日期范围在本地先校验：抓取要开浏览器翻页，不该为格式错误白等一轮。
+        date_issue = spider_service.validate_date_filters(self._config.filters)
+        if date_issue:
+            self._set_result_caption(date_issue, warn=True)
+            return
+
         self._running = True
         self._cancel.clear()
         self._run_button.setEnabled(False)
@@ -548,31 +584,166 @@ class SpiderPage(QWidget):
         self._set_result_caption(result.message, warn=not result.success)
         self._fill_results(result)
         self._send_button.setEnabled(bool(result.video_urls))
+        if result.has_payload:
+            try:
+                self._store.save_result(result)
+            except OSError as error:
+                self._set_result_caption(f"结果保存失败：{error}", warn=True)
+        self._refresh_export_label(result)
+
+    def _restore_last_result(self) -> None:
+        """恢复上次抓取结果：抓取耗时以分钟计，关掉应用不该丢。"""
+        try:
+            result = self._store.load_result()
+        except OSError:
+            return
+        if result is None:
+            return
+        self._last_result = result
+        when = result.finished_at_display
+        prefix = f"上次抓取（{when}）：" if when else "上次抓取："
+        self._set_result_caption(f"{prefix}{result.message}")
+        self._fill_results(result)
+        self._send_button.setEnabled(bool(result.video_urls))
+        self._refresh_export_label(result)
+
+    def _refresh_export_label(self, result: spider_service.SpiderRunResult) -> None:
         if result.excel_path:
             self._export_label.setText(f"报表：{Path(result.excel_path).name}")
         else:
             self._export_label.setText("")
 
     def _fill_results(self, result: spider_service.SpiderRunResult) -> None:
-        self._results_table.setRowCount(len(result.retained))
-        for row, entry in enumerate(result.retained):
-            name = str(entry.get("name") or entry.get("product_name") or entry.get("cleanedName") or "")
-            values = (
-                name or "—",
-                entry.get("account_count") or entry.get("accountCount") or "—",
-                entry.get("total_occurrences") or entry.get("totalOccurrences") or "—",
-                entry.get("price_range") or entry.get("priceRange") or "—",
-            )
-            for column, value in enumerate(values):
-                self._results_table.setItem(row, column, QTableWidgetItem(str(value)))
+        """填充结果表。条目来源见 ``effective_entries``（保留商品优先）。"""
+        entries = result.effective_entries
+        self._result_entries = [entry for _, entry in entries]
+
+        previous = self._updating
+        self._updating = True
+        try:
+            self._results_table.setRowCount(len(entries))
+            for row, (is_retained, entry) in enumerate(entries):
+                check = QTableWidgetItem()
+                check.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                    | Qt.ItemFlag.ItemIsSelectable
+                )
+                check.setCheckState(Qt.CheckState.Checked)
+                check.setToolTip("保留商品" if is_retained else "未达保留门槛的带货记录")
+                self._results_table.setItem(row, RESULT_CHECK_COLUMN, check)
+
+                for offset, value in enumerate(_entry_columns(entry), start=1):
+                    item = QTableWidgetItem(str(value))
+                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    self._results_table.setItem(row, offset, item)
+        finally:
+            self._updating = previous
+
+        self._updating = True
+        try:
+            self._select_all.setCheckState(Qt.CheckState.Checked)
+        finally:
+            self._updating = previous
+        self._refresh_selection_caption()
+
+    def _on_result_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._updating or item.column() != RESULT_CHECK_COLUMN:
+            return
+        self._sync_select_all_state()
+        self._refresh_selection_caption()
+
+    def _selected_entries(self) -> list[dict]:
+        """返回结果表中被勾选的原始条目。"""
+        selected: list[dict] = []
+        for row in range(self._results_table.rowCount()):
+            check = self._results_table.item(row, RESULT_CHECK_COLUMN)
+            if check is None or check.checkState() != Qt.CheckState.Checked:
+                continue
+            if 0 <= row < len(self._result_entries):
+                selected.append(self._result_entries[row])
+        return selected
+
+    def _checked_row_count(self) -> int:
+        return sum(
+            1
+            for row in range(self._results_table.rowCount())
+            if (item := self._results_table.item(row, RESULT_CHECK_COLUMN)) is not None
+            and item.checkState() == Qt.CheckState.Checked
+        )
+
+    def _sync_select_all_state(self) -> None:
+        """按行勾选情况回写全选框（全选 / 部分 / 全不选）。"""
+        total = self._results_table.rowCount()
+        checked = self._checked_row_count()
+        previous = self._updating
+        self._updating = True
+        try:
+            if total == 0 or checked == 0:
+                self._select_all.setCheckState(Qt.CheckState.Unchecked)
+            elif checked == total:
+                self._select_all.setCheckState(Qt.CheckState.Checked)
+            else:
+                self._select_all.setCheckState(Qt.CheckState.PartiallyChecked)
+        finally:
+            self._updating = previous
+
+    def _on_select_all_clicked(self, checked: bool) -> None:
+        """点击全选：全部勾选或全部取消。
+
+        用 ``clicked`` 而不是 ``stateChanged``：三态下用户点击部分选中状态时，
+        语义是「全选」，而 stateChanged 无法区分点击与程序回写。
+        """
+        if self._updating:
+            return
+        target = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        previous = self._updating
+        self._updating = True
+        try:
+            for row in range(self._results_table.rowCount()):
+                item = self._results_table.item(row, RESULT_CHECK_COLUMN)
+                if item is not None:
+                    item.setCheckState(target)
+        finally:
+            self._updating = previous
+        self._sync_select_all_state()
+        self._refresh_selection_caption()
+
+    def _refresh_selection_caption(self) -> None:
+        total = self._results_table.rowCount()
+        if total == 0:
+            self._selection_caption.setText("")
+            return
+        picked = len(self._selected_entries())
+        urls = self._selected_urls()
+        self._selection_caption.setText(f"已选 {picked}/{total} 款，可送出 {len(urls)} 个链接。")
+
+    def _selected_urls(self) -> tuple[str, ...]:
+        if self._last_result is None:
+            return ()
+        return self._last_result.urls_for_entries(self._selected_entries())
 
     def _send_last_result(self) -> None:
-        if self._last_result is None or not self._last_result.video_urls:
-            self._set_result_caption("还没有可送入下载的视频链接。", warn=True)
+        urls = list(self._selected_urls())
+        if not urls:
+            hint = (
+                "还没有可送入下载的视频链接。"
+                if self._last_result is None
+                else "请先在结果表中勾选要下载的商品。"
+            )
+            self._set_result_caption(hint, warn=True)
             return
-        urls = list(self._last_result.video_urls)
         self.videos_discovered.emit(urls)
         self._set_result_caption(f"已送入下载 {len(urls)} 个链接。")
+
+    def _open_exports_directory(self) -> None:
+        directory = spider_service.exports_directory()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self._set_result_caption(f"无法创建报表目录：{error}", warn=True)
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     def _toggle_log(self) -> None:
         """切换日志显示。
@@ -613,6 +784,29 @@ def _combo(options: list[tuple[str, str]]):  # noqa: ANN201 - QComboBox
     for value, label in options:
         combo.addItem(label, value)
     return combo
+
+
+def _entry_columns(entry: dict) -> tuple[str, str, str, str]:
+    """把一条结果条目映射为「商品 / 跨账号数 / 出现次数 / 价格区间」四列。
+
+    项目名的字段名在不同来源里不一致（name / product_name / cleanedName），
+    这里统一兜底；缺失值显示为破折号而不是空白，便于分辨「没有」与「取不到」。
+    """
+    name = ""
+    for key in ("name", "product_name", "productName", "cleanedName", "title"):
+        value = entry.get(key)
+        if value:
+            name = str(value).strip()
+            break
+    counts = entry.get("account_count") or entry.get("accountCount") or 0
+    occurrences = entry.get("total_occurrences") or entry.get("totalOccurrences") or 0
+    price = entry.get("price_range") or entry.get("priceRange") or ""
+    return (
+        name or "—",
+        str(counts) if counts else "—",
+        str(occurrences) if occurrences else "—",
+        str(price) or "—",
+    )
 
 
 def _select(combo, value: str) -> None:  # noqa: ANN001 - QComboBox

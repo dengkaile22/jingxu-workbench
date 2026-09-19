@@ -172,15 +172,32 @@ def test_build_stream_copy_command_shape(tmp_path: Path) -> None:
 
 
 class _FakeProcess:
-    """假 FFmpeg 进程：stdout 输出进度，wait 时按命令尾参创建输出文件。"""
+    """假 FFmpeg 进程：stdout 输出进度，wait 时按命令尾参创建输出文件。
+
+    必须实现上下文管理器协议——``subprocess.run`` 会以 ``with Popen(...)`` 使用
+    进程对象；缺少 ``__exit__`` 时任何真实 ``subprocess.run`` 调用都会抛
+    ``TypeError``（曾被误当成跨测试竞态）。
+    """
 
     def __init__(self, command: list[str]) -> None:
         self.command = command
         self.stdout = iter(["frame=12\n", "out_time_us=2000000\n", "progress=end\n"])
         self.stderr = iter(["stub stderr\n"])
+        self.returncode = 0
+
+    def __enter__(self) -> "_FakeProcess":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001
+        self.stdout = iter(())
+        self.stderr = iter(())
+        return False
 
     def wait(self, timeout: float | None = None) -> int:
         Path(self.command[-1]).write_bytes(b"fake mp4")
+        return 0
+
+    def poll(self) -> int:
         return 0
 
     def terminate(self) -> None:
@@ -188,6 +205,9 @@ class _FakeProcess:
 
     def kill(self) -> None:
         pass
+
+    def communicate(self, input=None, timeout=None):  # noqa: ANN001
+        return "", "stub stderr\n"
 
 
 def test_run_render_stream_copy_executes_concat_command(tmp_path: Path, monkeypatch) -> None:
@@ -230,6 +250,19 @@ class _FakeRegistry:
         return ffmpeg_runner.CPU_ENCODER
 
 
+class _FakeProcessingSelector:
+    """返回软件处理计划，避免测试触发真实 GPU 探测。"""
+
+    def select(self, ffmpeg, mode, encoder=None):  # noqa: ANN001
+        return ffmpeg_runner.SOFTWARE_PLAN
+
+    def remember_hardware_failure(self, encoder_name: str) -> None:
+        pass
+
+    def reset_probe(self, ffmpeg=None) -> None:  # noqa: ANN001
+        pass
+
+
 def test_run_render_falls_back_to_transcode_when_blocked(tmp_path: Path, monkeypatch) -> None:
     captured: list[list[str]] = []
 
@@ -239,6 +272,9 @@ def test_run_render_falls_back_to_transcode_when_blocked(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(ffmpeg_runner.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(ffmpeg_runner, "default_registry", lambda path: _FakeRegistry())
+    monkeypatch.setattr(
+        ffmpeg_runner, "default_processing_selector", lambda path: _FakeProcessingSelector()
+    )
 
     request = _request(
         settings=RenderSettings(

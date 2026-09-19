@@ -68,6 +68,7 @@ class RuntimeInfo:
     python_version: str = ""
     platform_text: str = ""
     data_directory: str = ""
+    gpu_processing_status: str = ""
 
 
 def _tool_version(executable: Path) -> str:
@@ -87,12 +88,23 @@ def _tool_version(executable: Path) -> str:
     return first_line[0] if first_line else "未知"
 
 
-def collect_runtime_info(ffmpeg: Path, ffprobe: Path, registry: EncoderRegistry) -> RuntimeInfo:
-    """收集 FFmpeg/编码器/平台信息（编码器探针首次调用会真实试编码）。"""
+def collect_runtime_info(
+    ffmpeg: Path,
+    ffprobe: Path,
+    registry: EncoderRegistry,
+    processing_selector=None,
+) -> RuntimeInfo:
+    """收集 FFmpeg/编码器/平台信息（编码器探针首次调用会真实试编码）。
+
+    传入 ``processing_selector`` 时会额外实测输入侧硬件解码与缩放能力；
+    探测失败只显示软件路径，绝不影响诊断本身。
+    """
     resolved: dict[str, str] = {}
     for mode in (ProcessingMode.AUTO, ProcessingMode.CPU, ProcessingMode.GPU):
         choice = registry.resolve(mode)
         resolved[mode.display_text] = f"{choice.label}（{registry.note(mode)}）"
+
+    gpu_status = _describe_processing(ffmpeg, registry, processing_selector)
 
     return RuntimeInfo(
         ffmpeg_path=str(ffmpeg),
@@ -104,7 +116,24 @@ def collect_runtime_info(ffmpeg: Path, ffprobe: Path, registry: EncoderRegistry)
         python_version=f"{sys.version.split()[0]}（{platform.machine()}）",
         platform_text=f"{platform.system()} {platform.release()}",
         data_directory=str(data_directory()),
+        gpu_processing_status=gpu_status,
     )
+
+
+def _describe_processing(ffmpeg: Path, registry: EncoderRegistry, processing_selector) -> str:
+    """按实测结果生成输入侧处理能力说明（对齐 .NET ProcessingDescription）。"""
+    if processing_selector is None:
+        return "未探测（解码与缩放使用 CPU）"
+    try:
+        # 先重置再探测：设置页刷新应给出当前设备的真实结果。
+        reset = getattr(processing_selector, "reset_probe", None)
+        if callable(reset):
+            reset(ffmpeg)
+        encoder = registry.resolve(ProcessingMode.AUTO)
+        plan = processing_selector.select(ffmpeg, ProcessingMode.AUTO, encoder)
+    except Exception:  # noqa: BLE001 - 能力探测失败只降级显示
+        return "探测失败：解码与缩放使用 CPU"
+    return plan.description
 
 
 @dataclass(frozen=True, slots=True)

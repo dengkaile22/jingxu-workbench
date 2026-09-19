@@ -29,6 +29,7 @@ from jingxu.domain.render import (
 from jingxu.domain.splitscreen import SplitMode, SplitScreenSpec
 from jingxu.domain.subtitles import RemovalMode, SubtitleRemovalSpec
 from jingxu.infrastructure.subtitles import escape_filter_path
+from jingxu.infrastructure.video_processing import HardwareProcessingPlan
 
 SAMPLE_RATE = 48000
 LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
@@ -163,9 +164,24 @@ def _cell_grid(mode: SplitMode) -> tuple[int, int]:
     return 1, 2
 
 
-def _base_chain(label: str, settings: RenderSettings, token: str) -> str:
+def _base_chain(
+    label: str,
+    settings: RenderSettings,
+    token: str,
+    *,
+    fit_override: str | None = None,
+) -> str:
+    """片段基础链：适配画幅 → 统一规格。
+
+    ``fit_override`` 用于硬件解码路径：调用方传入形如
+    ``[0:v]scale_qsv=…,hwdownload,format=nv12,crop=…,`` 的前缀，替换掉软件
+    适配段（含 crop/pad），但保留末尾的 ``setsar/fps/format/setpts`` 统一规格。
+    模糊背景必须留在软件路径（双分支无法在硬件帧上完成）。
+    """
     width, height = settings.width, settings.height
     tail = f"setsar=1,fps={_decimal(settings.fps)},format=yuv420p,setpts=PTS-STARTPTS"
+    if fit_override is not None:
+        return f"{fit_override}{tail}"
     if settings.fit_mode is FitMode.CROP:
         core = (
             f"{label}scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -508,6 +524,37 @@ def _clip_start_seconds(plan: CompositionPlan, one_based_index: int) -> float:
     return max(0.0, total)
 
 
+def select_hardware_inputs(
+    plan: CompositionPlan,
+    settings: RenderSettings,
+    processing_plan: HardwareProcessingPlan | None,
+) -> frozenset[int]:
+    """决定哪些主片输入可以走硬解（索引集合）。
+
+    与 .NET ``FfmpegRenderExecutor`` + ``FfmpegCommandCompiler`` 的两层判定一致：
+
+    * 计划为软件 → 空集合；
+    * 逐输入过白名单与 Auto 门槛（见 ``should_use_input``）；
+    * **差异化变体链是 CPU-only**：``hflip``/``rotate``/``eq``/``hqdn3d`` 无法吃
+      设备帧，因此启用差异化时整体退回软件路径，避免"回传后又被 CPU 滤镜处理"
+      带来的额外拷贝与失败面。
+    """
+    if processing_plan is None or processing_plan.is_software or not plan.assets:
+        return frozenset()
+
+    variation_active = settings.variation is not None and settings.variation.enabled
+    if variation_active:
+        return frozenset()
+
+    width, height = settings.width, settings.height
+    selected = {
+        index
+        for index, asset in enumerate(plan.assets)
+        if processing_plan.should_use_input(asset, settings.processing, settings.fit_mode, width, height)
+    }
+    return frozenset(selected)
+
+
 def build_filter_graph(
     plan: CompositionPlan,
     settings: RenderSettings,
@@ -521,10 +568,21 @@ def build_filter_graph(
     boost: MaterializedMainMaterialBoost | None = None,
     double_screen: DoubleScreenEffectPlan | None = None,
     four_screen: FourScreenEffectPlan | None = None,
+    processing_plan: HardwareProcessingPlan | None = None,
+    hardware_inputs: frozenset[int] | None = None,
 ) -> FilterGraph:
-    """把编排计划编译为 ``-filter_complex_script`` 脚本文本。"""
+    """把编排计划编译为 ``-filter_complex_script`` 脚本文本。
+
+    ``hardware_inputs`` 为 ``None`` 时由 :func:`select_hardware_inputs` 推导；
+    传入空集合即强制全软件路径（行为与迁移前一致）。
+    """
     if not plan.assets:
         raise ValueError("编排计划为空，无法编译滤镜图。")
+
+    if hardware_inputs is None:
+        hardware_inputs = select_hardware_inputs(plan, settings, processing_plan)
+    hardware_inputs = frozenset(hardware_inputs)
+    hardware_active = bool(hardware_inputs) and processing_plan is not None and not processing_plan.is_software
 
     lines: list[str] = []
     extra_inputs: list[ExtraInput] = []
@@ -612,7 +670,29 @@ def build_filter_graph(
             lines.append(f"{source_label}{variation}[v{index}_pre]")
             source_label = f"[v{index}_pre]"
 
-        lines.append(_base_chain(source_label, settings, f"b{index}") + f"[v{index}_src]")
+        # 硬件路径：能 GPU 缩放就直接产出画布尺寸；否则只把设备帧回传到软件。
+        fit_override: str | None = None
+        chain_written = False
+        if hardware_active and index in hardware_inputs and processing_plan is not None:
+            prefix = processing_plan.build_main_fit_filter(
+                asset, settings.fit_mode, settings.width, settings.height, index
+            )
+            if prefix is None:
+                # 模糊背景或尺寸不合法：设备帧回传后再走原有软件适配。
+                downloaded = f"gpu{index}"
+                lines.append(processing_plan.download_only_prefix(index))
+                lines.append(
+                    _base_chain(f"[{downloaded}]", settings, f"b{index}") + f"[v{index}_src]"
+                )
+                chain_written = True
+            else:
+                fit_override = prefix
+
+        if not chain_written:
+            lines.append(
+                _base_chain(source_label, settings, f"b{index}", fit_override=fit_override)
+                + f"[v{index}_src]"
+            )
 
         scale_factor = 1.0
         volume_factor = 1.0

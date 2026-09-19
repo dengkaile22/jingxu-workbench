@@ -84,6 +84,9 @@ class EncoderChoice:
 
 CPU_ENCODER = EncoderChoice("libx264", "CPU (libx264)", False)
 
+# 探针尺寸：NVENC/AMF 在部分世代要求宽高 ≥128；256 仍是一帧黑场，成本可忽略。
+PROBE_FRAME_SIZE = "256x256"
+
 CANDIDATES: tuple[EncoderChoice, ...] = (
     EncoderChoice("h264_nvenc", "NVIDIA NVENC", True),
     EncoderChoice("h264_qsv", "Intel Quick Sync", True),
@@ -119,6 +122,7 @@ class EncoderRegistry:
         self._probed: dict[str, bool] = {}
         self._resolved: dict[ProcessingMode, EncoderChoice] = {}
         self._notes: dict[ProcessingMode, str] = {}
+        self._skipped: set[str] = set()
 
     # ────────────────────────────── 对外 ──────────────────────────────
 
@@ -149,9 +153,32 @@ class EncoderRegistry:
         return [candidate.name for candidate in CANDIDATES if self.is_usable(candidate)]
 
     def is_usable(self, candidate: EncoderChoice) -> bool:
+        if candidate.name in self._skipped:
+            return False
         if candidate.name not in self._probed:
             self._probed[candidate.name] = bool(self._probe_func(candidate))
         return self._probed[candidate.name]
+
+    def remember_hardware_failure(self, encoder_name: str) -> None:
+        """记住本会话内初始化失败的硬件编码器，后续不再首选它。
+
+        对齐 .NET ``HardwareVideoEncoderSelector.RememberHardwareFailure``：
+        同时清掉已解析结果，使下一次 :meth:`resolve` 重新选择（改探其他硬件或 CPU）。
+        """
+        if not encoder_name or encoder_name == CPU_ENCODER.name:
+            return
+        if not any(candidate.name == encoder_name for candidate in CANDIDATES):
+            return
+        self._skipped.add(encoder_name)
+        self._probed[encoder_name] = False
+        self._resolved.clear()
+
+    def reset_probe(self) -> None:
+        """清空探测缓存与失败记忆（设置页「重新检测」）。"""
+        self._probed.clear()
+        self._resolved.clear()
+        self._notes.clear()
+        self._skipped.clear()
 
     # ────────────────────────────── 内部 ──────────────────────────────
 
@@ -169,11 +196,18 @@ class EncoderRegistry:
             "error",
             "-f",
             "lavfi",
+            # 显式 yuv420p：lavfi color 默认 RGB，直接喂给 NVENC/QSV/AMF
+            # 常会报「不支持的像素格式」而被误判为不可用。
             "-i",
-            "testsrc2=size=256x144:rate=30:duration=0.4",
+            f"color=c=black:s={PROBE_FRAME_SIZE}:d=0.04:r=25,format=yuv420p",
+            "-frames:v",
+            "1",
+            "-an",
             "-c:v",
             candidate.name,
             *candidate.quality_args(28, "ultrafast"),
+            "-pix_fmt",
+            "yuv420p",
             "-f",
             "null",
             "-",

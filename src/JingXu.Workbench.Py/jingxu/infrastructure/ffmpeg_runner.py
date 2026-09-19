@@ -17,9 +17,21 @@ from jingxu.domain.render import ProcessingMode, RenderRequest
 from jingxu.infrastructure.cover import CoverError, generate_cover
 from jingxu.infrastructure.encoders import CPU_ENCODER, EncoderChoice, default_registry
 from jingxu.infrastructure.feather import FeatherError, feather_gradient
-from jingxu.infrastructure.filter_graph import ExtraInput, FilterGraph, build_filter_graph
+from jingxu.infrastructure.filter_graph import (
+    ExtraInput,
+    FilterGraph,
+    build_filter_graph,
+    select_hardware_inputs,
+)
 from jingxu.infrastructure.process_control import ProcessTreeGuard
 from jingxu.infrastructure.subtitles import write_ass
+from jingxu.infrastructure.video_processing import (
+    SOFTWARE_PLAN,
+    HardwareProcessingPlan,
+    default_processing_selector,
+    is_hardware_encoder_failure,
+    is_hardware_failure,
+)
 
 PART_SUFFIX = ".part.mp4"
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -57,13 +69,34 @@ def build_render_command(
     output_path: Path,
     *,
     encoder: EncoderChoice = CPU_ENCODER,
+    processing_plan: HardwareProcessingPlan | None = None,
+    hardware_inputs: frozenset[int] | None = None,
 ) -> list[str]:
-    """编译 ffmpeg 命令行（独立参数列表，不做 shell 拼接）。"""
-    command = [str(ffmpeg_path), "-hide_banner", "-nostdin", "-y"]
+    """编译 ffmpeg 命令行（独立参数列表，不做 shell 拼接）。
 
-    for asset in request.plan.assets:
-        if request.settings.processing is not ProcessingMode.CPU:
-            command.extend(["-hwaccel", "auto"])
+    ``processing_plan`` 为 ``None`` 或软件计划时行为与迁移前一致。硬件计划生效时：
+
+    * 设备初始化参数（``-init_hw_device``）只在命令开头插入一次；
+    * 逐个硬件输入在其 ``-threads``/``-i`` 之前插入 ``-hwaccel`` 三件套；
+    * **循环输入（辅助素材/图层/贴纸/梯度/BGM）永不插硬解** —— 实测 QSV 循环
+      输入会重建硬件帧上下文并可能使 FFmpeg 崩溃。
+    """
+    selected = (
+        select_hardware_inputs(request.plan, request.settings, processing_plan)
+        if hardware_inputs is None
+        else frozenset(hardware_inputs)
+    )
+    plan = processing_plan if processing_plan is not None and not processing_plan.is_software else None
+    if plan is None:
+        selected = frozenset()
+
+    command = [str(ffmpeg_path), "-hide_banner", "-nostdin", "-y"]
+    if selected and plan is not None:
+        command.extend(plan.device_arguments)
+
+    for index, asset in enumerate(request.plan.assets):
+        if index in selected and plan is not None:
+            command.extend(plan.input_arguments)
         command.extend(["-threads", VIDEO_INPUT_THREADS, "-i", str(asset.path)])
 
     for extra in graph.extra_inputs:
@@ -179,11 +212,20 @@ def run_render(
     temp_dir: Path | None = None,
     encoder: EncoderChoice | None = None,
     job_id: str | None = None,
+    processing_plan: HardwareProcessingPlan | None = None,
+    processing_selector=None,
 ) -> Path:
     """执行一次渲染，成功返回成片路径；失败/取消抛出异常并清理半成品。
 
-    硬件解码失败时先重试软件解码（保留硬件编码），再视为任务失败；
-    取消不会被重试吞掉。失败任务日志归档到输出目录的 ``.jingxu-logs/<任务ID>/``。
+    三级回退（对齐 .NET ``FfmpegRenderExecutor``）：
+
+    L1 输入硬解/缩放失败 → 去掉硬解重编，**保留原编码器**；
+    L2 编码器仍失败 → ``libx264`` 兜底，并记住坏编码器；
+    L3 仍失败 → 归档诊断并抛出。
+
+    普通滤镜错误不触发任何重试（避免白跑一遍）。重试会**重新生成滤镜脚本**，
+    否则脚本里残留的 ``scale_qsv``/``hwdownload`` 会让第二遍必然同样失败。
+    取消不会被重试吞掉。
     """
     script_directory = Path(tempfile.mkdtemp(prefix="jingxu-py-", dir=temp_dir))
     request.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -199,41 +241,147 @@ def run_render(
             command = build_stream_copy_command(ffmpeg_path, request, concat_path, part_path)
             return _execute(ffmpeg_path, command, request, part_path, total_seconds, on_progress, cancel_event)
 
-        command = _build_transcode_command(
+        selector = processing_selector or default_processing_selector(ffmpeg_path)
+        selected_encoder = encoder or default_registry(ffmpeg_path).resolve(request.settings.processing)
+        plan = (
+            processing_plan
+            if processing_plan is not None
+            else selector.select(ffmpeg_path, request.settings.processing, selected_encoder)
+        )
+
+        command, filter_path = _build_transcode_command(
             ffmpeg_path,
             request,
             script_directory,
             part_path,
             temp_dir,
-            encoder,
+            selected_encoder,
+            processing_plan=plan,
         )
-        filter_path = script_directory / "concat.filter"
-        if filter_path.is_file():
-            filter_script_text = filter_path.read_text(encoding="utf-8")
+        filter_script_text = _read_filter_script(filter_path)
+
         try:
-            return _execute(ffmpeg_path, command, request, part_path, total_seconds, on_progress, cancel_event)
+            return _execute(
+                ffmpeg_path, command, request, part_path, total_seconds, on_progress, cancel_event
+            )
         except RenderCancelled:
             raise
         except RenderError as error:
-            fallback = _strip_hardware_decode(command)
-            if fallback is None:
-                _archive_failure(request, job_id, error, filter_script_text)
-                raise
-            _clear_partial(part_path)
             try:
-                return _execute(
-                    ffmpeg_path, fallback, request, part_path, total_seconds, on_progress, cancel_event
+                return _retry_after_failure(
+                    error=error,
+                    plan=plan,
+                    encoder=selected_encoder,
+                    selector=selector,
+                    request=request,
+                    execute=lambda retry_encoder, retry_plan: _execute(
+                        ffmpeg_path,
+                        _compile_command(
+                            ffmpeg_path,
+                            request,
+                            script_directory,
+                            part_path,
+                            temp_dir,
+                            retry_encoder,
+                            retry_plan,
+                        ),
+                        request,
+                        part_path,
+                        total_seconds,
+                        on_progress,
+                        cancel_event,
+                    ),
+                    clear_partial=lambda: _clear_partial(part_path),
                 )
-            except RenderCancelled:
-                raise
-            except RenderError as fallback_error:
-                _archive_failure(request, job_id, fallback_error, filter_script_text)
+            except RenderError as final_error:
+                _archive_failure(request, job_id, final_error, filter_script_text)
                 raise
     except BaseException:
         _clear_partial(part_path)
         raise
     finally:
         shutil.rmtree(script_directory, ignore_errors=True)
+
+
+def _read_filter_script(filter_path: Path) -> str:
+    """读取刚写出的滤镜脚本，供失败归档使用。"""
+    try:
+        if filter_path.is_file():
+            return filter_path.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return ""
+
+
+def _compile_command(
+    ffmpeg_path: Path,
+    request: RenderRequest,
+    script_directory: Path,
+    part_path: Path,
+    temp_dir: Path | None,
+    encoder: EncoderChoice,
+    processing_plan: HardwareProcessingPlan | None,
+) -> list[str]:
+    """编译命令（含重写滤镜脚本），供首轮与各级回退复用。"""
+    command, _ = _build_transcode_command(
+        ffmpeg_path,
+        request,
+        script_directory,
+        part_path,
+        temp_dir,
+        encoder,
+        processing_plan=processing_plan,
+    )
+    return command
+
+
+def _retry_after_failure(
+    *,
+    error: RenderError,
+    plan: HardwareProcessingPlan,
+    encoder: EncoderChoice,
+    selector,
+    request: RenderRequest,
+    execute,
+    clear_partial,
+) -> Path:
+    """L1/L2 回退；任一级成功即返回成片路径，全部失败抛出最后一次错误。
+
+    L1 输入硬解/缩放失败 → 去掉硬解重编（**保留原编码器**）；
+    L2 编码器仍失败 → ``libx264`` 兜底，并记住坏编码器（本会话不再首选它）。
+
+    普通滤镜错误（既非设备失败也非编码器失败）不触发任何重试，直接抛出。
+    """
+    last_error = error
+    software_plan = None  # None 等价于软件路径（build_render_command 视为无硬解）
+
+    # L1：输入侧失败先归因于解码/缩放，不直接怪编码器。
+    if not plan.is_software and (
+        is_hardware_failure(error.stderr_text)
+        or is_hardware_encoder_failure(encoder, error.stderr_text)
+    ):
+        clear_partial()
+        try:
+            return execute(encoder, software_plan)
+        except RenderCancelled:
+            raise
+        except RenderError as decode_error:
+            last_error = decode_error
+
+    # L2：编码器仍失败 → CPU 兜底。
+    if encoder.name != CPU_ENCODER.name and is_hardware_encoder_failure(
+        encoder, last_error.stderr_text
+    ):
+        selector.remember_hardware_failure(encoder.name)
+        clear_partial()
+        try:
+            return execute(CPU_ENCODER, software_plan)
+        except RenderCancelled:
+            raise
+        except RenderError as cpu_error:
+            last_error = cpu_error
+
+    raise last_error
 
 
 def _ensure_render_space(request: RenderRequest) -> None:
@@ -276,16 +424,27 @@ def _archive_failure(request: RenderRequest, job_id: str | None, error: RenderEr
 
 
 def _strip_hardware_decode(command: list[str]) -> list[str] | None:
-    """移除 ``-hwaccel auto`` 生成软件解码命令；不存在时返回 None。"""
+    """移除硬件解码参数生成软件命令；不含任何硬解参数时返回 None。
+
+    同时清理设备初始化与输出格式参数：只摘 ``-hwaccel`` 会留下
+    ``-hwaccel_output_format qsv``，导致软件帧被误标为设备帧。
+    """
+    removable_flags = {
+        "-hwaccel",
+        "-hwaccel_device",
+        "-hwaccel_output_format",
+        "-init_hw_device",
+    }
     stripped: list[str] = []
     index = 0
     found = False
     while index < len(command):
-        if command[index] == "-hwaccel" and index + 1 < len(command):
+        token = command[index]
+        if token in removable_flags:
             found = True
-            index += 2
+            index += 2  # 跳过旗标与其取值（-init_hw_device 也是「旗标 值」形式）
             continue
-        stripped.append(command[index])
+        stripped.append(token)
         index += 1
     return stripped if found else None
 
@@ -304,8 +463,10 @@ def _build_transcode_command(
     part_path: Path,
     temp_dir: Path | None,
     encoder: EncoderChoice | None,
-) -> list[str]:
-    """编译滤镜图并返回常规转码命令。"""
+    *,
+    processing_plan: HardwareProcessingPlan | None = None,
+) -> tuple[list[str], Path]:
+    """编译滤镜图并返回 (常规转码命令, 滤镜脚本路径)。"""
     gradient_path: Path | None = None
     if request.split is not None and request.split.feather:
         try:
@@ -343,17 +504,20 @@ def _build_transcode_command(
         boost=_materialize_boost(request),
         double_screen=request.double_screen,
         four_screen=request.four_screen,
+        processing_plan=processing_plan,
     )
     choice = encoder or default_registry(ffmpeg_path).resolve(request.settings.processing)
     script_path.write_text(graph.script, encoding="utf-8")
-    return build_render_command(
+    command = build_render_command(
         ffmpeg_path,
         request,
         graph,
         script_path,
         part_path,
         encoder=choice,
+        processing_plan=processing_plan,
     )
+    return command, script_path
 
 
 def _materialize_boost(request: RenderRequest):

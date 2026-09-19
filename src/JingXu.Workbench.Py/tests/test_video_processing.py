@@ -10,8 +10,10 @@ from pathlib import Path
 import pytest
 from conftest import make_asset
 
-from jingxu.domain.render import FitMode, ProcessingMode
+from jingxu.domain.composition import CompositionPlan, OrderMode
+from jingxu.domain.render import FitMode, ProcessingMode, RenderSettings, VariationSettings
 from jingxu.infrastructure.encoders import CPU_ENCODER, EncoderChoice
+from jingxu.infrastructure.filter_graph import build_filter_graph, select_hardware_inputs
 from jingxu.infrastructure.video_processing import (
     DEFAULT_PROBE_TIMEOUT,
     DOWNLOAD_FILTER,
@@ -440,3 +442,194 @@ def test_probe_arguments_pin_yuv420p_sample_and_download(tmp_path: Path) -> None
 
 def test_default_probe_timeout_matches_dotnet() -> None:
     assert DEFAULT_PROBE_TIMEOUT == 8.0
+
+
+# ── 滤镜图接入（GPU 路径） ──────────────────────────────────────────────────
+
+
+def _plan(*assets) -> CompositionPlan:
+    return CompositionPlan(assets=tuple(assets), mode=OrderMode.SEQUENTIAL)
+
+
+def _settings(**overrides) -> RenderSettings:
+    base = {"width": 1080, "height": 1920, "fit_mode": FitMode.PAD, "processing": ProcessingMode.AUTO}
+    base.update(overrides)
+    return RenderSettings(**base)
+
+
+def test_select_hardware_inputs_empty_for_software_plan() -> None:
+    plan = _plan(make_asset(width=1920, height=1080))
+    assert select_hardware_inputs(plan, _settings(), None) == frozenset()
+    assert select_hardware_inputs(plan, _settings(), SOFTWARE_PLAN) == frozenset()
+
+
+def test_select_hardware_inputs_respects_auto_downscale_requirement() -> None:
+    plan = _plan(make_asset(width=1920, height=1080))
+    # 1080x1920 PAD：内接 (1080,608)，有缩小收益 → Auto 启用。
+    assert select_hardware_inputs(plan, _settings(), QSV) == frozenset({0})
+    # 同尺寸 Stretch：无收益 → Auto 不启用。
+    same_size = _settings(width=1920, height=1080, fit_mode=FitMode.STRETCH)
+    assert select_hardware_inputs(plan, same_size, QSV) == frozenset()
+
+
+def test_select_hardware_inputs_gpu_mode_only_needs_whitelist() -> None:
+    plan = _plan(make_asset(width=1920, height=1080))
+    same_size = _settings(
+        width=1920, height=1080, fit_mode=FitMode.STRETCH, processing=ProcessingMode.GPU
+    )
+    assert select_hardware_inputs(plan, same_size, QSV) == frozenset({0})
+
+
+def test_select_hardware_inputs_skips_non_whitelisted_clips() -> None:
+    plan = _plan(
+        make_asset("a.mp4", width=1920, height=1080),
+        make_asset("b.mp4", width=1920, height=1080, video_codec="hevc"),
+        make_asset("c.mp4", width=1920, height=1080, rotation_degrees=90),
+    )
+    assert select_hardware_inputs(plan, _settings(), QSV) == frozenset({0})
+
+
+def test_select_hardware_inputs_disabled_when_variation_active() -> None:
+    """差异化变体链是 CPU-only，启用时整体退回软件路径。"""
+    plan = _plan(make_asset(width=1920, height=1080))
+    settings = _settings(variation=VariationSettings(mirror=True))
+    assert select_hardware_inputs(plan, settings, QSV) == frozenset()
+
+    disabled = _settings(variation=VariationSettings(mirror=False, light_crop=False, color=False, rotate=False))
+    assert select_hardware_inputs(plan, disabled, QSV) == frozenset({0})
+
+
+def test_software_path_has_no_hardware_filters() -> None:
+    """不传处理计划时必须与迁移前完全一致（零 hwaccel、零 hwdownload）。"""
+    plan = _plan(make_asset(width=1920, height=1080))
+    graph = build_filter_graph(plan, _settings())
+    assert "hwdownload" not in graph.script
+    assert "scale_qsv=" not in graph.script
+    assert "scale_cuda=" not in graph.script
+
+
+def test_hardware_fit_prefix_replaces_software_scale_chain() -> None:
+    plan = _plan(make_asset(width=1920, height=1080))
+    graph = build_filter_graph(plan, _settings(), processing_plan=QSV)
+    script = graph.script
+    assert "scale_qsv=" in script
+    assert "hwdownload,format=nv12" in script
+    # 顺序：GPU 缩放 → 回传 → pad 收口 → 统一规格尾链
+    assert script.index("scale_qsv=") < script.index("hwdownload") < script.index("pad=1080:1920")
+    assert "format=yuv420p,setpts=PTS-STARTPTS" in script
+    # 软件适配段被替换，不应再出现 force_original_aspect_ratio 的 decrease 分支
+    assert "force_original_aspect_ratio=decrease" not in script
+
+
+def test_blur_fit_uses_download_only_prefix() -> None:
+    """模糊背景无法在硬件帧上完成：只回传，再走软件双分支。"""
+    plan = _plan(make_asset(width=1920, height=1080))
+    settings = _settings(fit_mode=FitMode.BLUR, processing=ProcessingMode.GPU)
+    graph = build_filter_graph(plan, settings, processing_plan=QSV)
+    script = graph.script
+    assert f"[0:v]{DOWNLOAD_FILTER}[gpu0];[gpu0]" in script
+    assert "boxblur=20:1" in script
+    assert "scale_qsv=" not in script
+
+
+def test_explicit_empty_hardware_inputs_forces_software_path() -> None:
+    plan = _plan(make_asset(width=1920, height=1080))
+    graph = build_filter_graph(
+        plan, _settings(), processing_plan=QSV, hardware_inputs=frozenset()
+    )
+    assert "hwdownload" not in graph.script
+
+
+def test_explicit_hardware_inputs_can_force_gpu_on_gpu_mode() -> None:
+    plan = _plan(make_asset(width=1920, height=1080))
+    settings = _settings(
+        width=1920, height=1080, fit_mode=FitMode.STRETCH, processing=ProcessingMode.GPU
+    )
+    graph = build_filter_graph(plan, settings, processing_plan=QSV, hardware_inputs=frozenset({0}))
+    # 源尺寸已达目标 → 只回传，不发 scale 滤镜
+    assert f"[0:v]{DOWNLOAD_FILTER}," in graph.script
+    assert "scale_qsv=" not in graph.script
+
+
+def test_hardware_path_keeps_audio_and_concat_labels() -> None:
+    """GPU 只改视频适配段，音频与 concat 标签必须保持不变。"""
+    plan = _plan(make_asset("a.mp4", width=1920, height=1080), make_asset("b.mp4", width=1920, height=1080))
+    graph = build_filter_graph(plan, _settings(), processing_plan=QSV)
+    assert "concat=n=2:v=1:a=1[vcat][acat]" in graph.script
+    assert "[0:a]" in graph.script and "[1:a]" in graph.script
+
+
+def test_hardware_path_only_applies_to_whitelisted_clip() -> None:
+    """非白名单素材仍走软件适配，同一脚本里两种路径共存。"""
+    plan = _plan(
+        make_asset("a.mp4", width=1920, height=1080),
+        make_asset("b.mp4", width=1920, height=1080, video_codec="hevc"),
+    )
+    graph = build_filter_graph(plan, _settings(), processing_plan=QSV)
+    assert "scale_qsv=" in graph.script
+    assert "force_original_aspect_ratio=decrease" in graph.script
+
+
+# ── 诊断展示 ────────────────────────────────────────────────────────────────
+
+
+def test_describe_processing_reports_software_without_selector() -> None:
+    from jingxu.infrastructure.diagnostics import _describe_processing
+
+    assert "未探测" in _describe_processing(Path("ffmpeg.exe"), _StubRegistry(), None)
+
+
+def test_describe_processing_uses_plan_description_and_resets_probe() -> None:
+    from jingxu.infrastructure.diagnostics import _describe_processing
+
+    selector = _StubSelector(QSV)
+    ffmpeg = Path("ffmpeg.exe")
+    text = _describe_processing(ffmpeg, _StubRegistry(), selector)
+
+    assert text == QSV.description
+    assert selector.reset_calls == [ffmpeg]
+
+
+def test_describe_processing_falls_back_when_probe_raises() -> None:
+    from jingxu.infrastructure.diagnostics import _describe_processing
+
+    selector = _StubSelector(RuntimeError("boom"))
+    text = _describe_processing(Path("ffmpeg.exe"), _StubRegistry(), selector)
+    assert "探测失败" in text and "CPU" in text
+
+
+def test_runtime_info_gpu_status_defaults_to_empty() -> None:
+    from jingxu.infrastructure.diagnostics import RuntimeInfo
+
+    info = RuntimeInfo(ffmpeg_path="a", ffmpeg_version="v", ffprobe_path="b", ffprobe_version="v")
+    assert info.gpu_processing_status == ""
+
+
+class _StubRegistry:
+    """诊断测试用：编码器一律返回 CPU。"""
+
+    def resolve(self, mode):  # noqa: ANN001
+        return CPU_ENCODER
+
+    def note(self, mode):  # noqa: ANN001
+        return "测试"
+
+    def available_names(self) -> list[str]:
+        return []
+
+
+class _StubSelector:
+    """诊断测试用：select 返回给定计划或抛出给定异常。"""
+
+    def __init__(self, result) -> None:  # noqa: ANN001
+        self._result = result
+        self.reset_calls: list[Path] = []
+
+    def reset_probe(self, ffmpeg=None) -> None:  # noqa: ANN001
+        if ffmpeg is not None:
+            self.reset_calls.append(ffmpeg)
+
+    def select(self, ffmpeg, mode, encoder=None):  # noqa: ANN001
+        if isinstance(self._result, BaseException):
+            raise self._result
+        return self._result

@@ -30,6 +30,7 @@ from jingxu.infrastructure.encoders import EncoderRegistry
 from jingxu.infrastructure.ffmpeg_runner import PART_SUFFIX
 from jingxu.infrastructure.paths import data_directory
 from jingxu.infrastructure.queue import RenderQueue
+from jingxu.infrastructure.video_processing import default_processing_selector
 from jingxu.infrastructure.whisper import find_whisper
 from jingxu.ui import theme
 from jingxu.ui.widgets import Caption, PrimaryButton, SecondaryButton, SectionExpander
@@ -193,10 +194,13 @@ class SettingsPage(QWidget):
         layout.setSpacing(6)
         self._encoder_available = Caption("正在探测硬件编码器…")
         self._encoder_resolved = Caption("")
+        self._processing_status = Caption("正在实测硬件解码与缩放…")
         layout.addWidget(Caption("可用编码器"))
         layout.addWidget(self._encoder_available)
         layout.addWidget(Caption("处理器选择"))
         layout.addWidget(self._encoder_resolved)
+        layout.addWidget(Caption("输入解码与缩放"))
+        layout.addWidget(self._processing_status)
         return SectionExpander("硬件编码", body)
 
     def _build_maintenance_section(self) -> QWidget:
@@ -242,10 +246,16 @@ class SettingsPage(QWidget):
         self._version_label.setText("正在探测编码器（首次约几秒）…")
         self._encoder_available.setText("正在探测硬件编码器…")
         self._encoder_resolved.setText("")
+        self._processing_status.setText("正在实测硬件解码与缩放…")
         self._load_component_table()
 
         def work() -> None:
-            info = collect_runtime_info(self._ffmpeg, self._ffprobe, self._registry)
+            info = collect_runtime_info(
+                self._ffmpeg,
+                self._ffprobe,
+                self._registry,
+                default_processing_selector(self._ffmpeg),
+            )
             self._bridge.ready.emit(info)
 
         threading.Thread(target=work, name="jingxu-settings-probe", daemon=True).start()
@@ -258,6 +268,7 @@ class SettingsPage(QWidget):
         self._encoder_available.setText("、".join(available))
         lines = [f"{mode}：{detail}" for mode, detail in info.resolved_encoders.items()]
         self._encoder_resolved.setText("\n".join(lines))
+        self._processing_status.setText(info.gpu_processing_status or "未探测（解码与缩放使用 CPU）")
         self._data_label.setText(info.data_directory)
         self._platform_label.setText(f"Python {info.python_version} · {info.platform_text}")
         self._component_label.setText(self._component_summary())

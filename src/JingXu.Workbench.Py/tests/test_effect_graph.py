@@ -21,6 +21,7 @@ from jingxu.domain.render import ProcessingMode, RenderRequest, RenderSettings
 from jingxu.infrastructure import ffmpeg_runner
 from jingxu.infrastructure.ffmpeg_runner import _strip_hardware_decode, build_render_command
 from jingxu.infrastructure.filter_graph import SELF_SOURCE, build_filter_graph
+from jingxu.infrastructure.video_processing import HardwareProcessingKind, HardwareProcessingPlan
 
 SETTINGS = RenderSettings(width=640, height=360, fps=30)
 
@@ -145,21 +146,73 @@ class TestSelfGhostLayer:
 
 
 class TestCommandConstruction:
-    def test_video_inputs_use_thread_limit_and_hwaccel_flag(self) -> None:
+    def test_software_plan_has_no_hwaccel_even_in_gpu_mode(self) -> None:
+        """未提供实测计划（或计划为软件）时，任何模式都不得插硬解参数。"""
         plan = _plan("a.mp4", "b.mp4")
         settings = RenderSettings(width=640, height=360, fps=30, processing=ProcessingMode.GPU)
         request = _request(plan, settings)
         graph = build_filter_graph(plan, settings)
         command = build_render_command(Path("ffmpeg"), request, graph, Path("f.filter"), Path("o.mp4"))
 
+        assert "-hwaccel" not in command
         assert command.count("2") >= 2
-        assert command.count("-hwaccel") == 2
-        assert command[command.index("-hwaccel") + 1] == "auto"
-        assert all(
-            command[index + 1] == "2"
-            for index, token in enumerate(command)
-            if token == "-threads" and index + 1 < len(command) and command[index + 1] == "2"
+
+    def test_hardware_input_adds_device_and_input_arguments(self) -> None:
+        plan = _plan("a.mp4", "b.mp4")
+        settings = RenderSettings(width=640, height=360, fps=30, processing=ProcessingMode.GPU)
+        request = _request(plan, settings)
+        hardware = HardwareProcessingPlan(HardwareProcessingKind.QSV, True)
+        graph = build_filter_graph(plan, settings, processing_plan=hardware)
+        command = build_render_command(
+            Path("ffmpeg"),
+            request,
+            graph,
+            Path("f.filter"),
+            Path("o.mp4"),
+            processing_plan=hardware,
         )
+
+        # 设备参数只出现一次，且在命令开头。
+        assert command.count("-init_hw_device") == 1
+        assert command[command.index("-init_hw_device") + 1] == "qsv=jxgpu:hw_any"
+        assert command.index("-init_hw_device") < command.index("-i")
+        # 每个硬件输入各一份三件套。
+        assert command.count("-hwaccel") == 2
+        assert command[command.index("-hwaccel") + 1] == "qsv"
+        assert command[command.index("-hwaccel_output_format") + 1] == "qsv"
+        # 三件套必须在 -threads 之前，且不破坏既有「-threads 2 -i」顺序。
+        first_input = command.index("-i")
+        assert command[first_input - 2 : first_input] == ["-threads", "2"]
+
+    def test_looped_extra_inputs_never_get_hwaccel(self) -> None:
+        """辅助素材/图层/贴纸等循环输入必须保持软件解码（QSV 循环会崩）。"""
+        plan = _plan("a.mp4")
+        settings = RenderSettings(width=640, height=360, fps=30, processing=ProcessingMode.GPU)
+        request = _request(plan, settings)
+        hardware = HardwareProcessingPlan(HardwareProcessingKind.QSV, True)
+        graph = build_filter_graph(
+            plan,
+            settings,
+            layers=(
+                LayerSpec(kind=LayerKind.OVERLAY, source=Path("mask.mp4"), width_percent=40.0),
+            ),
+            processing_plan=hardware,
+            hardware_inputs=frozenset({0}),
+        )
+        command = build_render_command(
+            Path("ffmpeg"),
+            request,
+            graph,
+            Path("f.filter"),
+            Path("o.mp4"),
+            processing_plan=hardware,
+            hardware_inputs=frozenset({0}),
+        )
+
+        # 硬解只作用于主片（1 份三件套），循环图层输入不带硬解。
+        assert command.count("-hwaccel") == 1
+        layer_input_index = len(command) - 1 - command[::-1].index(str(Path("mask.mp4")))
+        assert "-stream_loop" in command[:layer_input_index]
 
     def test_cpu_mode_has_no_hwaccel(self) -> None:
         plan = _plan("a.mp4")
@@ -187,6 +240,25 @@ class TestCommandConstruction:
 
         assert stripped == ["ffmpeg", "-threads", "2", "-i", "a.mp4", "-i", "b.mp4"]
         assert _strip_hardware_decode(["ffmpeg", "-i", "a.mp4"]) is None
+
+    def test_strip_hardware_decode_removes_device_and_output_format(self) -> None:
+        """只摘 -hwaccel 会留下 -hwaccel_output_format，软件帧会被误标为设备帧。"""
+        command = [
+            "ffmpeg",
+            "-init_hw_device",
+            "qsv=jxgpu:hw_any",
+            "-hwaccel",
+            "qsv",
+            "-hwaccel_device",
+            "jxgpu",
+            "-hwaccel_output_format",
+            "qsv",
+            "-threads",
+            "2",
+            "-i",
+            "a.mp4",
+        ]
+        assert _strip_hardware_decode(command) == ["ffmpeg", "-threads", "2", "-i", "a.mp4"]
 
 
 def test_runner_exposes_tree_guard(monkeypatch) -> None:

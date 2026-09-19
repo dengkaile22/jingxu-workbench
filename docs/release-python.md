@@ -7,13 +7,54 @@
 
 | 文件 | 说明 |
 |------|------|
+| `artifacts/py-release/炳恒快速混剪-Py-win-x64.msi` | MSI 安装包（开始菜单 + 桌面快捷方式，可卸载） |
+| `artifacts/py-release/SHA256SUMS-Py.txt` | MSI SHA-256 校验和 |
 | `artifacts/py-release/炳恒快速混剪-Py-Portable-win-x64.zip` | 自包含便携包（解压即用，双击 exe 启动） |
 | `artifacts/py-release/SHA256SUMS.txt` | 便携包 SHA-256 校验和 |
 | `artifacts/py-build/炳恒快速混剪/` | 未压缩的便携目录（可直接运行，便于排查） |
 
 命名中的 `Py` 用于与 .NET 版产物区分，避免两者混用。
 
-## 打包
+## 构建 MSI 安装包
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.ps1
+```
+
+前置条件：WiX Toolset 6（`wix.exe` 在 PATH 或 `C:\Program Files\WiX Toolset v6.0\bin\`）。
+便携目录不存在时脚本会自动先执行 `Build-Portable-Py.ps1`。
+
+| 开关 | 用途 |
+|------|------|
+| `-PortableDirectory <路径>` | 指定便携目录来源 |
+| `-OutputDirectory <路径>` | 指定 MSI 输出目录（默认 `artifacts/py-release`） |
+| `-ProductVersion 1.0.2.0` | MSI ProductVersion（四段数字） |
+| `-SkipPortableBuild` | 便携目录缺失时直接失败，不自动打包 |
+
+安装包关键属性（脚本会在构建后直接读 MSI 数据库校验）：
+
+| 属性 | 值 |
+|------|-----|
+| ProductName | 炳恒快速混剪（Python 版） |
+| ProductVersion | 1.0.2.0 |
+| UpgradeCode | `{B8D5F3C2-A0E4-4F7B-9D6C-2E3F4A5B6C7D}` |
+| Scope | `perUserOrMachine`（无管理员权限时按用户安装） |
+| 语言 / 代码页 | 2052 / 936 |
+
+**与 .NET 版共存**：UpgradeCode 与安装目录都不同，两个 MSI 可并存、可分别升级与
+卸载，互不触发 MajorUpgrade。脚本内置了「UpgradeCode 不得等于 .NET 版」的断言。
+
+实测安装行为（本机验证）：无管理员权限时安装到
+`%LOCALAPPDATA%\Programs\炳恒快速混剪 Python 版`，2680 个文件、789.6 MB，
+并创建开始菜单与桌面快捷方式；卸载后目录、注册表卸载项、开始菜单文件夹均被清除。
+
+安装后自检（证明装完即可用，运行时全部解析到安装目录内）：
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\炳恒快速混剪 Python 版\炳恒快速混剪.exe" --self-test --report-file "$env:TEMP\selftest.json"
+```
+
+## 打包便携包
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps1

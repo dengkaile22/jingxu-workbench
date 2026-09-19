@@ -29,7 +29,7 @@
       "relativePath": "whisper/whisper-cli.exe",
       "required": false,
       "versionArguments": ["--help"],
-      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "sha256": "95e3c0b0e778ad9499eb0125f97c1dcf437dd9eb4ea77050b043574f93c2631d",
       "licenseId": "MIT",
       "sourceUrl": "https://github.com/ggerganov/whisper.cpp/releases",
       "sourceCodeUrl": "https://github.com/ggerganov/whisper.cpp"
@@ -39,7 +39,7 @@
       "displayName": "Whisper 多语言 base 模型",
       "relativePath": "whisper/models/ggml-base.bin",
       "required": false,
-      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
       "licenseId": "MIT",
       "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp",
       "sourceCodeUrl": "https://github.com/ggerganov/whisper.cpp"

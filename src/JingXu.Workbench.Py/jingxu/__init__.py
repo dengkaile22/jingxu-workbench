@@ -2,4 +2,5 @@
 
 __all__ = ["__version__"]
 
-__version__ = "0.1.0"
+# 与 .NET 版共用同一产品版本号，便于发布与 MSI ProductVersion 对齐。
+__version__ = "1.0.2"

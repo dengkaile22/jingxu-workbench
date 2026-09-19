@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Python 版（PySide6）MSI 安装器。
+
+  与 .NET 版的关系：两者可并存安装。
+  * UpgradeCode 不同（.NET 版为 A7C4E2B1-…，本版为 B8D5F3C2-…），
+    因此升级与卸载互不干扰；
+  * 安装目录名带「Python 版」后缀，避免与 .NET 版互相覆盖；
+  * 安装范围与 .NET 版一致：只管理程序文件目录，不触碰用户项目与输出目录。
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package
+    Name="炳恒快速混剪（Python 版）"
+    Manufacturer="炳恒"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="B8D5F3C2-A0E4-4F7B-9D6C-2E3F4A5B6C7D"
+    Scope="perUserOrMachine"
+    Language="2052"
+    Codepage="936">
+
+    <MajorUpgrade
+      DowngradeErrorMessage="已安装更新版本的炳恒快速混剪（Python 版）。"
+      AllowSameVersionUpgrades="yes" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <ui:WixUI
+      Id="WixUI_InstallDir"
+      InstallDirectory="INSTALLFOLDER" />
+
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+    <Feature Id="MainFeature" Title="炳恒快速混剪（Python 版）" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="AppShortcuts" />
+    </Feature>
+
+    <Icon Id="AppIcon" SourceFile="$(var.PublishDir)\炳恒快速混剪.exe" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+  </Package>
+</Wix>

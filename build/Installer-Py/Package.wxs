@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Python 版文件表与快捷方式。
+
+  文件用 WiX 的 <Files Include="**"> 自动收割：PyInstaller 的 onedir 产物有
+  2600+ 个文件（_internal/ 与 runtime/），逐条手写组件不现实；WiX 6 会为
+  通配到的每个文件自动生成组件与 GUID。
+
+  注意：随包的 runtime/（FFmpeg 等）体积很大但都属于程序文件，安装到
+  Program Files 即可；运行期数据仍写入 %LOCALAPPDATA%\JingXu。
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="炳恒快速混剪 Python 版" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="炳恒快速混剪（Python 版）" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <!-- 主程序单独成组件并作为 KeyPath，保证图标与快捷方式解析稳定 -->
+      <Component Id="MainExecutableComponent" Guid="C2D3E4F5-A6B7-8901-CDEF-234567890123">
+        <File Id="MainExecutableFile" Source="$(var.PublishDir)\炳恒快速混剪.exe" KeyPath="yes" />
+      </Component>
+      <Files Include="$(var.PublishDir)\**">
+        <Exclude Files="$(var.PublishDir)\炳恒快速混剪.exe" />
+      </Files>
+    </ComponentGroup>
+
+    <ComponentGroup Id="AppShortcuts">
+      <Component Id="ApplicationShortcut" Directory="ApplicationProgramsFolder" Guid="D3E4F5A6-B7C8-9012-DEF0-345678901234">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="炳恒快速混剪（Python 版）"
+                  Description="完全离线的 Windows 桌面视频批处理混剪软件（Python 版）"
+                  Target="[INSTALLFOLDER]炳恒快速混剪.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RemoveFolder Id="CleanUpProgramMenuFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\BingHeng\JingXuWorkbenchPy" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="DesktopShortcutComponent" Directory="DesktopFolder" Guid="E4F5A6B7-C8D9-0123-EF01-456789012345">
+        <Shortcut Id="DesktopShortcut"
+                  Name="炳恒快速混剪（Python 版）"
+                  Description="完全离线的 Windows 桌面视频批处理混剪软件（Python 版）"
+                  Target="[INSTALLFOLDER]炳恒快速混剪.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RegistryValue Root="HKCU" Key="Software\BingHeng\JingXuWorkbenchPy" Name="desktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string] $CacheDirectory,
@@ -148,6 +148,15 @@ foreach ($component in $manifest.components) {
     if (-not (Test-Path $destParent)) { New-Item -ItemType Directory -Path $destParent -Force | Out-Null }
     Copy-Item -Path $source -Destination $destination -Force
     Write-Host "Staged: $relative"
+
+    # whisper-cli 依赖同目录的 ggml/whisper DLL 与运行库，整目录一起暂存。
+    if ($relative -match 'whisper/whisper-cli\.exe$') {
+        $sourceDirectory = Split-Path $source -Parent
+        Get-ChildItem -Path $sourceDirectory -File | Where-Object { $_.Extension -in '.dll', '.json' } | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $destParent $_.Name) -Force
+        }
+        Write-Host "Staged: whisper 运行库（DLL）"
+    }
 }
 
 if ($PrintHashes) { exit 0 }

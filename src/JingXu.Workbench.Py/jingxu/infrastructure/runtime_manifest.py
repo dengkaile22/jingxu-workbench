@@ -67,14 +67,15 @@ class ComponentStatus:
 
 
 def manifest_search_paths() -> list[Path]:
-    """清单候选路径：显式环境变量 → 仓库 build/ → 应用目录。"""
+    """清单候选路径：显式环境变量 → 应用目录（含 exe 同级）→ 仓库 build/。"""
+    from jingxu.infrastructure.app_paths import search_roots
+
     candidates: list[Path] = []
     configured = os.environ.get("JINGXU_MANIFEST_PATH", "").strip()
     if configured:
         candidates.append(Path(configured).expanduser())
 
-    here = Path(__file__).resolve()
-    for parent in list(here.parents)[:_SEARCH_DEPTH]:
+    for parent in search_roots():
         candidates.append(parent / "build" / MANIFEST_FILE_NAME)
         candidates.append(parent / MANIFEST_FILE_NAME)
         candidates.append(parent / "runtime" / MANIFEST_FILE_NAME)
@@ -153,14 +154,19 @@ def load_manifest(path: Path | None = None) -> ManifestLoadResult:
 
 
 def runtime_search_directories() -> list[Path]:
-    """运行时搜索目录：环境变量 → 应用目录 runtime/ → 系统 PATH（由调用方处理）。"""
+    """运行时搜索目录：环境变量 → 应用目录 runtime/ → 系统 PATH（由调用方处理）。
+
+    冻结运行时由 :func:`app_paths.search_roots` 优先给出可执行文件所在目录，
+    因此便携包的 ``<exe 同级>/runtime`` 会先于任何源码布局被命中。
+    """
+    from jingxu.infrastructure.app_paths import search_roots
+
     directories: list[Path] = []
     configured = os.environ.get(RUNTIME_ENV, "").strip()
     if configured:
         directories.append(Path(configured).expanduser())
 
-    here = Path(__file__).resolve()
-    for parent in list(here.parents)[:_SEARCH_DEPTH]:
+    for parent in search_roots():
         candidate = parent / "runtime"
         if candidate not in directories:
             directories.append(candidate)

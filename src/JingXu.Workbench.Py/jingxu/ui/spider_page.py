@@ -20,8 +20,9 @@ def find_spider_directory() -> Path | None:
     if configured:
         candidates.append(Path(configured).expanduser())
 
-    here = Path(__file__).resolve()
-    for parent in list(here.parents)[:8]:
+    from jingxu.infrastructure.app_paths import search_roots
+
+    for parent in search_roots():
         candidates.append(parent / "runtime" / "spider")          # 便携包布局
         candidates.append(parent / "src" / "JingXu.Spider")
         candidates.append(parent / "JingXu.Spider")

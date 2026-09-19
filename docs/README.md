@@ -22,6 +22,7 @@
 | [开发指南](development.md) | SDK、命令、入口、CLI 开关、目录 |
 | [测试说明](testing.md) | 测试分层与运行方式 |
 | [发布流程](release.md) | 便携包 / 安装器 / 校验 |
+| [Python 版发布流程](release-python.md) | PySide6 版的 PyInstaller 打包、随包运行时与自检 |
 | [运行时许可](runtime-licensing.md) | FFmpeg / Whisper / Tesseract 合规 |
 | [验收报告](acceptance-report.md) | Task 矩阵与已知阻塞项 |
 

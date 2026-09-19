@@ -1,4 +1,4 @@
-.superpowers/
+﻿.superpowers/
 .worktrees/
 .tools/
 .vs/
@@ -41,6 +41,8 @@ venv/
 /build-py/
 /src/JingXu.Workbench.Py/build/
 /src/JingXu.Workbench.Py/dist/
+artifacts/py-build/
+artifacts/py-release/
 artifacts/py-*
 *.spec.bak
 

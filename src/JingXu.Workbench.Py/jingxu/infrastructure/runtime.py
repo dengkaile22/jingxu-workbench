@@ -19,9 +19,14 @@ def _executable_name(name: str) -> str:
 
 
 def _search_roots() -> list[Path]:
-    """按包位置向上查找的候选根目录（可被测试替换）。"""
-    here = Path(__file__).resolve()
-    return list(here.parents)[:_SEARCH_DEPTH]
+    """按包位置/可执行文件位置向上查找的候选根目录。
+
+    冻结（PyInstaller）运行时优先返回可执行文件所在目录，保证「与 exe 同级的
+    runtime/」被找到；源码运行时等价于包目录的各级父目录。
+    """
+    from jingxu.infrastructure.app_paths import search_roots
+
+    return search_roots()
 
 
 def _runtime_candidates(name: str) -> list[Path]:

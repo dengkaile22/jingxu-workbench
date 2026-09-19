@@ -75,6 +75,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Resolve-Runtimes.ps1
 | 字幕实验室 | 手动框选去除、OCR 自动定位、Whisper 离线识别、SRT/ASS 烧录 |
 | 任务队列 | 可暂停调度、单任务取消（进程树终止）、失败隔离与重试 |
 
+## Python 跨平台版（开发中）
+
+`src/JingXu.Workbench.Py/` 为 PySide6 + FFmpeg 的跨平台重写版（Windows/macOS/Linux），
+已打通素材导入 → 顺序/随机/自定义序号编排 → 画幅适配 → 渲染队列的完整链路；
+蒙版羽化/上淡入/来源裁剪与合成预览、随机旋转、上下双屏、无损直拷、OCR 自动定位、
+交叉转场与项目保存/打开（`.jxproj`）也已迁移，
+详见 [src/JingXu.Workbench.Py/README.md](src/JingXu.Workbench.Py/README.md)。
+
+已与 .NET 版对齐的能力：GPU 硬解与 `scale_qsv`/`scale_cuda` 缩放（含三级回退）、
+蒙版形状与 PNG 遮罩、贴纸独立画幅与宽高比锁定、音频库音量语义（−100..+100）。
+
+Windows x64 便携包打包：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps1
+```
+
+产物为 `artifacts/py-release/炳恒快速混剪-Py-Portable-win-x64.zip`（含随包 `runtime/`），
+详见 [docs/release-python.md](docs/release-python.md)。
+
 ## 输出与目录
 
 - 单源文件夹任务默认输出到源目录下 `分镜输出`。

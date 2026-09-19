@@ -23,6 +23,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--overlay-output", metavar="PATH", help="--overlay-smoke 的图片输出路径")
     parser.add_argument("--verify-hashes", action="store_true", help="自检时校验运行时清单 SHA-256")
+    parser.add_argument(
+        "--report-file",
+        metavar="PATH",
+        help=(
+            "把自检 JSON 报告写入指定文件（UTF-8）。窗口模式下 stdout 不可靠"
+            "（管道关闭时刷新会失败），发布脚本应使用本选项。"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -39,6 +47,7 @@ def _run_startup_maintenance() -> None:
 
 def _self_test_report(*, verify_hashes: bool) -> tuple[dict, int]:
     """生成自检报告（对齐 .NET SelfTestReport 字段）并返回退出码。"""
+    from jingxu.infrastructure.app_paths import app_root
     from jingxu.infrastructure.runtime import ToolNotFoundError, require_tool
     from jingxu.infrastructure.runtime_manifest import (
         diagnose_components,
@@ -49,7 +58,7 @@ def _self_test_report(*, verify_hashes: bool) -> tuple[dict, int]:
     report: dict[str, object] = {
         "schemaVersion": 1,
         "success": False,
-        "appRoot": str(Path(__file__).resolve().parent),
+        "appRoot": str(app_root()),
         "manifestValid": False,
         "manifestIssues": [],
         "components": [],
@@ -113,6 +122,21 @@ def _self_test_report(*, verify_hashes: bool) -> tuple[dict, int]:
     return report, 0 if report["success"] else 1
 
 
+def _emit_report(payload: str, report_file: str | None) -> None:
+    """输出 JSON 报告：优先写文件，stdout 仅作尽力输出。
+
+    窗口模式（PyInstaller ``--windowed``）下没有控制台，管道被关闭时 Python
+    刷新 stdout 缓冲会抛 ``OSError: Invalid argument``，因此发布流程必须走
+    ``--report-file``。
+    """
+    if report_file:
+        Path(report_file).write_text(payload, encoding="utf-8")
+    try:
+        print(payload)
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
@@ -129,7 +153,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.self_test:
         QApplication.instance() or QApplication(["jingxu"])
         report, code = _self_test_report(verify_hashes=args.verify_hashes)
-        print(json.dumps(report, ensure_ascii=False))
+        try:
+            _emit_report(json.dumps(report, ensure_ascii=False), args.report_file)
+        except OSError as error:
+            # 报告写不出去就意味着发布脚本无法取证，必须显式失败。
+            report["error"] = f"无法写入报告文件：{error}"
+            return 1
         return code
 
     if args.import_smoke:
@@ -138,10 +167,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             ffprobe = require_tool("ffprobe")
         except ToolNotFoundError as error:
-            print(json.dumps({"schemaVersion": 1, "error": str(error)}, ensure_ascii=False))
+            _emit_report(json.dumps({"schemaVersion": 1, "error": str(error)}, ensure_ascii=False), args.report_file)
             return 1
         report = import_smoke(Path(args.import_smoke), ffprobe)
-        print(json.dumps(report, ensure_ascii=False))
+        _emit_report(json.dumps(report, ensure_ascii=False), args.report_file)
         return 0 if report.get("asset") else 1
 
     if args.overlay_smoke:
@@ -151,12 +180,12 @@ def main(argv: list[str] | None = None) -> int:
             ffmpeg = require_tool("ffmpeg")
             ffprobe = require_tool("ffprobe")
         except ToolNotFoundError as error:
-            print(json.dumps({"schemaVersion": 1, "error": str(error)}, ensure_ascii=False))
+            _emit_report(json.dumps({"schemaVersion": 1, "error": str(error)}, ensure_ascii=False), args.report_file)
             return 1
         source = Path(args.overlay_smoke)
         output = Path(args.overlay_output) if args.overlay_output else source.with_name(f"{source.stem}-overlay.jpg")
         report = overlay_smoke(source, ffmpeg, ffprobe, output, args.overlay_preset)
-        print(json.dumps(report, ensure_ascii=False))
+        _emit_report(json.dumps(report, ensure_ascii=False), args.report_file)
         return 0 if report.get("rendered") else 1
 
     app = QApplication.instance() or QApplication(["jingxu"])

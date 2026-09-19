@@ -26,7 +26,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from jingxu.domain.layers import LayerKind, LayerSpec
+from jingxu.domain.layers import (
+    LayerAspectMode,
+    LayerFixedRatio,
+    LayerKind,
+    LayerShapeMask,
+    LayerSpec,
+)
 from jingxu.domain.media import MediaAsset
 from jingxu.domain.render import OverlayFitMode, RenderSettings
 from jingxu.infrastructure.frame_preview import FramePreviewError, render_composite_frame
@@ -85,6 +91,9 @@ class LayerPage(QWidget):
         self._layers: list[LayerSpec] = []
         self._updating = False
         self._aspect = "9:16"
+        # 混剪页画幅（供「跟随混剪画幅」模式使用）；与 _aspect 分开保存，
+        # 以便用户选择独立画幅后仍能在切回跟随模式时恢复。
+        self._composition_aspect = "9:16"
         self._preview_running = False
         self._preview_thread: threading.Thread | None = None
 
@@ -294,13 +303,33 @@ class LayerPage(QWidget):
         preset_row.addStretch(1)
         grid.addLayout(preset_row, 7, 0, 1, 4)
 
+        # 比例行：预览画幅模式（不改成片）与宽高比锁定（对齐 .NET FixedAspectRatio）。
+        ratio_row = QHBoxLayout()
+        ratio_row.setSpacing(8)
+        ratio_row.addWidget(Caption("预览画幅"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._aspect_mode = QComboBox()
+        for mode in LayerAspectMode:
+            self._aspect_mode.addItem(mode.display_text, mode.value)
+        self._aspect_mode.setToolTip("只影响本页预览画布比例，不改变成片画幅。")
+        ratio_row.addWidget(self._aspect_mode)
+
+        ratio_row.addWidget(Caption("锁定宽高比"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._fixed_ratio = QComboBox()
+        for ratio in LayerFixedRatio:
+            self._fixed_ratio.addItem(ratio.display_text, ratio.value)
+        self._fixed_ratio.setToolTip("锁定后调整宽度或高度会按比例联动另一个方向。")
+        ratio_row.addWidget(self._fixed_ratio)
+
+        self._ratio_hint = Caption("")
+        ratio_row.addWidget(self._ratio_hint)
+        ratio_row.addStretch(1)
+        grid.addLayout(ratio_row, 8, 0, 1, 4)
+
         for spin in (
             self._start,
             self._end,
             self._x,
             self._y,
-            self._width,
-            self._height,
             self._opacity,
             self._rotation,
             self._start_clip,
@@ -309,12 +338,17 @@ class LayerPage(QWidget):
             self._source_crop_y,
         ):
             spin.valueChanged.connect(self._on_form_changed)
+        # 宽高走专用处理：锁定比例时需要联动另一个方向。
+        self._width.valueChanged.connect(self._on_width_changed)
+        self._height.valueChanged.connect(self._on_height_changed)
         self._split_position.valueChanged.connect(self._on_split_changed)
         self._fit.currentIndexChanged.connect(self._on_form_changed)
         self._remove_black.stateChanged.connect(self._on_form_changed)
         self._enabled.stateChanged.connect(self._on_form_changed)
         self._mix_audio.stateChanged.connect(self._on_form_changed)
         self._source_crop_canvas.stateChanged.connect(self._on_form_changed)
+        self._fixed_ratio.currentIndexChanged.connect(self._on_fixed_ratio_changed)
+        self._aspect_mode.currentIndexChanged.connect(self._on_aspect_mode_changed)
         return widget
 
     @staticmethod
@@ -386,6 +420,8 @@ class LayerPage(QWidget):
             self._mix_audio,
             self._remove_black,
             self._enabled,
+            self._fixed_ratio,
+            self._aspect_mode,
         ):
             widget.setEnabled(has_selection)
 
@@ -409,8 +445,11 @@ class LayerPage(QWidget):
             self._mix_audio.setChecked((layer.audio_mode or "discard").lower() == "mix")
             self._remove_black.setChecked(layer.remove_black)
             self._enabled.setChecked(layer.enabled)
+            ratio_index = self._fixed_ratio.findData(layer.fixed_ratio.value)
+            self._fixed_ratio.setCurrentIndex(ratio_index if ratio_index >= 0 else 0)
         self._sync_split_display(layer.y_percent if layer else 50.0)
         self._updating = False
+        self._refresh_ratio_hint()
         self._canvas.set_selected(layer.id if layer else None)
 
     def _apply_pip_preset(self) -> None:
@@ -467,11 +506,146 @@ class LayerPage(QWidget):
         self.layers_changed.emit()
 
     def set_canvas_aspect(self, aspect: str) -> None:
-        """由壳层同步成片画幅（9:16 / 16:9 / 1:1 / 3:4），合成预览沿用同画幅。"""
+        """由壳层同步成片画幅（9:16 / 16:9 / 1:1 / 3:4）。
+
+        在「跟随混剪画幅」模式下沿用同画幅；用户选了独立画幅则保持不动，
+        避免混剪页一改设置就把用户的编辑视角拽走（对齐 .NET 的
+        ``SyncCompositionCanvas`` 只在 FollowComposition 时刷新尺寸）。
+        """
         if aspect in PREVIEW_ASPECT_SIZES:
-            self._aspect = aspect
-        self._canvas.set_layers(self._layers, aspect=aspect)
+            self._composition_aspect = aspect
+        if self._selected_aspect_mode() is LayerAspectMode.FOLLOW_COMPOSITION:
+            self._aspect = self._composition_aspect
+        self._canvas.set_layers(self._layers, aspect=self._aspect)
         self._refresh_preview_availability()
+
+    # ── 画幅模式与宽高比锁定 ────────────────────────────────────────────
+
+    def _selected_aspect_mode(self) -> LayerAspectMode:
+        raw = str(self._aspect_mode.currentData() or LayerAspectMode.FOLLOW_COMPOSITION.value)
+        try:
+            return LayerAspectMode(raw)
+        except ValueError:
+            return LayerAspectMode.FOLLOW_COMPOSITION
+
+    def _refresh_ratio_hint(self) -> None:
+        """显示当前生效的画幅与锁定状态，避免用户误以为改了成片画幅。"""
+        mode = self._selected_aspect_mode()
+        if mode is LayerAspectMode.FOLLOW_COMPOSITION:
+            canvas_text = f"跟随混剪（{self._composition_aspect}）"
+        else:
+            canvas_text = mode.display_text
+        ratio = self._selected_fixed_ratio()
+        if ratio is LayerFixedRatio.NONE:
+            ratio_text = "未锁定宽高比"
+        else:
+            ratio_text = f"已锁定 {ratio.display_text}"
+        self._ratio_hint.setText(f"预览画幅 {canvas_text} · {ratio_text}")
+
+    def _selected_fixed_ratio(self) -> LayerFixedRatio:
+        raw = str(self._fixed_ratio.currentData() or LayerFixedRatio.NONE.value)
+        try:
+            return LayerFixedRatio(raw)
+        except ValueError:
+            return LayerFixedRatio.NONE
+
+    def _on_aspect_mode_changed(self, *_args: object) -> None:
+        mode = self._selected_aspect_mode()
+        if mode is LayerAspectMode.FOLLOW_COMPOSITION:
+            self._aspect = self._composition_aspect
+        else:
+            self._aspect = mode.value
+        self._canvas.set_layers(self._layers, aspect=self._aspect)
+        self._refresh_ratio_hint()
+
+    def _on_fixed_ratio_changed(self, *_args: object) -> None:
+        """锁定比例立即生效：按当前宽度推出高度并落盘。"""
+        if self._updating:
+            return
+        layer = self._selected()
+        ratio = self._selected_fixed_ratio()
+        if layer is None:
+            self._refresh_ratio_hint()
+            return
+
+        width = float(self._width.value())
+        if ratio is LayerFixedRatio.NONE:
+            updated = layer.with_changes(fixed_aspect_ratio=ratio.value)
+            status = "已解除宽高比锁定。"
+        else:
+            constrained_width, constrained_height = layer.with_changes(
+                fixed_aspect_ratio=ratio.value
+            ).constrain_size(
+                width_percent=width,
+                height_percent=float(self._height.value()),
+                driven_by="width",
+            )
+            updated = layer.with_changes(
+                fixed_aspect_ratio=ratio.value,
+                width_percent=constrained_width,
+                height_percent=constrained_height,
+            )
+            width = constrained_width
+            status = f"已锁定 {ratio.display_text}：宽度 {constrained_width:.0f}% → 高度 {constrained_height:.0f}%。"
+
+        if self._store.replace(updated):
+            self._updating = True
+            self._width.setValue(int(round(width)))
+            self._height.setValue(int(round(updated.height_percent)))
+            self._sync_split_display(updated.y_percent)
+            self._updating = False
+            self._layers = self._store.layers
+            self._refresh_row_text(updated.id)
+            self._canvas.set_layers(self._layers)
+            self._set_status(status)
+            self.layers_changed.emit()
+        self._refresh_ratio_hint()
+
+    def _on_width_changed(self, *_args: object) -> None:
+        """宽度变更：锁定时按比例联动高度（对齐 .NET OnWidthChanged）。"""
+        if self._updating:
+            return
+        layer = self._selected()
+        if layer is None:
+            return
+        ratio = self._selected_fixed_ratio()
+        if ratio is LayerFixedRatio.NONE:
+            self._on_form_changed()
+            return
+
+        constrained_width, constrained_height = layer.constrain_size(
+            width_percent=float(self._width.value()),
+            height_percent=float(layer.height_percent),
+            driven_by="width",
+        )
+        self._updating = True
+        self._width.setValue(int(round(constrained_width)))
+        self._height.setValue(int(round(constrained_height)))
+        self._updating = False
+        self._on_form_changed()
+
+    def _on_height_changed(self, *_args: object) -> None:
+        """高度上限变更：锁定时按比例联动宽度（对齐 .NET OnHeightChanged）。"""
+        if self._updating:
+            return
+        layer = self._selected()
+        if layer is None:
+            return
+        ratio = self._selected_fixed_ratio()
+        if ratio is LayerFixedRatio.NONE:
+            self._on_form_changed()
+            return
+
+        constrained_width, constrained_height = layer.constrain_size(
+            width_percent=float(layer.width_percent),
+            height_percent=float(self._height.value()),
+            driven_by="height",
+        )
+        self._updating = True
+        self._width.setValue(int(round(constrained_width)))
+        self._height.setValue(int(round(constrained_height)))
+        self._updating = False
+        self._on_form_changed()
 
     def _on_layer_moved(self, layer_id: str, x_percent: float, y_percent: float) -> None:
         layer = self._store.find(layer_id)
@@ -519,10 +693,14 @@ class LayerPage(QWidget):
     def _row_text(layer: LayerSpec) -> str:
         rotation = f"    旋转 {layer.rotation_degrees:.0f}°" if abs(layer.rotation_degrees) >= 0.5 else ""
         height = f"    高度上限 {layer.height_percent:.0f}%" if layer.height_percent > 0 else ""
+        ratio = layer.fixed_ratio
+        ratio_text = f"    锁定 {ratio.display_text}" if ratio is not LayerFixedRatio.NONE else ""
+        shape = layer.shape_mask_kind
+        shape_text = f"    形状 {shape.value}" if shape is not LayerShapeMask.NONE else ""
         return (
             f"{layer.display_name}    {layer.window_text}    "
             f"位置 {layer.x_percent:.0f}%,{layer.y_percent:.0f}%    宽 {layer.width_percent:.0f}%"
-            f"{height}{rotation}"
+            f"{height}{rotation}{ratio_text}{shape_text}"
         )
 
     def _on_selection_changed(self, _row: int) -> None:

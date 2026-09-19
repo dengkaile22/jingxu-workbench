@@ -8,6 +8,7 @@ from pathlib import Path
 from jingxu.domain.layers import (
     DEFAULT_MASK_CORNER_RADIUS_PX,
     SELF_SOURCE,
+    LayerFixedRatio,
     LayerKind,
     LayerShapeMask,
     LayerSpec,
@@ -65,6 +66,7 @@ def layer_to_payload(layer: LayerSpec) -> dict:
         "mask_png": str(layer.mask_png) if layer.mask_png is not None else None,
         "mask_png_mode": layer.mask_png_mode,
         "mask_png_invert": layer.mask_png_invert,
+        "fixed_aspect_ratio": layer.fixed_aspect_ratio,
     }
 
 
@@ -95,6 +97,14 @@ def _resolve_mask_png(entry: dict, shape: LayerShapeMask) -> Path | None:
     if not path.is_file():
         return None
     return path
+
+
+def _resolve_fixed_ratio(raw: object) -> str:
+    """解析宽高比锁定值；未知值回落 ``none``（旧 JSON 缺键同样回落）。"""
+    try:
+        return LayerFixedRatio(str(raw or "").strip().lower()).value
+    except ValueError:
+        return LayerFixedRatio.NONE.value
 
 
 def layer_from_payload(kind: LayerKind, entry: dict) -> LayerSpec | None:
@@ -151,6 +161,7 @@ def layer_from_payload(kind: LayerKind, entry: dict) -> LayerSpec | None:
             mask_png=mask_png,
             mask_png_mode=str(entry.get("mask_png_mode") or "luma"),
             mask_png_invert=bool(entry.get("mask_png_invert", False)),
+            fixed_aspect_ratio=_resolve_fixed_ratio(entry.get("fixed_aspect_ratio")),
         )
     except (TypeError, ValueError):
         return None

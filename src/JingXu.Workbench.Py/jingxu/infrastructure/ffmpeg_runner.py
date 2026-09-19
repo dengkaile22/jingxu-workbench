@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from collections.abc import Callable, Sequence
@@ -256,6 +257,7 @@ def run_render(
             processing_plan=plan,
         )
         filter_script_text = _read_filter_script(filter_path)
+        _ensure_command_within_budget(command, script_directory)
 
         try:
             return _execute(
@@ -320,7 +322,47 @@ def _resolve_processing(
     return selected_encoder, plan, selector
 
 
+# Windows CreateProcess 命令行上限为 32767（含结尾 NUL）；留出保守余量。
+# 参考 .NET ``RenderPreflight.MaxCommandLineLength = 30000``。
+WINDOWS_COMMAND_LINE_LIMIT = 32767
+MAX_COMMAND_LINE_LENGTH = 30000
+
+
+def estimate_command_line_length(command: Sequence[str]) -> int:
+    """估算 Windows 命令行长度（逐项按 argv 引号规则求和）。
+
+    滤镜图已外置为 sidecar 脚本，因此这里只统计参数本身；含空格/引号的参数
+    会被引号包裹，末尾再加结尾 NUL 与分隔空格。
+    """
+    total = 0
+    for token in command:
+        total += 1  # 参数之间的空格分隔
+        if not token or any(char in token for char in ' \t"'):
+            # 引号包裹 + 内部引号/反斜杠转义的最坏情况估算
+            total += token.count('\\') + token.count('"') + 2
+        total += len(token)
+    return total + 1
+
+
+def _ensure_command_within_budget(command: Sequence[str], script_directory: Path) -> None:
+    """命令过长时提前失败并给出中文建议，而不是让 CreateProcess 抛原始错误。
+
+    真正会撞上限的是「大量素材 + 很深的绝对路径」；滤镜图本身已经写入
+    ``concat.filter``，不占命令行。
+    """
+    limit = WINDOWS_COMMAND_LINE_LIMIT if sys.platform == "win32" else MAX_COMMAND_LINE_LENGTH
+    estimated = estimate_command_line_length(command)
+    if estimated <= limit:
+        return
+    raise RenderError(
+        f"FFmpeg 命令过长（约 {estimated} 字符，上限 {limit}）。"
+        "请减少单次任务的素材数量，或把素材移动到层级更浅的目录后重试；"
+        f"滤镜图已外置为脚本（{script_directory.name}/concat.filter），无需再精简参数。"
+    )
+
+
 def _read_filter_script(filter_path: Path) -> str:
+    """读取刚写出的滤镜脚本，供失败归档使用。"""
     """读取刚写出的滤镜脚本，供失败归档使用。"""
     try:
         if filter_path.is_file():

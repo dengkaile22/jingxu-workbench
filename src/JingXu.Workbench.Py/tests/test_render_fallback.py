@@ -185,3 +185,87 @@ def test_cpu_encoder_never_triggers_l2() -> None:
             selector=selector,
         )
     assert selector.failures == []
+
+
+# ── 命令行长度预算 ──────────────────────────────────────────────────────────
+
+
+def test_estimate_command_line_length_counts_separators() -> None:
+    from jingxu.infrastructure.ffmpeg_runner import estimate_command_line_length
+
+    # 4 个参数 + 分隔空格 + 结尾 NUL
+    assert estimate_command_line_length(["a", "b", "c", "d"]) == 4 * 1 + 4 + 1
+
+
+def test_estimate_command_line_length_penalises_spaces_and_quotes() -> None:
+    from jingxu.infrastructure.ffmpeg_runner import estimate_command_line_length
+
+    plain = estimate_command_line_length(["a.mp4"])
+    spaced = estimate_command_line_length(["a b.mp4"])
+    quoted = estimate_command_line_length(['a"b.mp4'])
+    assert spaced > plain
+    assert quoted > plain
+
+
+def test_ensure_command_within_budget_accepts_short_command(tmp_path: Path) -> None:
+    from jingxu.infrastructure.ffmpeg_runner import _ensure_command_within_budget
+
+    _ensure_command_within_budget(["ffmpeg", "-i", "a.mp4"], tmp_path)
+
+
+def test_ensure_command_within_budget_rejects_overlong_command(tmp_path: Path) -> None:
+    from jingxu.infrastructure.ffmpeg_runner import _ensure_command_within_budget
+
+    huge = "x" * 40000
+    with pytest.raises(RenderError, match="命令过长"):
+        _ensure_command_within_budget(["ffmpeg", "-i", huge], tmp_path)
+
+
+def test_ensure_command_within_budget_message_is_actionable(tmp_path: Path) -> None:
+    """错误信息必须给出可操作建议，并说明滤镜图已外置。"""
+    from jingxu.infrastructure.ffmpeg_runner import _ensure_command_within_budget
+
+    with pytest.raises(RenderError) as excinfo:
+        _ensure_command_within_budget(["ffmpeg", "y" * 40000], tmp_path)
+    message = str(excinfo.value)
+    assert "减少单次任务的素材数量" in message
+    assert "concat.filter" in message
+
+
+def test_many_clips_with_long_paths_stay_within_budget() -> None:
+    """实测规模确认：即使 80 个深路径素材也不应误触发预算守卫。
+
+    这也是「staging 短路径别名」在 Python 侧并非必需的量化依据：
+    滤镜图已外置到 sidecar，命令行只承载参数本身。
+    """
+    from conftest import make_asset
+
+    from jingxu.domain.composition import CompositionPlan, OrderMode
+    from jingxu.domain.render import FitMode, ProcessingMode, RenderRequest, RenderSettings
+    from jingxu.infrastructure.ffmpeg_runner import (
+        MAX_COMMAND_LINE_LENGTH,
+        build_render_command,
+        estimate_command_line_length,
+    )
+    from jingxu.infrastructure.filter_graph import build_filter_graph
+
+    depth = "层" * 10
+    assets = tuple(
+        make_asset(f"{depth}/{depth}/素材_{index:03d}_{depth}.mp4", width=1920, height=1080)
+        for index in range(1, 81)
+    )
+    plan = CompositionPlan(assets=assets, mode=OrderMode.SEQUENTIAL, seed=1)
+    settings = RenderSettings(
+        width=1080, height=1920, fps=30, fit_mode=FitMode.PAD, processing=ProcessingMode.CPU
+    )
+    request = RenderRequest(name="t", plan=plan, settings=settings, output_path=Path("out.mp4"))
+    graph = build_filter_graph(plan, settings)
+    command = build_render_command(
+        Path("C:/very/long/runtime/path/ffmpeg.exe"),
+        request,
+        graph,
+        Path("C:/tmp/concat.filter"),
+        Path("C:/tmp/out.mp4"),
+    )
+
+    assert estimate_command_line_length(command) < MAX_COMMAND_LINE_LENGTH

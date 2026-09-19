@@ -100,12 +100,13 @@ python -m pytest -m integration      # 真机渲染（需要 FFmpeg）
 
 **已知差异（相对 .NET）**
 
-- 蒙版形状/PNG 遮罩：.NET 仅领域与渲染保留、无编辑 UI；Python 暂未实现该路径。
-- 路径别名（staging 短路径）：Python 直接把绝对路径交给 FFmpeg；滤镜文本走 sidecar 文件，实测未触及 Windows 命令行长度上限。
-- GPU 缩放（scale_cuda/scale_qsv）：Python 使用 `-hwaccel auto` 硬件解码，缩放仍在软件侧完成（蒙版/合成同样在 CPU）。
-- 贴纸独立画幅选择器与固定比例：Python 使用全局成片画幅。
-- 音频库音量单位：Python 用 0–200%（.NET 为 −100..+100 的增益映射）。
-- 队列持久化：跨重启的任务历史沿用项目文档 `recent_jobs`（.NET 队列为纯内存，无持久化）。
+- 蒙版形状/PNG 遮罩：领域、滤镜、持久化与校验已与 .NET 对齐（含椭圆/圆角矩形/PNG 三档遮罩模式）；尚无形状编辑 UI，与 .NET「二期」定位一致。
+- 圆角矩形几何未沿用 .NET 字面实现：.NET 的 `min(X,r)+min(W-X,r)-r` 写法在距边 r 的整条边带内恒为 r，会整体擦除四条边带、角部反而保留，几何上不是圆角。本版改用标准的「到圆角矩形边界距离」写法；若需与 .NET 逐像素一致需改为字面移植。
+- 椭圆按 .NET 语义实现为**边界框内切圆**（半径 `min(W,H)/2`），非方框时只覆盖中间一块，不是真椭圆。
+- 路径别名（staging 短路径）：Python 不复制/别名素材。量化依据——滤镜图已外置为 `concat.filter` sidecar，命令行只承载参数本身；实测 80 个「10 层中文目录 + 长文件名」素材的命令行约 4.8K 字符，远低于 Windows 32767 上限，因此不引入别名化的同步与清理风险。改为在超限前给出中文建议（上限 30000，对齐 .NET `RenderPreflight.MaxCommandLineLength`）。
+- GPU 缩放（scale_qsv/scale_cuda）：已实现并与 .NET 语义对齐（白名单、Auto/GPU 双门槛、设备参数、hwdownload 回传、AwayFromZero 舍入、三级回退），循环输入一律不用硬解。
+- 贴纸独立画幅与固定比例：已实现（预览画幅模式 + 宽高比锁定联动），与 .NET `StickerAspectMode` / `FixedAspectRatio` 对齐。
+- 音频库音量单位：已对齐 .NET（−100..+100，0 = 默认 BGM 音量 0.18）；旧项目/模板中的音量按增益反算迁移，听感不变。
 
 ## 目录结构
 

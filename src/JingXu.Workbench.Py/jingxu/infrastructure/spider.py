@@ -375,32 +375,49 @@ def profile_ready() -> bool:
     return profile_status()[0]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class SpiderLoginSession:
-    """一次扫码登录会话：浏览器窗口由用户手动关闭。"""
+    """一次扫码登录会话。
 
-    process: subprocess.Popen
+    由**应用进程自己**托管浏览器，不走爬虫 CLI 的 ``--login``：后者的
+    ``run_login`` 在打开窗口后调用 ``input()`` 等待回车，一旦 stdin 不是
+    交互终端就立刻抛 ``EOFError``，随后 ``finally`` 关闭浏览器——登录根本
+    走不完，Cookie 也来不及落盘（已实测确认）。
+
+    这里直接复用爬虫的 ``BrowserManager``，由界面按钮控制生命周期：
+    用户扫码完成并点「我已登录」后 ``close()``，Cookie 正常持久化。
+    """
+
+    _manager: object
     platform_label: str
+    profile: Path
 
     def is_running(self) -> bool:
-        return self.process.poll() is None
+        return self._manager is not None
 
     def close(self) -> None:
-        if self.is_running():
-            self.process.terminate()
+        """关闭浏览器并落盘 Cookie（幂等）。"""
+        manager, self._manager = self._manager, None
+        if manager is None:
+            return
+        try:
+            manager.close()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - 关闭失败不应影响退出流程
+            pass
 
 
 def open_login_window(platform: str) -> SpiderLoginSession:
     """打开浏览器让用户扫码登录指定平台。
 
-    登录态写入 :func:`profile_directory`，后续抓取直接复用；这是首次使用
-    绕不开的一步，必须在界面上给出入口，否则用户撞到登录墙后无从下手。
+    登录态写入 :func:`profile_directory`，后续抓取直接复用；首次使用绕不开
+    这一步，必须在界面上给出入口，否则用户撞到登录墙后无从下手。
     """
     if platform not in PLATFORMS:
         raise SpiderError(f"不支持的平台：{platform}")
-    environment = check_environment()
-    if not environment.available or environment.directory is None:
-        raise SpiderError(environment.message)
+
+    directory = spider_directory()
+    if directory is None:
+        raise SpiderError("未找到选品爬虫源码（runtime/spider 或 src/JingXu.Spider）。")
 
     browser = find_browser()
     if browser is None:
@@ -409,32 +426,34 @@ def open_login_window(platform: str) -> SpiderLoginSession:
             f"或设置环境变量 {BROWSER_ENV} 指向浏览器可执行文件。"
         )
 
-    arguments = [
-        str(environment.directory / "cli.py"),
-        "--login",
-        platform,
-        "--profile-dir",
-        str(profile_directory()),
-        "--browser-path",
-        str(browser),
-    ]
-    environment_variables = dict(os.environ)
-    environment_variables.update(
-        {"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    )
+    # 让爬虫内部模块（core.* / ecommerce_spider.*）可被导入。应用侧没有同名
+    # 顶层模块，因此不存在覆盖风险。
+    if str(directory) not in sys.path:
+        sys.path.insert(0, str(directory))
+
+    profile = profile_directory()
+    profile.mkdir(parents=True, exist_ok=True)
     try:
-        process = subprocess.Popen(
-            [environment.python, *arguments],
-            cwd=str(environment.directory),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=environment_variables,
+        from core.browser_manager import BrowserManager  # type: ignore[import-not-found]
+    except Exception as error:  # noqa: BLE001 - 依赖缺失时给出可操作提示
+        raise SpiderError(
+            f"爬虫组件加载失败：{error}。请安装爬虫依赖（DrissionPage 等）。"
+        ) from error
+
+    try:
+        manager = BrowserManager(
+            headless=False,
+            user_data_dir=str(profile),
+            browser_path=str(browser),
         )
-    except OSError as error:
-        raise SpiderError(f"无法启动登录窗口：{error}") from error
+        manager.open_login_window(platform)
+    except Exception as error:  # noqa: BLE001 - 浏览器启动失败原因很多，统一转可读提示
+        raise SpiderError(f"无法打开登录页面：{error}") from error
 
     return SpiderLoginSession(
-        process=process, platform_label=PLATFORM_LABELS.get(platform, platform)
+        _manager=manager,
+        platform_label=PLATFORM_LABELS.get(platform, platform),
+        profile=profile,
     )
 
 

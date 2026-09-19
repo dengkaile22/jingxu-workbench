@@ -532,22 +532,64 @@ def test_missing_browser_disables_login_with_warning(qapp, tmp_path: Path, monke
     assert all(not button.isEnabled() for button in page._login_buttons.values())
 
 
-def test_login_opens_window_and_reports(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+def test_login_opens_window_and_offers_finish(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """登录不能再依赖爬虫 CLI 的 --login：它的 input() 在无终端时立即失败。"""
+
     class _FakeSession:
         platform_label = "抖音"
 
         def is_running(self) -> bool:
             return True
 
+        def close(self) -> None:
+            pass
+
     monkeypatch.setattr(
         spider_service, "open_login_window", lambda platform: _FakeSession()
     )
 
     page = _page(tmp_path)
+    assert page._login_done.isEnabled() is False
     page._open_login("douyin")
 
-    assert "已打开抖音登录窗口" in page._result_caption.text()
+    assert "已打开抖音登录页" in page._result_caption.text()
+    assert "我已登录" in page._result_caption.text()
     assert page._result_caption.objectName() == "Caption"
+    # 必须等用户确认后才能保存登录态
+    assert page._login_done.isEnabled() is True
+
+
+def test_finish_login_closes_browser_and_reports(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """关闭浏览器才会把 Cookie 落盘，因此「我已登录」必须真的 close()。"""
+    closed: list[bool] = []
+
+    class _FakeSession:
+        platform_label = "快手"
+
+        def is_running(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(
+        spider_service, "open_login_window", lambda platform: _FakeSession()
+    )
+
+    page = _page(tmp_path)
+    page._open_login("kuaishou")
+    page._finish_login()
+
+    assert closed == [True]
+    assert page._login_session is None
+    assert page._login_done.isEnabled() is False
+    assert "快手登录态已保存" in page._result_caption.text()
+
+
+def test_finish_login_without_session_is_safe(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._finish_login()
+    assert page._login_done.isEnabled() is False
 
 
 def test_login_failure_is_reported_not_raised(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
@@ -561,6 +603,7 @@ def test_login_failure_is_reported_not_raised(qapp, tmp_path: Path, monkeypatch)
 
     assert "未找到 Chromium" in page._result_caption.text()
     assert page._result_caption.objectName() == "CaptionWarn"
+    assert page._login_done.isEnabled() is False
 
 
 def test_login_reuses_open_window(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001

@@ -345,6 +345,14 @@ class SpiderPage(QWidget):
 
         self._login_status = Caption("")
         row.addWidget(self._login_status, stretch=1)
+
+        # 登录完成后必须由用户点一下，浏览器才关闭并把 Cookie 落盘；
+        # 直接关窗口可能来不及写入登录态。
+        self._login_done = PrimaryButton("我已登录")
+        self._login_done.setToolTip("扫码完成后点这里保存登录态并关闭浏览器。")
+        self._login_done.clicked.connect(self._finish_login)
+        self._login_done.setEnabled(False)
+        row.addWidget(self._login_done)
         return row
 
     def _refresh_login_status(self) -> None:
@@ -366,7 +374,8 @@ class SpiderPage(QWidget):
     def _open_login(self, platform: str) -> None:
         if self._login_session is not None and self._login_session.is_running():
             self._set_result_caption(
-                f"{self._login_session.platform_label}登录窗口已打开，请在其中完成扫码。"
+                f"{self._login_session.platform_label}登录窗口已打开，"
+                "请扫码完成后点「我已登录」。"
             )
             return
         try:
@@ -375,10 +384,23 @@ class SpiderPage(QWidget):
             self._set_result_caption(str(error), warn=True)
             return
         self._login_session = session
+        self._login_done.setEnabled(True)
         self._set_result_caption(
-            f"已打开{ session.platform_label }登录窗口：请在浏览器中扫码登录，"
-            "完成后关闭该窗口即可开始抓取。"
+            f"已打开{session.platform_label}登录页：请在浏览器中扫码登录，"
+            "完成后回到这里点「我已登录」保存登录态。"
         )
+
+    def _finish_login(self) -> None:
+        """保存登录态：关闭浏览器以触发 Cookie 落盘。"""
+        if self._login_session is None:
+            self._login_done.setEnabled(False)
+            return
+        label = self._login_session.platform_label
+        self._login_session.close()
+        self._login_session = None
+        self._login_done.setEnabled(False)
+        self._refresh_login_status()
+        self._set_result_caption(f"{label}登录态已保存，可以开始抓取了。")
 
     def _build_results_table(self) -> QWidget:
         self._results_table = QTableWidget(0, len(RESULT_COLUMNS))
@@ -824,7 +846,7 @@ class SpiderPage(QWidget):
         self._result_caption.style().polish(self._result_caption)
 
     def shutdown(self) -> None:
-        """应用退出时清理子进程。
+        """应用退出时清理资源。
 
         不做这步的话，关掉应用后扫码登录的浏览器窗口与正在跑的抓取进程会
         残留在后台。

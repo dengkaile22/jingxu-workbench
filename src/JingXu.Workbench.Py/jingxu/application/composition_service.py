@@ -265,7 +265,7 @@ def _resolve_bgm(draft: CompositionDraft, offset: int, seed: int | None) -> BgmS
 
     return BgmSettings(
         path=Path(path),
-        volume_percent=source.resolved_volume(offset),
+        volume_gain=source.resolved_gain(offset),
         fade_out_seconds=source.fade_out_seconds,
         loop=source.loop,
     )

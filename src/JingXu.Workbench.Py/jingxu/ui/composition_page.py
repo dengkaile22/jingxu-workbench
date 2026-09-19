@@ -53,6 +53,7 @@ from jingxu.domain.render import (
     TransitionSettings,
     UnifiedAspectPolicy,
     VariationSettings,
+    legacy_bgm_percent_to_percent,
     validate_transition,
 )
 from jingxu.domain.splitscreen import SplitMode, SplitScreenSpec
@@ -84,6 +85,22 @@ QUALITY_SETTINGS: dict[str, tuple[int, str, str]] = {
 }
 
 QUALITY_DEFAULT = "balanced"
+
+# 音量语义版本：模板/项目里 < 2 的音量按旧「百分数即增益」（0..200）解释。
+COMPOSITION_VOLUME_SEMANTICS = 2
+
+
+def _migrate_volume_percent(raw: object, legacy_default: int, is_legacy: bool) -> int:
+    """读取模板/项目中的音量百分比；旧版语义先换算为 −100..+100。"""
+    if raw in (None, ""):
+        return legacy_bgm_percent_to_percent(legacy_default) if is_legacy else 0
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return 0
+    if not is_legacy:
+        return max(-100, min(value, 100))
+    return max(-100, min(legacy_bgm_percent_to_percent(value), 100))
 
 ASPECT_OPTIONS = (
     ("继承首段", "inherit"),
@@ -817,9 +834,10 @@ class CompositionPage(QWidget):
         mode_row.addWidget(self._library_fixed_enable)
 
         self._library_volume = QSpinBox()
-        self._library_volume.setRange(0, 200)
-        self._library_volume.setValue(30)
+        self._library_volume.setRange(-100, 100)
+        self._library_volume.setValue(0)
         self._library_volume.setSuffix("%")
+        self._library_volume.setToolTip("0% = 默认背景音乐音量；负值更轻，−100% 静音，+100% 最大。")
         mode_row.addWidget(self._library_volume)
 
         self._library_random_enable = QCheckBox("随机音量区间（优先）")
@@ -827,12 +845,12 @@ class CompositionPage(QWidget):
         mode_row.addWidget(self._library_random_enable)
 
         self._library_min = QSpinBox()
-        self._library_min.setRange(0, 200)
-        self._library_min.setValue(15)
+        self._library_min.setRange(-100, 100)
+        self._library_min.setValue(-10)
         self._library_min.setSuffix("%")
         self._library_max = QSpinBox()
-        self._library_max.setRange(0, 200)
-        self._library_max.setValue(45)
+        self._library_max.setRange(-100, 100)
+        self._library_max.setValue(10)
         self._library_max.setSuffix("%")
         mode_row.addWidget(Caption("最小值"), alignment=Qt.AlignmentFlag.AlignVCenter)
         mode_row.addWidget(self._library_min)
@@ -870,9 +888,10 @@ class CompositionPage(QWidget):
 
         row.addWidget(Caption("音量"), alignment=Qt.AlignmentFlag.AlignVCenter)
         self._bgm_volume = QSpinBox()
-        self._bgm_volume.setRange(0, 200)
-        self._bgm_volume.setValue(18)
+        self._bgm_volume.setRange(-100, 100)
+        self._bgm_volume.setValue(0)
         self._bgm_volume.setSuffix("%")
+        self._bgm_volume.setToolTip("0% = 默认背景音乐音量；负值更轻，−100% 静音，+100% 最大。")
         row.addWidget(self._bgm_volume)
 
         row.addWidget(Caption("淡出"), alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -888,7 +907,7 @@ class CompositionPage(QWidget):
         row.addStretch(1)
         column.addLayout(row)
 
-        self._bgm_hint = Caption("默认音量 18%、片尾淡出 1 秒、自动循环补足；时长不足时循环，超出时裁剪。")
+        self._bgm_hint = Caption("音量 0% = 默认背景音乐音量（负值更轻、−100% 静音、+100% 最大）；片尾淡出 1 秒、自动循环补足。")
         column.addWidget(self._bgm_hint)
         self._refresh_bgm_state()
         return column
@@ -1110,7 +1129,7 @@ class CompositionPage(QWidget):
             return BgmSource(
                 kind="library",
                 volume_mode="random" if random_mode else "fixed",
-                volume_percent=int(self._library_volume.value() if fixed_mode else 18),
+                volume_percent=int(self._library_volume.value() if fixed_mode else 0),
                 volume_min=int(self._library_min.value()),
                 volume_max=int(self._library_max.value()),
                 fade_out_seconds=float(self._bgm_fade.value()),
@@ -1525,6 +1544,8 @@ class CompositionPage(QWidget):
             "bgm_volume": int(self._bgm_volume.value()),
             "bgm_fade": float(self._bgm_fade.value()),
             "bgm_loop": self._bgm_loop.isChecked(),
+            # 音量语义版本：2 = −100..+100（0 为默认 BGM 音量）。缺省视为旧版 0..200。
+            "volume_semantics": COMPOSITION_VOLUME_SEMANTICS,
             "aspect_enabled": self._aspect_enable.isChecked(),
             "overlay_fit": str(self._overlay_fit_mode.currentData() or OverlayFitMode.FILL_CROP.value),
             "overlay_enabled": self._overlay_enable.isChecked(),
@@ -1625,9 +1646,10 @@ class CompositionPage(QWidget):
             self._split_random.setChecked(bool(payload.get("split_random", False)))
             self._refresh_split_state()
 
-            self._library_volume.setValue(int(payload.get("library_volume") or 30))
-            self._library_min.setValue(int(payload.get("library_min") or 15))
-            self._library_max.setValue(int(payload.get("library_max") or 45))
+            is_legacy_volume = int(payload.get("volume_semantics") or 0) < COMPOSITION_VOLUME_SEMANTICS
+            self._library_volume.setValue(_migrate_volume_percent(payload.get("library_volume"), 30, is_legacy_volume))
+            self._library_min.setValue(_migrate_volume_percent(payload.get("library_min"), 15, is_legacy_volume))
+            self._library_max.setValue(_migrate_volume_percent(payload.get("library_max"), 45, is_legacy_volume))
             # 兼容旧模板的 library_volume_mode 字段。
             legacy_mode = str(payload.get("library_volume_mode") or "")
             if "library_fixed_enabled" in payload:
@@ -1646,7 +1668,7 @@ class CompositionPage(QWidget):
                 self._bgm_enable.setChecked(bool(payload.get("bgm_enabled")))
             else:
                 self._bgm_enable.setChecked(True)
-            self._bgm_volume.setValue(int(payload.get("bgm_volume") or 18))
+            self._bgm_volume.setValue(_migrate_volume_percent(payload.get("bgm_volume"), 18, is_legacy_volume))
             self._bgm_fade.setValue(float(payload.get("bgm_fade") or 1.0))
             self._bgm_loop.setChecked(bool(payload.get("bgm_loop", True)))
             self._refresh_bgm_state()

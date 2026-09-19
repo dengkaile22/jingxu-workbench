@@ -29,6 +29,67 @@ CRF_PRESETS: tuple[tuple[str, int], ...] = (
     ("体积优先 (CRF 26)", 26),
 )
 
+# ── 背景音乐音量：对齐 .NET ``AudioVolumeMapping``（−100..+100 → 增益因子）──────
+# 用户界面使用 −100..+100 的百分比：−100 = 静音、0 = 默认 BGM 音量、+100 = 最大。
+# 全静音与「按倍率直算」都无法表达「比默认更轻」，因此必须走这条映射。
+DEFAULT_BGM_GAIN = 0.18  # 与 .NET defaultBgmGain 对齐
+AUDIO_PERCENT_MIN = -100
+AUDIO_PERCENT_MAX = 100
+
+
+def audio_percent_to_gain(percent: float) -> float:
+    """把 −100..+100 的用户百分比映射为 FFmpeg ``volume`` 增益因子。
+
+    −100 → 0.0（静音）、0 → :data:`DEFAULT_BGM_GAIN`、+100 → 1.0（最大）。
+    区间外先钳制，保证返回有限且落在 [0, 1]。
+    """
+    if not isinstance(percent, (int, float)) or percent != percent or percent in (float("inf"), float("-inf")):
+        return DEFAULT_BGM_GAIN
+    clamped = max(float(AUDIO_PERCENT_MIN), min(float(AUDIO_PERCENT_MAX), float(percent)))
+    if clamped <= 0:
+        return DEFAULT_BGM_GAIN * (1.0 + clamped / 100.0)
+    return DEFAULT_BGM_GAIN + (1.0 - DEFAULT_BGM_GAIN) * (clamped / 100.0)
+
+
+def legacy_bgm_percent_to_percent(old_percent: float) -> int:
+    """把旧版「百分数即增益」的音量值换算为新的 −100..+100 语义。
+
+    旧语义 ``gain = old / 100``（0 静音、200 → 2.0 削波）；
+    新语义 ``gain = audio_percent_to_gain(new)``。两段分别求逆，返回整数百分比。
+    """
+    try:
+        old = float(old_percent)
+    except (TypeError, ValueError):
+        return 0
+    old = max(0.0, min(old, 200.0))
+    # 由增益反推新百分比：增益 ≤ 0.18 落在负半段，> 0.18 落在正半段。
+    if old <= 18.0:
+        # 旧 gain ∈ [0, 0.18] → 新 percent ∈ [-100, 0]
+        return int(round(-100.0 + (old / 18.0) * 100.0))
+    # 旧 gain ∈ (0.18, 2.0] → 新 percent ∈ (0, 100]
+    return int(round((old - 18.0) / (100.0 - 18.0) * 100.0))
+
+
+def gain_to_audio_percent(gain: float) -> int:
+    """把增益因子反算为 −100..+100 的用户百分比（用于回显与测试断言）。"""
+    clamped = _clamp_gain(gain)
+    if clamped <= DEFAULT_BGM_GAIN:
+        scaled = (clamped / DEFAULT_BGM_GAIN) * 100.0 - 100.0
+    else:
+        scaled = (clamped - DEFAULT_BGM_GAIN) / (1.0 - DEFAULT_BGM_GAIN) * 100.0
+    return int(round(max(float(AUDIO_PERCENT_MIN), min(float(AUDIO_PERCENT_MAX), scaled))))
+
+
+def _clamp_gain(value: float) -> float:
+    """增益因子钳制到 [0, 1]（0 静音，1 最大；>1 会削波且 .NET 同样不允许）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_BGM_GAIN
+    if number != number:  # NaN
+        return DEFAULT_BGM_GAIN
+    return max(0.0, min(1.0, number))
+
 
 class ProcessingMode(str, Enum):
     """渲染处理器选择。"""
@@ -419,34 +480,69 @@ class CoverRequest:
 
 @dataclass(frozen=True, slots=True)
 class BgmSource:
-    """背景音乐来源：单文件或从音频库随机抽取。"""
+    """背景音乐来源：单文件或从音频库随机抽取。
+
+    音量字段统一使用 −100..+100 语义（对齐 .NET ``AudioVolumeMapping``）：
+    −100 = 静音、0 = 默认 BGM 音量（增益 0.18）、+100 = 最大。
+    """
 
     kind: str = "file"  # "file" | "library"
     path: Path | None = None
     volume_mode: str = "fixed"  # "fixed" | "random"
-    volume_percent: int = 30
-    volume_min: int = 15
-    volume_max: int = 45
+    volume_percent: int = 0
+    volume_min: int = -10
+    volume_max: int = 10
     fade_out_seconds: float = 1.5
     loop: bool = True
 
     def resolved_volume(self, offset: int = 0) -> int:
+        """返回本条成片的音量百分比（−100..+100）；随机模式按偏移在区间内取值。"""
         if self.volume_mode != "random":
-            return max(0, min(self.volume_percent, 200))
-        low, high = sorted((max(0, self.volume_min), max(0, self.volume_max)))
+            return max(AUDIO_PERCENT_MIN, min(int(self.volume_percent), AUDIO_PERCENT_MAX))
+        low, high = sorted(
+            (
+                max(AUDIO_PERCENT_MIN, int(self.volume_min)),
+                min(AUDIO_PERCENT_MAX, int(self.volume_max)),
+            )
+        )
         if high <= low:
             return low
         return low + (offset * 7) % (high - low + 1)
 
+    def resolved_gain(self, offset: int = 0) -> float:
+        """返回本条成片的实际增益因子（0.0 静音 – 1.0 最大）。"""
+        return audio_percent_to_gain(self.resolved_volume(offset))
+
 
 @dataclass(frozen=True, slots=True)
 class BgmSettings:
-    """背景音乐混入设置。"""
+    """背景音乐混入设置。
+
+    ``volume_gain`` 是最终写入 FFmpeg 的增益因子（与 .NET ``BgmMixPlan.BgmVolume``
+    同语义），``volume_percent`` 是兼容旧的「百分数即增益」入参：显式传入时按
+    ``volume_percent / 100`` 覆盖 ``volume_gain``。新的 UI 路径应走
+    :func:`audio_percent_to_gain`（−100..+100 语义）。
+    """
 
     path: Path
-    volume_percent: int = 30
+    volume_gain: float = DEFAULT_BGM_GAIN
     fade_out_seconds: float = 1.5
     loop: bool = True
+    volume_percent: int | None = None
+
+    @property
+    def resolved_gain(self) -> float:
+        """实际生效的增益因子（0.0 静音 – 1.0 最大）。"""
+        if self.volume_percent is not None:
+            return _clamp_gain(self.volume_percent / 100.0)
+        return _clamp_gain(self.volume_gain)
+
+    @property
+    def resolved_volume_percent(self) -> int:
+        """实际生效音量的 −100..+100 百分比表示（仅用于回显/断言）。"""
+        if self.volume_percent is not None:
+            return max(AUDIO_PERCENT_MIN, min(int(self.volume_percent), AUDIO_PERCENT_MAX))
+        return gain_to_audio_percent(self.volume_gain)
 
 
 @dataclass(frozen=True, slots=True)

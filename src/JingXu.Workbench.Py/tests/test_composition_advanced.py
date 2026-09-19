@@ -117,7 +117,7 @@ def test_library_bgm_is_sampled_per_request(tmp_path: Path) -> None:
     for request in requests:
         assert request.bgm is not None
         assert request.bgm.path in tracks
-        assert 10 <= request.bgm.volume_percent <= 20
+        assert 10 <= request.bgm.resolved_volume_percent <= 20
 
 
 def test_single_file_bgm_wins_over_library(tmp_path: Path) -> None:
@@ -137,7 +137,7 @@ def test_single_file_bgm_wins_over_library(tmp_path: Path) -> None:
 
     assert requests[0].bgm is not None
     assert requests[0].bgm.path == file_bgm
-    assert requests[0].bgm.volume_percent == 77
+    assert requests[0].bgm.resolved_volume_percent == 77
 
 
 def test_effect_template_store_roundtrip(tmp_path: Path) -> None:

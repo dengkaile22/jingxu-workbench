@@ -295,9 +295,12 @@ def _path_key(path: Path) -> str:
 
 
 def build_bgm(track: AudioTrack, *, volume_percent: int, fade_out_seconds: float, loop: bool) -> BgmSettings:
+    """按 −100..+100 音量语义构造 BGM 设置（0 = 默认 BGM 音量）。"""
+    from jingxu.domain.render import audio_percent_to_gain
+
     return BgmSettings(
         path=track.path,
-        volume_percent=max(0, min(volume_percent, 200)),
+        volume_gain=audio_percent_to_gain(volume_percent),
         fade_out_seconds=max(0.0, fade_out_seconds),
         loop=loop,
     )

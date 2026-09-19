@@ -10,7 +10,17 @@ from conftest import make_asset
 from jingxu.application.composition_service import CompositionDraft, build_requests
 from jingxu.domain.composition import CompositionPlan, OrderMode
 from jingxu.domain.layers import LayerKind, LayerSpec
-from jingxu.domain.render import BgmSettings, RenderSettings
+from jingxu.domain.render import (
+    AUDIO_PERCENT_MAX,
+    AUDIO_PERCENT_MIN,
+    DEFAULT_BGM_GAIN,
+    BgmSettings,
+    BgmSource,
+    RenderSettings,
+    audio_percent_to_gain,
+    gain_to_audio_percent,
+    legacy_bgm_percent_to_percent,
+)
 from jingxu.domain.splitscreen import SplitMode, SplitScreenSpec
 from jingxu.infrastructure.filter_graph import build_filter_graph
 
@@ -159,3 +169,78 @@ def test_draft_split_and_layers_flow_into_requests(tmp_path: Path) -> None:
     assert request.layers and request.layers[0].kind is LayerKind.STICKER
     script = build_filter_graph(request.plan, request.settings, layers=request.layers).script
     assert "trim=duration=" in script and "eof_action=pass" in script
+
+
+# ── 背景音乐音量语义（−100..+100，对齐 .NET AudioVolumeMapping）───────────────
+
+
+def test_audio_percent_to_gain_anchors() -> None:
+    """三个锚点：−100 静音、0 默认 BGM 音量、+100 最大。"""
+    assert audio_percent_to_gain(AUDIO_PERCENT_MIN) == 0.0
+    assert audio_percent_to_gain(0) == DEFAULT_BGM_GAIN
+    assert audio_percent_to_gain(AUDIO_PERCENT_MAX) == 1.0
+
+
+def test_audio_percent_to_gain_is_monotonic_and_clamped() -> None:
+    values = [audio_percent_to_gain(percent) for percent in range(-100, 101, 10)]
+    assert values == sorted(values)
+    assert audio_percent_to_gain(-500) == 0.0
+    assert audio_percent_to_gain(500) == 1.0
+    assert all(0.0 <= value <= 1.0 for value in values)
+
+
+def test_gain_to_audio_percent_round_trips() -> None:
+    for percent in (-100, -50, 0, 25, 50, 100):
+        assert gain_to_audio_percent(audio_percent_to_gain(percent)) == percent
+
+
+def test_legacy_bgm_percent_migration_matches_gain_curve() -> None:
+    """旧「百分数即增益」换算后必须保留原增益（±0.02 容差）。"""
+    for old in (0, 5, 18, 30, 50, 100, 200):
+        new = legacy_bgm_percent_to_percent(old)
+        expected_gain = min(old / 100.0, 1.0)
+        assert abs(audio_percent_to_gain(new) - expected_gain) <= 0.02, old
+
+
+def test_bgm_settings_default_is_legacy_gain() -> None:
+    """未显式指定音量时必须保持旧默认值 0.18，避免既有行为漂移。"""
+    settings = BgmSettings(path=Path("bgm.mp3"))
+    assert settings.resolved_gain == DEFAULT_BGM_GAIN
+    assert settings.resolved_volume_percent == 0
+
+
+def test_bgm_settings_legacy_percent_override_still_direct_gain() -> None:
+    """兼容路径：显式传 volume_percent 时按旧语义（percent/100）直算。"""
+    settings = BgmSettings(path=Path("bgm.mp3"), volume_percent=40)
+    assert settings.resolved_gain == 0.4
+    assert settings.resolved_volume_percent == 40
+
+
+def test_bgm_gain_is_used_in_filter_script() -> None:
+    """音量以增益写进滤镜：0% → 0.180，+100% → 1.000。"""
+    default_graph = build_filter_graph(
+        _plan(make_asset("a.mp4", duration=2.0)),
+        RenderSettings(),
+        bgm=BgmSettings(path=Path("bgm.mp3"), volume_gain=audio_percent_to_gain(0)),
+    )
+    assert "volume=0.180" in default_graph.script
+
+    max_graph = build_filter_graph(
+        _plan(make_asset("a.mp4", duration=2.0)),
+        RenderSettings(),
+        bgm=BgmSettings(path=Path("bgm.mp3"), volume_gain=audio_percent_to_gain(100)),
+    )
+    assert "volume=1.000" in max_graph.script
+
+
+def test_bgm_source_random_range_uses_new_semantics() -> None:
+    source = BgmSource(kind="library", volume_mode="random", volume_min=-20, volume_max=-10)
+    percents = {source.resolved_volume(offset) for offset in range(8)}
+    assert percents and all(-20 <= percent <= -10 for percent in percents)
+    assert all(0.0 <= source.resolved_gain(offset) <= DEFAULT_BGM_GAIN for offset in range(8))
+
+
+def test_bgm_source_negative_volume_is_quieter_than_default() -> None:
+    quiet = BgmSource(kind="file", path=Path("bgm.mp3"), volume_percent=-50)
+    loud = BgmSource(kind="file", path=Path("bgm.mp3"), volume_percent=50)
+    assert quiet.resolved_gain(0) < DEFAULT_BGM_GAIN < loud.resolved_gain(0)

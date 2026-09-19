@@ -912,7 +912,7 @@ def build_filter_graph(
         else:
             bgm_index = base_index + len(extra_inputs)
             extra_inputs.append(ExtraInput(path=bgm.path, loop=bgm.loop, purpose="bgm"))
-            volume = max(0, min(bgm.volume_percent, 200)) / 100.0
+            volume = bgm.resolved_gain
             total = max(plan.total_duration, 0.05)
             fade = max(0.0, min(bgm.fade_out_seconds, total))
             chain = (

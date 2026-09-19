@@ -13,7 +13,7 @@
 | (1) Python 版纳入 Git 并规范化 | ✅ | 首次提交 `d97a9c6`，92 个文件；缓存与 `data/` 零泄漏（`git check-ignore` 验证） |
 | (2) 逐模块补齐 .NET 独有能力 | ✅ | GPU 缩放/硬解、蒙版形状与 PNG 遮罩、贴纸画幅与宽高比锁定、音频音量语义、命令长度守卫；逐项对齐阈值与回退语义（见 §3） |
 | (3) Windows x64 打包链路 | ✅ | `scripts/Build-Portable-Py.ps1` + `jingxu.spec`，脚本退出码 0，产物 405.8 MB ZIP + SHA-256，随包运行时自检通过 |
-| (4) pytest 全绿并补测试 | ✅ | 单元 **589 通过 / 10 默认排除**；真机集成 **10 通过**；专项新增 100+ 用例（见 §4） |
+| (4) pytest 全绿并补测试 | ✅ | 单元 **576 通过 / 10 默认排除**；真机集成 **10 通过**；本轮专项新增 88 个用例（见 §4） |
 
 唯一**主动不实现**项：staging 短路径别名（理由与量化依据见 §5）。
 
@@ -104,21 +104,25 @@ GPU 强制路径    → 1080x1920 2.00s  1.07 Mbps（与 AUTO 字节一致）
 
 | 套件 | 数量 | 结果 |
 |------|------|------|
-| 单元（默认） | 589 | 全绿 |
+| 单元（默认） | 576 | 全绿 |
 | 集成（`-m integration`，真机 FFmpeg） | 10 | 全绿 |
 | 默认排除（需客户素材） | 10 | 按标记排除 |
 
-本轮新增的专项测试：
+本轮（能力 C/D/E/A 收口与打包）新增的专项测试，共 **88 项**（另有 13 个用例并入既有文件）：
 
 | 文件 | 数量 | 覆盖 |
 |------|------|------|
-| `test_video_processing.py` | 85 | 白名单边界、Auto/GPU 门槛、四种 fit 尺寸、AwayFromZero 中点、设备参数、download-only、失败分类（逐条遍历关键字）、探测缓存与降级、滤镜图接入、诊断展示 |
-| `test_render_fallback.py` | 14 | L1/L2/L3 回退、取消不被吞、CPU 不再回退、命令长度估算与守卫、80 片段深路径规模回归 |
-| `test_layer_shape_mask.py` | 31 | 几何表达式、阶段顺序、三种 PNG 模式、反相、尺寸对齐、四类校验失败、持久化往返与降级、自叠影哨兵 |
-| `test_layer_aspect_ratio.py` | 21 | 画布尺寸/显示名/比例对齐、容错解析、约束数学（含越界收口）、持久化 |
-| `test_layer_page_aspect.py` | 11 | 画幅模式切换与隔离、双向联动、解锁保持尺寸、落盘重开恢复 |
-| `test_app_paths.py` | 18 | 冻结/源码根目录解析、同级 runtime 优先、**不上溯源码布局**回归防线、组件解析留在便携目录、`--report-file` 端到端 |
-| `test_probe_metadata.py` | 10 | `pix_fmt` 解析、旋转优先级与归一化、异常值容错 |
+| `test_video_processing.py`（新建） | 85 | 白名单边界、Auto/GPU 门槛、四种 fit 尺寸、AwayFromZero 中点、设备参数、download-only、失败分类（逐条遍历关键字）、探测缓存与降级、滤镜图接入、诊断展示 |
+| `test_render_fallback.py`（新建） | 8 | L1/L2/L3 回退、取消不被吞、CPU 不再回退 |
+| `test_layer_shape_mask.py`（新建） | 31 | 几何表达式、阶段顺序、三种 PNG 模式、反相、尺寸对齐、四类校验失败、持久化往返与降级、自叠影哨兵 |
+| `test_layer_aspect_ratio.py`（新建） | 21 | 画布尺寸/显示名/比例对齐、容错解析、约束数学（含越界收口）、持久化 |
+| `test_layer_page_aspect.py`（新建） | 11 | 画幅模式切换与隔离、双向联动、解锁保持尺寸、落盘重开恢复 |
+| `test_app_paths.py`（新建） | 18 | 冻结/源码根目录解析、同级 runtime 优先、**不上溯源码布局**回归防线、组件解析留在便携目录、`--report-file` 端到端 |
+| `test_probe_metadata.py`（新建） | 10 | `pix_fmt` 解析、旋转优先级与归一化、异常值容错 |
+| `test_effects.py`、`test_bgm_cover.py`、`test_composition_advanced.py`、`test_composition_page.py`、`test_transition.py` | 8（增量） | 音量语义锚点与单调性、旧值迁移保增益、默认值兼容 |
+| `test_effect_graph.py`、`test_lossless_copy.py` | 5（增量） | 硬件/软件两套 `-hwaccel` 断言、设备参数注入、循环输入永不带硬解、strip 清理 output_format |
+
+其余既有用例计数（便于对照）：`test_bgm_cover` 18、`test_effect_graph` 30、`test_pipeline_integration` 10（集成）、`test_encoders` 等见 `python -m pytest --collect-only`。
 
 稳定性：全量连续 10 次运行 0 失败（此前存在的跨测试污染已定位并修复，见 §6）。
 
@@ -178,8 +182,9 @@ $env:PATH = "$PWD\..\..\runtime\ffmpeg;$env:PATH"
 python -m pytest -m integration
 
 # 打包便携包
+cd ../..
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps1
 
-# 打包产物自检
+# 打包产物自检（报告写入文件，窗口模式下 stdout 不可靠）
 .\artifacts\py-build\炳恒快速混剪\炳恒快速混剪.exe --self-test --report-file .\selftest.json
 ```

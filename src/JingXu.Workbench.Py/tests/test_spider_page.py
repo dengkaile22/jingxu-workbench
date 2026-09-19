@@ -11,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from jingxu.infrastructure import spider as spider_service  # noqa: E402
 from jingxu.infrastructure.spider import (  # noqa: E402
     SpiderAccount,
     SpiderConfig,
@@ -492,3 +493,143 @@ def test_result_table_shows_dash_for_missing_counts(qapp, tmp_path: Path) -> Non
     assert page._results_table.item(0, RESULT_NAME_COLUMN).text() == "只有名字"
     # 缺失值显示破折号，便于分辨「没有」与「取不到」
     assert page._results_table.item(0, RESULT_NAME_COLUMN + 1).text() == "—"
+
+
+# ── 扫码登录入口（此前 CLI 有 --login，但界面没有入口）──────────────────────
+
+
+def test_login_buttons_exist_for_both_platforms(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    assert set(page._login_buttons) == {"douyin", "kuaishou"}
+    assert "抖音" in page._login_buttons["douyin"].text()
+    assert "快手" in page._login_buttons["kuaishou"].text()
+
+
+def test_login_status_reports_browser_and_profile(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    from pathlib import Path as _Path
+
+    monkeypatch.setattr(
+        spider_service, "find_browser", lambda: _Path("C:/fake/msedge.exe")
+    )
+    monkeypatch.setattr(spider_service, "profile_status", lambda: (True, "浏览器档案已存在"))
+
+    page = _page(tmp_path)
+    page._refresh_login_status()
+
+    assert "msedge.exe" in page._login_status.text()
+    assert "浏览器档案已存在" in page._login_status.text()
+
+
+def test_missing_browser_disables_login_with_warning(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """找不到浏览器时抓取必然失败，必须提前提示并禁用入口。"""
+    monkeypatch.setattr(spider_service, "find_browser", lambda: None)
+
+    page = _page(tmp_path)
+    page._refresh_login_status()
+
+    assert page._login_status.objectName() == "CaptionWarn"
+    assert "未找到 Chrome/Edge" in page._login_status.text()
+    assert all(not button.isEnabled() for button in page._login_buttons.values())
+
+
+def test_login_opens_window_and_reports(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    class _FakeSession:
+        platform_label = "抖音"
+
+        def is_running(self) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        spider_service, "open_login_window", lambda platform: _FakeSession()
+    )
+
+    page = _page(tmp_path)
+    page._open_login("douyin")
+
+    assert "已打开抖音登录窗口" in page._result_caption.text()
+    assert page._result_caption.objectName() == "Caption"
+
+
+def test_login_failure_is_reported_not_raised(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    def _boom(platform: str):  # noqa: ANN202
+        raise spider_service.SpiderError("未找到 Chromium 内核浏览器。")
+
+    monkeypatch.setattr(spider_service, "open_login_window", _boom)
+
+    page = _page(tmp_path)
+    page._open_login("kuaishou")
+
+    assert "未找到 Chromium" in page._result_caption.text()
+    assert page._result_caption.objectName() == "CaptionWarn"
+
+
+def test_login_reuses_open_window(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """登录窗口已开着时不应重复弹出第二个。"""
+    opened: list[str] = []
+
+    class _FakeSession:
+        platform_label = "抖音"
+
+        def is_running(self) -> bool:
+            return True
+
+    def _open(platform: str):  # noqa: ANN202
+        opened.append(platform)
+        return _FakeSession()
+
+    monkeypatch.setattr(spider_service, "open_login_window", _open)
+
+    page = _page(tmp_path)
+    page._open_login("douyin")
+    page._open_login("douyin")
+
+    assert opened == ["douyin"]
+    assert "已打开" in page._result_caption.text()
+
+
+def test_shutdown_closes_login_window(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """不清理的话，关掉应用后扫码浏览器会残留在后台。"""
+    closed: list[bool] = []
+
+    class _FakeSession:
+        platform_label = "抖音"
+
+        def is_running(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(
+        spider_service, "open_login_window", lambda platform: _FakeSession()
+    )
+    page = _page(tmp_path)
+    page._open_login("douyin")
+
+    page.shutdown()
+
+    assert closed == [True]
+    assert page._login_session is None
+
+
+def test_shutdown_cancels_running_crawl(qapp, tmp_path: Path) -> None:
+    import time
+
+    class _SlowRunner:
+        def run(self, config, *, on_log=None, cancel_event=None):  # noqa: ANN001
+            time.sleep(1.5)
+            return SpiderRunResult(success=False, message="已取消。")
+
+    page = _page(tmp_path, runner=_SlowRunner())
+    _import_one_account(page)
+    page._start_crawl()
+    assert page.is_running is True
+
+    page.shutdown()
+
+    assert page._cancel.is_set() is True
+
+
+def test_shutdown_is_safe_without_session_or_run(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page.shutdown()  # 不应抛异常

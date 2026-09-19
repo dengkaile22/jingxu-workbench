@@ -1265,4 +1265,6 @@ class ShellWindow(QMainWindow):
                 return
         self._queue.stop()
         self._download_queue.stop()
+        # 选品抓取与扫码登录都跑在子进程里，必须一并收掉。
+        self._spider_page.shutdown()
         super().closeEvent(event)

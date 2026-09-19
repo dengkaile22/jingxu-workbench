@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import threading
+from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QUrl, Signal
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QPushButton,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -97,6 +99,7 @@ class SpiderPage(QWidget):
         self._running = False
         self._cancel = threading.Event()
         self._last_result: spider_service.SpiderRunResult | None = None
+        self._login_session: spider_service.SpiderLoginSession | None = None
         self._updating = False
 
         self._bridge = SpiderBridge(self)
@@ -134,6 +137,8 @@ class SpiderPage(QWidget):
 
         layout.addSpacing(10)
         layout.addLayout(self._build_action_row())
+        layout.addSpacing(4)
+        layout.addLayout(self._build_login_row())
 
         layout.addSpacing(10)
         self._result_caption = Caption("尚未抓取。")
@@ -148,6 +153,7 @@ class SpiderPage(QWidget):
         self._apply_config_to_form()
         self._refresh_accounts()
         self._refresh_environment()
+        self._refresh_login_status()
         self._restore_last_result()
 
     # ────────────────────────────── 构建 ──────────────────────────────
@@ -309,7 +315,7 @@ class SpiderPage(QWidget):
         row.addWidget(self._cancel_button)
 
         self._send_button = SecondaryButton("结果送入下载")
-        self._send_button.setToolTip("把最近一次抓取到的视频链接加入上方下载队列。")
+        self._send_button.setToolTip("把结果表中勾选的商品链接加入上方下载队列。")
         self._send_button.clicked.connect(self._send_last_result)
         self._send_button.setEnabled(False)
         row.addWidget(self._send_button)
@@ -318,6 +324,61 @@ class SpiderPage(QWidget):
         row.addWidget(self._export_label)
         row.addStretch(1)
         return row
+
+    def _build_login_row(self) -> QHBoxLayout:
+        """扫码登录入口。
+
+        爬虫的 ``--login`` 能力此前没有界面入口：用户第一次抓取撞到登录墙后
+        无从下手，只能看到抓不到数据。
+        """
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(Caption("扫码登录"), alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        self._login_buttons: dict[str, QPushButton] = {}
+        for platform, label in spider_service.PLATFORM_LABELS.items():
+            button = SecondaryButton(f"{label}登录")
+            button.setToolTip(f"打开浏览器扫码登录{label}，登录态会被复用，无需重复登录。")
+            button.clicked.connect(partial(self._open_login, platform))
+            row.addWidget(button)
+            self._login_buttons[platform] = button
+
+        self._login_status = Caption("")
+        row.addWidget(self._login_status, stretch=1)
+        return row
+
+    def _refresh_login_status(self) -> None:
+        browser = spider_service.find_browser()
+        _, profile_text = spider_service.profile_status()
+        if browser is None:
+            self._login_status.setText(
+                "未找到 Chrome/Edge，抓取无法启动；请安装后重试。"
+            )
+            self._login_status.setObjectName("CaptionWarn")
+        else:
+            self._login_status.setText(f"浏览器：{browser.name} · {profile_text}")
+            self._login_status.setObjectName("Caption")
+        self._login_status.style().unpolish(self._login_status)
+        self._login_status.style().polish(self._login_status)
+        for button in self._login_buttons.values():
+            button.setEnabled(browser is not None)
+
+    def _open_login(self, platform: str) -> None:
+        if self._login_session is not None and self._login_session.is_running():
+            self._set_result_caption(
+                f"{self._login_session.platform_label}登录窗口已打开，请在其中完成扫码。"
+            )
+            return
+        try:
+            session = spider_service.open_login_window(platform)
+        except spider_service.SpiderError as error:
+            self._set_result_caption(str(error), warn=True)
+            return
+        self._login_session = session
+        self._set_result_caption(
+            f"已打开{ session.platform_label }登录窗口：请在浏览器中扫码登录，"
+            "完成后关闭该窗口即可开始抓取。"
+        )
 
     def _build_results_table(self) -> QWidget:
         self._results_table = QTableWidget(0, len(RESULT_COLUMNS))
@@ -761,6 +822,21 @@ class SpiderPage(QWidget):
         self._result_caption.setObjectName("CaptionWarn" if warn else "Caption")
         self._result_caption.style().unpolish(self._result_caption)
         self._result_caption.style().polish(self._result_caption)
+
+    def shutdown(self) -> None:
+        """应用退出时清理子进程。
+
+        不做这步的话，关掉应用后扫码登录的浏览器窗口与正在跑的抓取进程会
+        残留在后台。
+        """
+        if self._login_session is not None:
+            try:
+                self._login_session.close()
+            except Exception:  # noqa: BLE001 - 退出路径不应抛异常
+                pass
+            self._login_session = None
+        if self._running:
+            self._cancel.set()
 
     # ────────────────────────────── 测试辅助 ──────────────────────────────
 

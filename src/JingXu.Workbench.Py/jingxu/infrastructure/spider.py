@@ -319,6 +319,125 @@ def profile_directory() -> Path:
     return data_directory() / "Spider" / "browser_profile"
 
 
+# 与爬虫 core/browser_manager.find_browser_path 的探测顺序保持一致：
+# 显式指定 > 环境变量 > Chrome（三处安装位置）> Edge（两处）。
+# 爬虫跑在子进程里，拿不到它的探测结果，因此这里独立实现一份用于界面提示。
+BROWSER_ENV = "JINGXU_BROWSER_PATH"
+
+
+def find_browser() -> Path | None:
+    """定位可用的 Chromium 内核浏览器；找不到时返回 ``None``。
+
+    抖音/快手都需要真实浏览器内核，找不到时抓取必然失败，因此界面要提前
+    提示，而不是等用户点了「开始抓取」才报错。
+    """
+    import os as _os
+
+    candidates: list[str] = []
+    configured = _os.environ.get(BROWSER_ENV, "").strip()
+    if configured:
+        candidates.append(configured)
+    for pattern in (
+        r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+        r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+        r"%LocalAppData%\Google\Chrome\Application\chrome.exe",
+        r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+        r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+    ):
+        candidates.append(_os.path.expandvars(pattern))
+
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    return None
+
+
+def profile_status() -> tuple[bool, str]:
+    """返回（是否已建立浏览器档案, 可读描述）。
+
+    **注意**：无法从文件可靠判断「是否已成功登录」——``Cookies`` 这类文件
+    浏览器首次启动就会生成，空档案也有。因此这里只如实报告档案状态与路径，
+    真正的判据是抓取能否读到数据，不向用户做虚假保证。
+    """
+    directory = profile_directory()
+    if not directory.is_dir() or not any(directory.iterdir()):
+        return False, "尚未建立浏览器档案（首次抓取会打开浏览器要求扫码）"
+
+    try:
+        moment = datetime.fromtimestamp(directory.stat().st_mtime)
+    except OSError:
+        return True, "浏览器档案已存在"
+    return True, f"浏览器档案已存在（{moment.strftime('%m-%d %H:%M')} 更新，若抓取无数据请重新扫码）"
+
+
+def profile_ready() -> bool:
+    """是否已建立可复用的浏览器档案。"""
+    return profile_status()[0]
+
+
+@dataclass(frozen=True, slots=True)
+class SpiderLoginSession:
+    """一次扫码登录会话：浏览器窗口由用户手动关闭。"""
+
+    process: subprocess.Popen
+    platform_label: str
+
+    def is_running(self) -> bool:
+        return self.process.poll() is None
+
+    def close(self) -> None:
+        if self.is_running():
+            self.process.terminate()
+
+
+def open_login_window(platform: str) -> SpiderLoginSession:
+    """打开浏览器让用户扫码登录指定平台。
+
+    登录态写入 :func:`profile_directory`，后续抓取直接复用；这是首次使用
+    绕不开的一步，必须在界面上给出入口，否则用户撞到登录墙后无从下手。
+    """
+    if platform not in PLATFORMS:
+        raise SpiderError(f"不支持的平台：{platform}")
+    environment = check_environment()
+    if not environment.available or environment.directory is None:
+        raise SpiderError(environment.message)
+
+    browser = find_browser()
+    if browser is None:
+        raise SpiderError(
+            "未找到 Chromium 内核浏览器。请安装 Chrome 或 Edge，"
+            f"或设置环境变量 {BROWSER_ENV} 指向浏览器可执行文件。"
+        )
+
+    arguments = [
+        str(environment.directory / "cli.py"),
+        "--login",
+        platform,
+        "--profile-dir",
+        str(profile_directory()),
+        "--browser-path",
+        str(browser),
+    ]
+    environment_variables = dict(os.environ)
+    environment_variables.update(
+        {"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    )
+    try:
+        process = subprocess.Popen(
+            [environment.python, *arguments],
+            cwd=str(environment.directory),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=environment_variables,
+        )
+    except OSError as error:
+        raise SpiderError(f"无法启动登录窗口：{error}") from error
+
+    return SpiderLoginSession(
+        process=process, platform_label=PLATFORM_LABELS.get(platform, platform)
+    )
+
+
 def validate_date_filters(filters: SpiderFilters) -> str:
     """校验自定义日期范围；返回空串表示通过，否则返回中文提示。
 

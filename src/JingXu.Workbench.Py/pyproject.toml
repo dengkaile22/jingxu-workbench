@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jingxu-workbench"
+version = "0.1.0"
+description = "炳恒快速混剪 · Python 跨平台版（PySide6 + FFmpeg）"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.5",
+]
+
+[project.optional-dependencies]
+spider = [
+    "DrissionPage>=4.1.0",
+    "openpyxl>=3.0.0",
+    "tabulate>=0.9.0",
+]
+download = [
+    "yt-dlp>=2024.1",
+]
+dev = [
+    "pytest>=7.4",
+]
+
+[project.scripts]
+jingxu = "jingxu.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jingxu*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -m 'not integration'"
+pythonpath = ["."]
+markers = [
+    "integration: 需要本机 FFmpeg/FFprobe 的真机测试（python -m pytest -m integration）",
+]

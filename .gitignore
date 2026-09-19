@@ -25,3 +25,25 @@ runtime/*
 /src/JingXu.Spider/data/
 /src/JingXu.Spider/*.xlsx
 /src/JingXu.Spider/.venv/
+
+# Python 通用缓存
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg-info/
+*.part
+*.part.mp4
+
+# Python 版打包产物（PyInstaller / 便携目录 / 本地构建缓存）
+/build-py/
+/src/JingXu.Workbench.Py/build/
+/src/JingXu.Workbench.Py/dist/
+artifacts/py-*
+*.spec.bak
+
+# Python 运行期数据（用户数据与工作临时文件不入库）
+/src/JingXu.Workbench.Py/logs/
+/src/JingXu.Workbench.Py/分镜输出/

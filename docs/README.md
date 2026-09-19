@@ -25,6 +25,7 @@
 | [Python 版发布流程](release-python.md) | PySide6 版的 PyInstaller 打包、随包运行时与自检 |
 | [运行时许可](runtime-licensing.md) | FFmpeg / Whisper / Tesseract 合规 |
 | [验收报告](acceptance-report.md) | Task 矩阵与已知阻塞项 |
+| [Python 版迁移验收报告](python-migration-acceptance.md) | .NET → Python 迁移的能力对齐、测试证据与已知限制 |
 
 ## 开发现状与对齐（2026-07-11）
 

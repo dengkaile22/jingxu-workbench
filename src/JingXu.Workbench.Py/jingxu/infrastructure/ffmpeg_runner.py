@@ -236,17 +236,14 @@ def run_render(
     try:
         _ensure_render_space(request)
 
+        # 直拷路径不探测编码器与 GPU 能力（对齐 .NET：isStreamCopy 时不探针）。
         if request.settings.stream_copy and stream_copy_eligible(request):
             concat_path = write_concat_list(script_directory / "concat.txt", request.plan.assets)
             command = build_stream_copy_command(ffmpeg_path, request, concat_path, part_path)
             return _execute(ffmpeg_path, command, request, part_path, total_seconds, on_progress, cancel_event)
 
-        selector = processing_selector or default_processing_selector(ffmpeg_path)
-        selected_encoder = encoder or default_registry(ffmpeg_path).resolve(request.settings.processing)
-        plan = (
-            processing_plan
-            if processing_plan is not None
-            else selector.select(ffmpeg_path, request.settings.processing, selected_encoder)
+        selected_encoder, plan, selector = _resolve_processing(
+            ffmpeg_path, request, encoder, processing_plan, processing_selector
         )
 
         command, filter_path = _build_transcode_command(
@@ -301,6 +298,26 @@ def run_render(
         raise
     finally:
         shutil.rmtree(script_directory, ignore_errors=True)
+
+
+def _resolve_processing(
+    ffmpeg_path: Path,
+    request: RenderRequest,
+    encoder: EncoderChoice | None,
+    processing_plan: HardwareProcessingPlan | None,
+    processing_selector,
+) -> tuple[EncoderChoice, HardwareProcessingPlan, object]:
+    """解析编码器与输入处理计划（仅转码路径需要）。
+
+    显式传入 ``processing_plan`` 时不再探测（也不取默认选择器）；
+    ``processing_selector`` 默认按 ffmpeg 路径取进程内缓存的选择器。
+    """
+    selected_encoder = encoder or default_registry(ffmpeg_path).resolve(request.settings.processing)
+    if processing_plan is not None:
+        return selected_encoder, processing_plan, processing_selector
+    selector = processing_selector or default_processing_selector(ffmpeg_path)
+    plan = selector.select(ffmpeg_path, request.settings.processing, selected_encoder)
+    return selected_encoder, plan, selector
 
 
 def _read_filter_script(filter_path: Path) -> str:

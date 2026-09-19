@@ -210,6 +210,20 @@ class _FakeProcess:
         return "", "stub stderr\n"
 
 
+def _concat_commands(captured: list[list[str]]) -> list[list[str]]:
+    """从捕获的命令中筛出 concat 直拷命令。
+
+    测试把 ``subprocess.Popen`` 全局打桩，而 ``video_processing`` 使用**同一个**
+    subprocess 模块对象发起设备探测；因此捕获列表可能混入探测命令，
+    断言必须按命令特征筛选而不是依赖调用次数。
+    """
+    return [
+        command
+        for command in captured
+        if "-f" in command and command[command.index("-f") + 1] == "concat"
+    ]
+
+
 def test_run_render_stream_copy_executes_concat_command(tmp_path: Path, monkeypatch) -> None:
     captured: list[list[str]] = []
 
@@ -232,10 +246,10 @@ def test_run_render_stream_copy_executes_concat_command(tmp_path: Path, monkeypa
     assert output == request.output_path
     assert output.read_bytes() == b"fake mp4"
     assert not list(tmp_path.glob("*.part.mp4"))
-    assert len(captured) == 1
 
-    command = captured[0]
-    assert command[command.index("-f") + 1] == "concat"
+    concat_commands = _concat_commands(captured)
+    assert len(concat_commands) == 1
+    command = concat_commands[0]
     assert command[command.index("-safe") + 1] == "0"
     assert command[command.index("-c") + 1] == "copy"
     assert "-filter_complex_script" not in command
@@ -272,6 +286,8 @@ def test_run_render_falls_back_to_transcode_when_blocked(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(ffmpeg_runner.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(ffmpeg_runner, "default_registry", lambda path: _FakeRegistry())
+    # 必须同时替换处理选择器：真实选择器会为探测设备发起子进程，
+    # 被 fake_popen 抓到后 captured[0] 就不是渲染命令了（曾表现为偶发失败）。
     monkeypatch.setattr(
         ffmpeg_runner, "default_processing_selector", lambda path: _FakeProcessingSelector()
     )
@@ -289,5 +305,8 @@ def test_run_render_falls_back_to_transcode_when_blocked(tmp_path: Path, monkeyp
     output = run_render(Path("ffmpeg"), request, temp_dir=tmp_path)
 
     assert output.is_file()
-    assert "-filter_complex_script" in captured[0]
-    assert captured[0][captured[0].index("-c:v") + 1] == "libx264"
+    transcode_commands = [command for command in captured if "-filter_complex_script" in command]
+    assert len(transcode_commands) == 1
+    command = transcode_commands[0]
+    assert command[command.index("-c:v") + 1] == "libx264"
+    assert not _concat_commands(captured)  # 直拷被阻止，不应有 concat 直拷命令

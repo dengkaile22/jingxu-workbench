@@ -18,7 +18,13 @@ from jingxu.domain.effects import (
     FourScreenPosition,
     MaterializedMainMaterialBoost,
 )
+from jingxu.domain.layers import (
+    MAX_MASK_CORNER_RADIUS_PX,
+    MIN_MASK_CORNER_RADIUS_PX,
+    LayerShapeMask,
+)
 from jingxu.domain.layers import LayerSpec
+from jingxu.domain.layers import SELF_SOURCE as _SELF_SOURCE
 from jingxu.domain.render import (
     BgmSettings,
     FitMode,
@@ -33,7 +39,8 @@ from jingxu.infrastructure.video_processing import HardwareProcessingPlan
 
 SAMPLE_RATE = 48000
 LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
-SELF_SOURCE = ":self:"
+# 自叠影哨兵：与领域层共用同一常量，避免两处定义漂移。
+SELF_SOURCE = _SELF_SOURCE
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,8 +62,11 @@ class FilterGraph:
 
 
 def _even(value: float) -> int:
+    """取最近的偶数，且不小于 2（0 在调用方表示"自然高度"，不能被误判）。"""
     number = int(round(value))
-    return number if number % 2 == 0 else number - 1
+    if number % 2 != 0:
+        number -= 1
+    return max(2, number)
 
 
 def _decimal(value: float) -> str:
@@ -154,6 +164,132 @@ def _alpha_envelope(
         f"[{alpha_in}]alphaextract,geq=lum='lum(X,Y)*{multiplier}'{blur}[{alpha_out}];"
         f"[{rgb_label}][{alpha_out}]alphamerge[{output_label}]"
     )
+
+
+# ── 形状遮罩 ────────────────────────────────────────────────────────────────
+
+
+def _shapes_enabled(layer: LayerSpec) -> bool:
+    """该图层是否需要形状 alpha（矩形与不裁剪等价，走原路径）。"""
+    return layer.shape_mask_kind in (
+        LayerShapeMask.ROUNDED_RECTANGLE,
+        LayerShapeMask.ELLIPSE,
+        LayerShapeMask.IMPORTED_PNG,
+    )
+
+
+def _rounded_rect_radius_expr(radius_px: float) -> str:
+    """圆角半径表达式：钳到不超过短边的一半，避免极窄画面下钳制区间反转。
+
+    注意 ffmpeg 表达式里 ``max()`` **只接受两个参数**（``min()`` 可接受三个），
+    因此半径钳制必须写成嵌套的两参形式。
+    """
+    radius = _decimal(max(MIN_MASK_CORNER_RADIUS_PX, min(radius_px, MAX_MASK_CORNER_RADIUS_PX)))
+    return f"min({radius},min(W/2,H/2))"
+
+
+def _shape_alpha_expr(layer: LayerSpec) -> str | None:
+    """生成 geq 的 alpha 表达式（使用运行时 ``W``/``H``）。
+
+    为什么用运行时变量而不是编译期像素常量：图层的帧高在 ``scale=w:-2`` 下
+    只有运行时才确定，编译期写死高度会在非等比素材上错位。
+
+    保真度说明：
+    * 椭圆按 .NET 语义实现为**边界框内切圆**（半径 ``min(W,H)/2``），
+      非方框时只覆盖中间一块；这是刻意的与 .NET 对齐行为，不是真椭圆。
+    * 圆角矩形**未沿用 .NET 的字面实现**：其 ``min(X,r)+min(W-X,r)-r`` 写法在
+      距边 r 的整条边带内恒为 r，导致四条边带被整体擦除、角部反而保留，
+      几何上不是圆角。这里改为标准的「到圆角矩形边界距离」写法
+      ``lte(pow(X-clamp(X,r,W-r),2)+pow(Y-clamp(Y,r,H-r),2), r^2)``，
+      结果正确且表达式更短。若需与 .NET 逐像素一致，需改为字面移植。
+    """
+    kind = layer.shape_mask_kind
+    if kind is LayerShapeMask.ELLIPSE:
+        return "if(lt(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/2,2)),alpha(X,Y),0)"
+    if kind is LayerShapeMask.ROUNDED_RECTANGLE:
+        radius = _rounded_rect_radius_expr(float(layer.mask_corner_radius_px))
+        # 到圆角矩形边界的距离：X/Y 各钳到 [r, 尺寸-r]。
+        # ffmpeg 的 max() 只接受两参，故统一用嵌套两参形式。
+        clamp_x = f"max({radius},min(W-({radius}),X))"
+        clamp_y = f"max({radius},min(H-({radius}),Y))"
+        return (
+            f"if(lte(pow(X-{clamp_x},2)+pow(Y-{clamp_y},2),pow({radius},2)),alpha(X,Y),0)"
+        )
+    return None
+
+
+def _shape_alpha_filter(
+    layer: LayerSpec,
+    input_label: str,
+    output_label: str,
+) -> str | None:
+    """按形状重写 alpha 通道；不需要形状时返回 ``None``。
+
+    必须同时写 ``r/g/b/a`` 四个选项：geq 依据出现哪些选项选择色彩空间，
+    只写 ``a=`` 可能不进入 RGB 模式而拿不到 alpha 平面（老版本还有
+    RGB 模式 alpha 不写回的问题）。**不得用 ``geq=lum=``** —— 那会覆盖
+    已由 ``colorchannelmixer`` 写入的不透明度，使整层不可见。
+    """
+    expr = _shape_alpha_expr(layer)
+    if expr is None:
+        return None
+    return (
+        f"[{input_label}]geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{expr}'[{output_label}]"
+    )
+
+
+def _png_mask_chain(
+    layer: LayerSpec,
+    mask_input_index: int,
+    output_label: str,
+    width: int,
+    height_px: int,
+) -> str:
+    """生成 PNG 遮罩链：缩放遮罩 → 取 alpha 来源 → 与图层 alpha 相乘。
+
+    尺寸必须与图层帧**逐像素相等**，否则 ``alphamerge`` 会直接失败；
+    调用方负责保证 ``height_px`` 与 ``_layer_fit_filters`` 的高度上限一致。
+    """
+    mode = str(layer.mask_png_mode or "luma").strip().lower()
+    prefix = f"lay{output_label}mask"
+    steps = f"scale={width}:{height_px},setsar=1"
+    if layer.mask_png_invert:
+        # 反相在灰度/透明来源上等价，放在取来源之后。
+        invert = ",negate"
+    else:
+        invert = ""
+
+    if mode == "alpha":
+        chain = f"[{mask_input_index}:v]format=rgba,alphaextract,{steps}{invert}[{prefix}]"
+    elif mode == "luma_alpha":
+        chain = (
+            f"[{mask_input_index}:v]format=rgba,split=2[{prefix}ma][{prefix}mb];"
+            f"[{prefix}mb]alphaextract[{prefix}mx];"
+            f"[{prefix}ma]format=gray,{steps}[{prefix}gray];"
+            f"[{prefix}gray][{prefix}mx]blend=all_mode=multiply[{prefix}]"
+        )
+    else:  # luma（与 .NET 等价）
+        chain = f"[{mask_input_index}:v]format=gray,{steps}{invert}[{prefix}]"
+    return chain
+
+
+def _register_mask_inputs(
+    active_layers: list[LayerSpec],
+    base_index: int,
+    extra_inputs: list[ExtraInput],
+) -> dict[str, int]:
+    """为需要 PNG 遮罩的图层登记额外输入，返回 ``{图层 id: 输入序号}``。
+
+    遮罩是单帧图片，走 ``-loop 1``（复用仓库既有的图片输入处理），
+    帧长由 ``alphamerge`` 与图层流（已 trim 到窗口长度）共同决定。
+    """
+    mask_inputs: dict[str, int] = {}
+    for layer in active_layers:
+        if layer.shape_mask_kind is not LayerShapeMask.IMPORTED_PNG or layer.mask_png is None:
+            continue
+        mask_inputs[layer.id] = base_index + len(extra_inputs)
+        extra_inputs.append(ExtraInput(path=Path(layer.mask_png), loop=True, purpose="layer-mask"))
+    return mask_inputs
 
 
 def _cell_grid(mode: SplitMode) -> tuple[int, int]:
@@ -512,6 +648,51 @@ def _four_screen_chain(
     )
 
 
+def _build_layer_stages(
+    chain: str,
+    layer: LayerSpec,
+    order: int,
+    width: int,
+    height_limit: int,
+    mask_input: int | None,
+    rotate: str,
+) -> list[str]:
+    """串起图层处理阶段：不透明度 → 形状 alpha → 上淡入/羽化 → 旋转。
+
+    ``chain`` 是**不含输出标签**的滤镜串（以 ``colorchannelmixer=aa=`` 结尾），
+    本函数负责补上首个 ``[lay{order}rgba]`` 标签并返回全部中间行。
+
+    顺序不可交换：``_alpha_envelope`` 内部会 ``alphaextract`` 后重写 alpha，
+    必须吃到**已经带形状 alpha** 的 rgba；旋转放在最后（与 .NET 一致）。
+    最终标签统一为 ``lay{order}``，叠加段只认这一个标签。
+    """
+    stages: list[str] = [f"{chain}[lay{order}rgba]"]
+    current = f"lay{order}rgba"
+
+    shape_filter = _shape_alpha_filter(layer, current, f"lay{order}shape")
+    if shape_filter is not None:
+        stages.append(shape_filter)
+        current = f"lay{order}shape"
+
+    if mask_input is not None:
+        stages.append(_png_mask_chain(layer, mask_input, order, width, height_limit))
+        stages.append(
+            f"[{current}][lay{order}mask]alphamerge=eof_action=repeat:repeatlast=1[lay{order}m]"
+        )
+        current = f"lay{order}m"
+
+    if layer.feather > 0.0 or layer.top_fade > 0.0:
+        stages.append(_alpha_envelope(current, f"lay{order}env", layer, width))
+        current = f"lay{order}env"
+
+    if rotate:
+        stages.append(f"[{current}]{rotate}[lay{order}]")
+    else:
+        stages.append(f"[{current}]null[lay{order}]")
+
+    return stages
+
+
 def _clip_start_seconds(plan: CompositionPlan, one_based_index: int) -> float:
     """返回第 N 个片段在成片时间轴上的起点（1 基，对齐 .NET StartClipIndex）。"""
     if one_based_index <= 1 or not plan.assets:
@@ -599,7 +780,7 @@ def build_filter_graph(
         and (split.same_source or bool(split.aux_paths))
     )
 
-    # ── 额外输入登记：图层 → 四屏辅助素材 → 双屏辅助素材 → 分屏辅助 → 梯度 ──
+    # ── 额外输入登记：图层 → PNG 遮罩 → 四屏辅助素材 → 双屏辅助素材 → 分屏辅助 → 梯度 ──
     layer_inputs: list[tuple[LayerSpec, int | None]] = []
     for layer in active_layers:
         if str(layer.source) == SELF_SOURCE:
@@ -607,6 +788,8 @@ def build_filter_graph(
             continue
         layer_inputs.append((layer, base_index + len(extra_inputs)))
         extra_inputs.append(ExtraInput(path=layer.source, loop=True, purpose="layer"))
+
+    mask_inputs = _register_mask_inputs(active_layers, base_index, extra_inputs)
 
     four_aux_inputs: dict[tuple[int, int], int] = {}
     if four_screen is not None:
@@ -884,7 +1067,10 @@ def build_filter_graph(
                 radians = layer.rotation_degrees * math.pi / 180.0
                 rotate = f"rotate={radians:.6f}:ow=rotw(iw):oh=roth(ih):c=none"
 
-            source = f"lay{order}"
+            shape_error = layer.validate_shape_mask()
+            if shape_error is not None:
+                raise ValueError(f"图层「{layer.display_name}」形状遮罩无效：{shape_error}")
+
             if input_index is not None:
                 chain = _build_source(f"[{input_index}:v]")
             else:
@@ -894,19 +1080,18 @@ def build_filter_graph(
                 previous = f"lay{order}keep"
                 chain = _build_source(f"[{ghost_label}]")
 
-            if layer.feather > 0.0 or layer.top_fade > 0.0:
-                base_label = f"lay{order}base"
-                envelope_label = f"lay{order}env"
-                lines.append(chain + f"[{base_label}]")
-                lines.append(_alpha_envelope(base_label, envelope_label, layer, width))
-                if rotate:
-                    lines.append(f"[{envelope_label}]{rotate}[{source}]")
-                else:
-                    source = envelope_label
-            elif rotate:
-                lines.append(chain + f",{rotate}[{source}]")
-            else:
-                lines.append(chain + f"[{source}]")
+            lines.extend(
+                _build_layer_stages(
+                    chain,
+                    layer,
+                    order,
+                    width,
+                    height_limit,
+                    mask_inputs.get(layer.id),
+                    rotate,
+                )
+            )
+            source = f"lay{order}"
 
             x = f"main_w*{max(layer.x_percent, 0) / 100:.4f}-overlay_w/2"
             y = f"main_h*{max(layer.y_percent, 0) / 100:.4f}-overlay_h/2"

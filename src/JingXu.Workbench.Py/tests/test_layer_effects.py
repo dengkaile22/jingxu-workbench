@@ -30,7 +30,18 @@ def test_plain_layer_has_no_envelope_filters() -> None:
     assert "geq" not in script
     assert "gblur" not in script
     assert "alphamerge" not in script
-    assert "colorchannelmixer=aa=1.000[lay0]" in script
+    # 不透明度写入后经 null 桥接到统一最终标签 lay0（叠加段只认这一个标签）。
+    assert "colorchannelmixer=aa=1.000[lay0rgba]" in script
+    assert "[lay0rgba]null[lay0]" in script
+    assert "[vcat][lay0]overlay=" in script
+
+
+def test_plain_layer_opacity_still_precedes_overlay() -> None:
+    """无形状/无羽化时链路最短：不透明度 → 桥接 → 叠加。"""
+    layer = LayerSpec(kind=LayerKind.STICKER, source=Path("s.png"))
+    script = _graph(layer).script
+    assert script.index("colorchannelmixer=aa=1.000") < script.index("[lay0rgba]null[lay0]")
+    assert script.index("[lay0rgba]null[lay0]") < script.index("[vcat][lay0]overlay=")
 
 
 def test_feather_envelope_blurs_alpha_and_rotates_after_merge() -> None:

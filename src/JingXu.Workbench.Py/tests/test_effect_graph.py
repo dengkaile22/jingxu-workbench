@@ -131,7 +131,9 @@ class TestSelfGhostLayer:
         assert graph.extra_inputs == ()
         assert "[vcat]split[lay0keep][lay0ghost]" in graph.script
         assert "colorchannelmixer=aa=0.280" in graph.script
-        assert "[lay0keep][lay0env]overlay=" in graph.script
+        # 自叠影经上淡入包络后桥接到统一标签，再由 keep 分支叠加。
+        assert "[lay0env]null[lay0]" in graph.script
+        assert "[lay0keep][lay0]overlay=" in graph.script
 
     def test_layer_order_follows_z_index(self) -> None:
         first = LayerSpec(kind=LayerKind.STICKER, source=Path("s1.png"), z_index=5)

@@ -522,3 +522,185 @@ def test_subtitle_burn_and_hard_subtitle_removal_render(tmp_path: Path) -> None:
     _extract_frame(ffmpeg, covered, 0.8, covered_frame)
     dark = lambda r, g, b: r < 25 and g < 25 and b < 25  # noqa: E731
     assert _count_pixels(covered_frame, dark, x0=0.15, y0=0.75, x1=0.85, y1=0.95) > 100
+
+
+# ── 形状遮罩像素验收 ───────────────────────────────────────────────────────
+
+
+def _make_solid(ffmpeg: Path, path: Path, *, color: str, size: str, seconds: float = 2.0) -> None:
+    subprocess.run(
+        [
+            str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", f"color=c={color}:s={size}:r=30",
+            "-t", str(seconds), "-c:v", "libx264", "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p", str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _make_half_masked_png(ffmpeg: Path, path: Path, *, size: int = 400) -> None:
+    """生成「左半白、右半黑」的灰度遮罩 PNG。"""
+    subprocess.run(
+        [
+            str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", f"color=c=black:s={size}x{size}",
+            "-f", "lavfi", "-i", f"color=c=white:s={size // 2}x{size}",
+            "-filter_complex", "[0:v][1:v]overlay=0:0", "-frames:v", "1", str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _red_fraction(ffmpeg: Path, video: Path, tmp_path: Path, name: str) -> float:
+    """统计画面中「图层红」的像素占比（缩到 90x160 后逐像素判定）。"""
+    frame = tmp_path / f"{name}.png"
+    _extract_frame(ffmpeg, video, 1.0, frame)
+    raw = tmp_path / f"{name}.raw"
+    subprocess.run(
+        [
+            str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-i", str(frame),
+            "-vf", "scale=90:160", "-pix_fmt", "rgb24", "-f", "rawvideo", str(raw),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    data = raw.read_bytes()
+    width, height = 90, 160
+    total = width * height
+    red = 0
+    for index in range(0, len(data), 3):
+        if data[index] > 150 and data[index + 1] < 90 and data[index + 2] < 90:
+            red += 1
+    assert len(data) >= total * 3
+    return red / total
+
+
+def _shape_layer(source: Path, **overrides) -> LayerSpec:
+    base = {
+        "kind": LayerKind.OVERLAY,
+        "source": source,
+        "x_percent": 50.0,
+        "y_percent": 50.0,
+        "width_percent": 60.0,
+        "height_percent": 60.0,
+        "opacity": 1.0,
+    }
+    base.update(overrides)
+    return LayerSpec(**base)
+
+
+def _render_shape_case(
+    ffmpeg: Path,
+    ffprobe: Path,
+    tmp_path: Path,
+    main: Path,
+    layer: LayerSpec,
+    name: str,
+) -> Path:
+    request = RenderRequest(
+        name=name,
+        plan=CompositionPlan(assets=(probe_media(main, ffprobe),), mode=OrderMode.SEQUENTIAL),
+        settings=RenderSettings(
+            width=720, height=1280, fps=30, crf=20, preset="ultrafast",
+            processing=ProcessingMode.CPU, fit_mode=FitMode.PAD,
+        ),
+        output_path=tmp_path / f"{name}.mp4",
+        layers=(layer,),
+    )
+    return run_render(ffmpeg, request)
+
+
+def test_shape_mask_pixel_acceptance(tmp_path: Path) -> None:
+    """白底主片 + 红图层：形状遮罩必须真的改变可见面积。
+
+    验收点（对齐 .NET OverlayRenderTests 的思路，改为量化面积比较）：
+
+    * 无形状 → 红占比≈图层面积（60%×60%=36%）；
+    * 椭圆 → 按内切圆语义，红占比明显下降且中心仍为红；
+    * 圆角矩形 → 红占比略低于基准（只削掉四角）；
+    * PNG 灰度遮罩（左白右黑）→ 红占比约为基准的一半；
+    * 形状 + 羽化共存时不报错且红占比略低于纯椭圆。
+    """
+    ffmpeg, ffprobe = _require_tools()
+    from jingxu.domain.layers import LayerShapeMask
+
+    main = tmp_path / "main.mp4"
+    layer_video = tmp_path / "layer.mp4"
+    _make_solid(ffmpeg, main, color="white", size="720x1280")
+    _make_solid(ffmpeg, layer_video, color="red", size="720x1280")
+
+    plain = _render_shape_case(ffmpeg, ffprobe, tmp_path, main, _shape_layer(layer_video), "plain")
+    plain_ratio = _red_fraction(ffmpeg, plain, tmp_path, "plain")
+    assert 0.25 < plain_ratio < 0.45, plain_ratio
+
+    ellipse = _render_shape_case(
+        ffmpeg,
+        ffprobe,
+        tmp_path,
+        main,
+        _shape_layer(layer_video, shape_mask=LayerShapeMask.ELLIPSE.value),
+        "ellipse",
+    )
+    ellipse_ratio = _red_fraction(ffmpeg, ellipse, tmp_path, "ellipse")
+    # .NET 语义是「边界框内切圆」：半径 = min(W,H)/2。图层是 432x768 的非方框，
+    # 圆只占边界框的 π·W/(4·H) ≈ 44%，即画布的约 16%，而非 π/4≈78%。
+    assert ellipse_ratio == pytest.approx(plain_ratio * 0.442, rel=0.15), (
+        plain_ratio,
+        ellipse_ratio,
+    )
+
+    rounded = _render_shape_case(
+        ffmpeg,
+        ffprobe,
+        tmp_path,
+        main,
+        _shape_layer(
+            layer_video,
+            shape_mask=LayerShapeMask.ROUNDED_RECTANGLE.value,
+            mask_corner_radius_px=80,
+        ),
+        "rounded",
+    )
+    rounded_ratio = _red_fraction(ffmpeg, rounded, tmp_path, "rounded")
+    # 只削四角：应低于基准但明显高于椭圆。
+    assert rounded_ratio < plain_ratio, (plain_ratio, rounded_ratio)
+    assert rounded_ratio > ellipse_ratio, (ellipse_ratio, rounded_ratio)
+
+    mask_png = tmp_path / "half.png"
+    _make_half_masked_png(ffmpeg, mask_png)
+    png = _render_shape_case(
+        ffmpeg,
+        ffprobe,
+        tmp_path,
+        main,
+        _shape_layer(
+            layer_video,
+            shape_mask=LayerShapeMask.IMPORTED_PNG.value,
+            mask_png=mask_png,
+        ),
+        "png",
+    )
+    png_ratio = _red_fraction(ffmpeg, png, tmp_path, "png")
+    # 左半遮罩 → 约为基准的一半。
+    assert png_ratio == pytest.approx(plain_ratio / 2, rel=0.25), (plain_ratio, png_ratio)
+
+    feathered = _render_shape_case(
+        ffmpeg,
+        ffprobe,
+        tmp_path,
+        main,
+        _shape_layer(layer_video, shape_mask=LayerShapeMask.ELLIPSE.value, feather=0.4),
+        "ellipse-feather",
+    )
+    feathered_ratio = _red_fraction(ffmpeg, feathered, tmp_path, "ellipse-feather")
+    # 羽化在形状之后生效：边界被软化，纯红像素只会更少。
+    assert feathered_ratio <= ellipse_ratio + 0.01, (ellipse_ratio, feathered_ratio)
+    assert feathered_ratio > 0.02, feathered_ratio
+
+    for output in (plain, ellipse, rounded, png, feathered):
+        probed = probe_media(output, ffprobe)
+        assert (probed.width, probed.height) == (720, 1280)
+        assert probed.duration == pytest.approx(2.0, abs=0.3)

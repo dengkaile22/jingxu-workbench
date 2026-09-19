@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jingxu.domain.layers import LayerKind, LayerSpec
+from jingxu.domain.layers import (
+    DEFAULT_MASK_CORNER_RADIUS_PX,
+    SELF_SOURCE,
+    LayerKind,
+    LayerShapeMask,
+    LayerSpec,
+)
 from jingxu.infrastructure.paths import data_directory
 
 OVERLAY_FILE_NAME = "overlay-layers.json"
@@ -54,18 +60,66 @@ def layer_to_payload(layer: LayerSpec) -> dict:
         "audio_mode": layer.audio_mode,
         "z_index": layer.z_index,
         "enabled": layer.enabled,
+        "shape_mask": layer.shape_mask,
+        "mask_corner_radius_px": layer.mask_corner_radius_px,
+        "mask_png": str(layer.mask_png) if layer.mask_png is not None else None,
+        "mask_png_mode": layer.mask_png_mode,
+        "mask_png_invert": layer.mask_png_invert,
     }
 
 
-def layer_from_payload(kind: LayerKind, entry: dict) -> LayerSpec | None:
-    """从字典还原图层；缺文件或非法条目返回 ``None``。"""
-    raw_source = entry.get("source") if isinstance(entry, dict) else None
+def _resolve_source(raw_source: object) -> Path | None:
+    """解析图层素材路径；缺失或不存在返回 ``None``。
+
+    自叠影哨兵 ``:self:`` 不是真实路径，必须特判保留——否则项目打开/关闭后
+    自叠影图层会被静默丢弃。
+    """
     if not raw_source:
         return None
-    source = Path(str(raw_source))
-    if not source.is_file():
+    text = str(raw_source)
+    if text == SELF_SOURCE:
+        return Path(SELF_SOURCE)
+    path = Path(text)
+    return path if path.is_file() else None
+
+
+def _resolve_mask_png(entry: dict, shape: LayerShapeMask) -> Path | None:
+    """解析 PNG 遮罩路径；缺失时返回 ``None``（由调用方降级为无形状）。
+
+    遮罩是附属资源：文件丢了不应该连带丢弃整条图层。
+    """
+    raw = entry.get("mask_png")
+    if not raw:
         return None
+    path = Path(str(raw))
+    if not path.is_file():
+        return None
+    return path
+
+
+def layer_from_payload(kind: LayerKind, entry: dict) -> LayerSpec | None:
+    """从字典还原图层；素材缺失或条目非法返回 ``None``。
+
+    旧版 JSON 没有形状字段时按 ``NONE`` 处理，行为与迁移前完全一致。
+    """
+    if not isinstance(entry, dict):
+        return None
+    source = _resolve_source(entry.get("source"))
+    if source is None:
+        return None
+
     try:
+        shape_raw = str(entry.get("shape_mask") or LayerShapeMask.NONE.value).strip().lower()
+        try:
+            shape = LayerShapeMask(shape_raw)
+        except ValueError:
+            shape = LayerShapeMask.NONE
+
+        mask_png = _resolve_mask_png(entry, shape)
+        if shape is LayerShapeMask.IMPORTED_PNG and mask_png is None:
+            # 遮罩文件丢失：保留图层但降级为无形状，而不是整条丢弃。
+            shape = LayerShapeMask.NONE
+
         return LayerSpec(
             kind=kind,
             source=source,
@@ -90,6 +144,13 @@ def layer_from_payload(kind: LayerKind, entry: dict) -> LayerSpec | None:
             z_index=int(entry.get("z_index") or 0),
             enabled=bool(entry.get("enabled", True)),
             id=str(entry.get("id") or ""),
+            shape_mask=shape.value,
+            mask_corner_radius_px=float(
+                entry.get("mask_corner_radius_px") or DEFAULT_MASK_CORNER_RADIUS_PX
+            ),
+            mask_png=mask_png,
+            mask_png_mode=str(entry.get("mask_png_mode") or "luma"),
+            mask_png_invert=bool(entry.get("mask_png_invert", False)),
         )
     except (TypeError, ValueError):
         return None

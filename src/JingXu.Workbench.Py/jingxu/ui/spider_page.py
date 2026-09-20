@@ -130,10 +130,18 @@ class SpiderPage(QWidget):
         layout.addSpacing(6)
         layout.addWidget(self._build_accounts_table())
 
-        self._import_toggle = SecondaryButton("批量粘贴导入")
+        # 「添加对标账号」独立成行（对齐 .NET：平台下拉 + 链接框 + 备注名 + 添加账号）
+        layout.addSpacing(10)
+        layout.addWidget(SectionHeader("添加对标账号"))
+        layout.addSpacing(6)
+        layout.addLayout(self._build_add_account_row())
+
+        self._import_toggle = SecondaryButton("批量导入")
+        self._import_toggle.setToolTip("每行一个主页链接/短链/ID，自动识别平台。")
         self._import_toggle.clicked.connect(self._toggle_import)
         import_row = QHBoxLayout()
         import_row.setSpacing(8)
+        import_row.addWidget(Caption("批量导入（每行一个主页链接/短链/ID，自动识别平台）"))
         import_row.addWidget(self._import_toggle)
         import_row.addStretch(1)
         layout.addSpacing(6)
@@ -204,6 +212,71 @@ class SpiderPage(QWidget):
         row.addWidget(clear)
         return row
 
+    def _build_add_account_row(self) -> QHBoxLayout:
+        """单条添加：平台 + 链接/ID + 备注名（对齐 .NET「添加对标账号」）。"""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        # 默认「自动识别」，避免把用户的链接强行归到某个平台。
+        # （此前默认抖音，导致粘贴快手链接被存成抖音账号。）
+        self._platform_combo = _combo(
+            [("", "自动识别"), ("douyin", "抖音"), ("kuaishou", "快手")]
+        )
+        self._platform_combo.setFixedWidth(96)
+        self._platform_combo.setToolTip("默认按链接特征自动识别；也可手动指定平台。")
+        row.addWidget(self._platform_combo)
+
+        self._account_input = QLineEdit()
+        self._account_input.setPlaceholderText("主页链接 / 分享短链 / Sec-UID")
+        self._account_input.returnPressed.connect(self._add_single_account)
+        row.addWidget(self._account_input, stretch=1)
+
+        self._account_name_input = QLineEdit()
+        self._account_name_input.setPlaceholderText("备注名（可空）")
+        self._account_name_input.setFixedWidth(150)
+        self._account_name_input.returnPressed.connect(self._add_single_account)
+        row.addWidget(self._account_name_input)
+
+        add_button = PrimaryButton("+ 添加账号")
+        add_button.clicked.connect(self._add_single_account)
+        row.addWidget(add_button)
+        return row
+
+    def _add_single_account(self) -> None:
+        """添加单个账号。空输入给出提示，不静默失败。"""
+        raw = self._account_input.text().strip()
+        if not raw:
+            self._set_result_caption("请输入账号链接或 ID。", warn=True)
+            self._account_input.setFocus()
+            return
+        # 平台留空表示自动识别（parse_accounts_text 会按链接特征判断）。
+        platform = str(self._platform_combo.currentData() or "")
+        parsed = spider_service.parse_accounts_text(raw, platform=platform)
+        if not parsed:
+            self._set_result_caption("未能从输入中识别出账号，请检查链接格式。", warn=True)
+            return
+
+        account = parsed[0]
+        name = self._account_name_input.text().strip()
+        if name:
+            account = spider_service.SpiderAccount(
+                platform=account.platform, url_or_id=account.url_or_id, name=name
+            )
+
+        if any(
+            existing.platform == account.platform and existing.url_or_id == account.url_or_id
+            for existing in self._rows
+        ):
+            self._set_result_caption(f"该账号已在列表中：{account.display_name}", warn=True)
+            return
+
+        self._rows.append(account)
+        self._persist()
+        self._refresh_accounts()
+        self._account_input.clear()
+        self._account_name_input.clear()
+        self._set_result_caption(f"已添加：{account.display_name}（{account.platform_label}）")
+
     def _build_accounts_table(self) -> QWidget:
         self._accounts_table = QTableWidget(0, len(ACCOUNT_COLUMNS))
         self._accounts_table.setHorizontalHeaderLabels(list(ACCOUNT_COLUMNS))
@@ -254,7 +327,7 @@ class SpiderPage(QWidget):
 
         time_row = QHBoxLayout()
         time_row.setSpacing(8)
-        time_row.addWidget(Caption("时间范围"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        time_row.addWidget(Caption("时间范围（遇到超期视频自动早停）"), alignment=Qt.AlignmentFlag.AlignVCenter)
         self._time_mode = _combo(
             [(value, label) for value, label in spider_service.TIME_MODES]
         )
@@ -283,12 +356,12 @@ class SpiderPage(QWidget):
         self._filter_by = _combo([(value, label) for value, label in spider_service.FILTER_MODES])
         filter_row.addWidget(self._filter_by)
 
-        filter_row.addWidget(Caption("跨账号 ≥"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        filter_row.addWidget(Caption("共同带货账号数 ≥ N（共性爆品核心）"), alignment=Qt.AlignmentFlag.AlignVCenter)
         self._min_accounts = QSpinBox()
         self._min_accounts.setRange(1, 50)
         filter_row.addWidget(self._min_accounts)
 
-        filter_row.addWidget(Caption("总频次 ≥"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        filter_row.addWidget(Caption("累计带货频次 ≥ M"), alignment=Qt.AlignmentFlag.AlignVCenter)
         self._min_occurrences = QSpinBox()
         self._min_occurrences.setRange(1, 200)
         filter_row.addWidget(self._min_occurrences)
@@ -297,7 +370,7 @@ class SpiderPage(QWidget):
 
         advanced_row = QHBoxLayout()
         advanced_row.setSpacing(8)
-        self._enable_fuzzy = QCheckBox("相似款自动合并")
+        self._enable_fuzzy = QCheckBox("开启智能去噪与同款商品模糊合并")
         advanced_row.addWidget(self._enable_fuzzy)
         self._fuzzy_threshold = QDoubleSpinBox()
         self._fuzzy_threshold.setRange(0.5, 1.0)

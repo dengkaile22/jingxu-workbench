@@ -712,7 +712,94 @@ def test_failed_run_keeps_failure_message(qapp, tmp_path: Path) -> None:  # noqa
     assert "没有发现有带货商品" not in page._result_caption.text()
 
 
-# ── 表格可读性（窄窗口下不得挤掉列）────────────────────────────────────────
+# ── 单条添加对标账号（对齐 .NET「添加对标账号」）──────────────────────────
+
+
+def test_single_add_detects_platform_from_link(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """默认必须自动识别平台。
+
+    此前下拉框默认「抖音」被当成强制平台，粘贴快手链接会被存成抖音账号。
+    """
+    page = _page(tmp_path)
+    assert page._platform_combo.currentData() == ""
+
+    page._account_input.setText(
+        "https://v.kuaishou.com/KoL53UgI 看了这么多快手，还是「牛奶巧巧」最好玩了！"
+    )
+    page._add_single_account()
+
+    assert len(page.accounts) == 1
+    assert page.accounts[0].platform == "kuaishou"
+    assert page.accounts[0].name == "牛奶巧巧"
+
+
+def test_single_add_accepts_douyin_link(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._account_input.setText("https://www.douyin.com/user/MS4wLjABAAAAxyz")
+    page._add_single_account()
+
+    assert page.accounts[0].platform == "douyin"
+
+
+def test_single_add_honours_manual_platform(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """手动选平台时应覆盖自动识别（用于纯 ID 这类无法判断的输入）。"""
+    page = _page(tmp_path)
+    page._platform_combo.setCurrentIndex(page._platform_combo.findData("kuaishou"))
+    page._account_input.setText("abc123")
+    page._add_single_account()
+
+    assert page.accounts[0].platform == "kuaishou"
+
+
+def test_single_add_applies_note_name(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._account_input.setText("https://www.douyin.com/user/MS4wLjABAAAAxyz")
+    page._account_name_input.setText("达人A")
+    page._add_single_account()
+
+    assert page.accounts[0].name == "达人A"
+    # 输入框应清空，便于连续添加
+    assert page._account_input.text() == ""
+    assert page._account_name_input.text() == ""
+
+
+def test_single_add_rejects_duplicate(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._account_input.setText("https://v.kuaishou.com/KoL53UgI")
+    page._add_single_account()
+    page._account_input.setText("https://v.kuaishou.com/KoL53UgI")
+    page._add_single_account()
+
+    assert len(page.accounts) == 1
+    assert page._result_caption.objectName() == "CaptionWarn"
+    assert "已在列表中" in page._result_caption.text()
+
+
+def test_single_add_warns_on_empty_input(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._account_input.setText("   ")
+    page._add_single_account()
+
+    assert page.accounts == []
+    assert page._result_caption.objectName() == "CaptionWarn"
+    assert "请输入" in page._result_caption.text()
+
+
+def test_single_add_persists(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._account_input.setText("https://www.douyin.com/user/MS4wLjABAAAAxyz")
+    page._add_single_account()
+
+    assert len(SpiderConfigStore(page._store.path).load().accounts) == 1
+
+
+def test_spider_page_matches_net_wording(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """关键文案对齐 .NET SpiderView。"""
+    page = _page(tmp_path)
+
+    assert page._import_toggle.text() == "批量导入"
+    assert page._enable_fuzzy.text() == "开启智能去噪与同款商品模糊合并"
+    assert page._platform_combo.itemText(0) == "自动识别"
 
 
 def test_accounts_table_keeps_readable_minimum_width(qapp, tmp_path: Path) -> None:  # noqa: ANN001

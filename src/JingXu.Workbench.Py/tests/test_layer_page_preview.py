@@ -23,14 +23,20 @@ def qapp():  # noqa: ANN201
     return QApplication.instance() or QApplication(["jingxu-tests"])
 
 
-def _page(tmp_path: Path, *, provider=None, name: str = "stickers.json") -> LayerPage:  # noqa: ANN001
-    store = LayerStore(LayerKind.STICKER, store_path=tmp_path / name)
-    source = tmp_path / "贴纸.png"
+def _page(tmp_path: Path, *, provider=None, name: str = "overlays.json") -> LayerPage:  # noqa: ANN001
+    """构造蒙版页。
+
+    本文件测的是「高度上限 / 分割位置 / 合成预览」——这些是**蒙版专属**能力。
+    贴纸页按 .NET 结构只保留贴纸画法（位置/尺寸/透明度/旋转/宽高比锁定），
+    因此这里必须用 OVERLAY，否则测的是不存在的控件。
+    """
+    store = LayerStore(LayerKind.OVERLAY, store_path=tmp_path / name)
+    source = tmp_path / "蒙版.png"
     source.write_bytes(b"stub")
     store.add(source)
     return LayerPage(
         store,
-        title="贴纸轨道",
+        title="蒙版模板",
         file_filter="*",
         hint="测试",
         ffmpeg=Path("ffmpeg"),

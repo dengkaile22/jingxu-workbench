@@ -43,6 +43,7 @@ from jingxu.infrastructure.project_store import (
 )
 from jingxu.infrastructure.queue import JobState, RenderJob, RenderQueue
 from jingxu.infrastructure.subtitle_store import SubtitleStore
+from jingxu.infrastructure.sticker_library import StickerLibrary
 from jingxu.ui import icons, theme
 from jingxu.ui.audio_page import AudioPage
 from jingxu.ui.composition_page import CompositionPage
@@ -269,6 +270,8 @@ class ShellWindow(QMainWindow):
         self._download_queue = DownloadQueue(default_download_directory())
         self._overlay_store = LayerStore(LayerKind.OVERLAY)
         self._sticker_store = LayerStore(LayerKind.STICKER)
+        # 贴纸素材库与轨道分离（对齐 .NET 贴纸页）：库里放素材，轨道从库中添加。
+        self._sticker_library = StickerLibrary()
         self._subtitle_store = SubtitleStore()
 
         bridge = QueueBridge(self)
@@ -501,9 +504,10 @@ class ShellWindow(QMainWindow):
             self._sticker_store,
             title="贴纸轨道",
             file_filter="贴纸素材 (*.png *.webp *.gif *.mp4 *.mov);;所有文件 (*)",
-            hint="贴纸建议使用透明底 PNG/WebP；视频贴纸会循环播放并只在时段内显示。",
+            hint="贴纸素材来自上方「贴纸素材库」；视频贴纸会循环播放并只在时段内显示。",
             ffmpeg=self._ffmpeg,
             base_video_provider=self._base_material,
+            sticker_library=self._sticker_library,
         )
         self._sticker_page.layers_changed.connect(self._refresh_layer_summary)
         self._sticker_page.layers_changed.connect(self._mark_dirty)
@@ -1244,7 +1248,11 @@ class ShellWindow(QMainWindow):
             edges |= Qt.Edge.TopEdge
         elif position.y() >= self.height() - margin:
             edges |= Qt.Edge.BottomEdge
-        return edges if int(edges) else None
+        # 注意：PySide6 6.x 里 Qt.Edge 是 Flag 枚举，**不能直接 int()**，
+        # 否则每次鼠标左键按下都会抛
+        # 「TypeError: int() argument must be ... not 'Edge'」，
+        # 表现为窗口边缘拖拽调整大小失效并刷满崩溃日志。用 .value 取数值。
+        return edges if int(edges.value) else None
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         if self._dirty and not self._suppress_close_prompt:

@@ -166,3 +166,137 @@ def test_row_text_shows_ratio_marker(qapp, tmp_path: Path) -> None:  # noqa: ANN
     item = page._list.item(0)
     assert item is not None
     assert "锁定 1:1" in item.text()
+
+
+# ── 贴纸页与蒙版页的分工（对齐 .NET）────────────────────────────────────────
+
+
+def _sticker_page(tmp_path: Path, name: str = "sticker-tracks.json"):  # noqa: ANN202
+    from jingxu.infrastructure.sticker_library import StickerLibrary
+
+    library = StickerLibrary(tmp_path / "sticker-library.json")
+    source = tmp_path / "贴纸.png"
+    source.write_bytes(b"stub")
+    library.add([source])
+    return LayerPage(
+        LayerStore(LayerKind.STICKER, store_path=tmp_path / name),
+        title="贴纸轨道",
+        file_filter="*",
+        hint="测试",
+        ffmpeg=Path("ffmpeg"),
+        sticker_library=library,
+    )
+
+
+def test_sticker_page_has_material_library(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """贴纸页应是「素材库 + 轨道」两段式：轨道从库里「添加」生成。
+
+    Python 版此前没有素材库，只能靠「导入素材」直接建轨道，用起来像蒙版页的
+    简化版——用户反馈「贴纸功能怎么和蒙版一样了」。
+    """
+    page = _sticker_page(tmp_path)
+
+    assert page._is_sticker is True
+    assert page._library_list.count() == 1
+    assert "素材库 1 项" in page._library_caption.text()
+
+    page._library_list.setCurrentRow(0)
+    page._add_track_from_library()
+
+    assert page._list.count() == 1
+    assert "已从素材库添加轨道" in page._status.text()
+
+
+def test_sticker_page_hides_mask_only_controls(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """贴纸只保留画法（位置/尺寸/透明度/旋转/宽高比），不显示蒙版专属参数。"""
+    page = _sticker_page(tmp_path)
+
+    for attribute in (
+        "_feather",
+        "_fit",
+        "_split_position",
+        "_remove_black",
+        "_mix_audio",
+        "_source_crop_canvas",
+        "_source_crop_y",
+        "_start_clip",
+    ):
+        assert getattr(page, attribute) is None, f"{attribute} 不应出现在贴纸页"
+
+    for attribute in ("_x", "_y", "_width", "_height", "_opacity", "_rotation", "_fixed_ratio"):
+        assert getattr(page, attribute) is not None, f"{attribute} 应保留"
+
+
+def test_sticker_page_has_no_composition_preview(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """「合成预览」渲染主片+蒙版静帧，是蒙版专属；.NET 贴纸页没有该区块。"""
+    page = _sticker_page(tmp_path)
+    assert page._preview_button is None
+
+
+def test_mask_page_keeps_its_own_controls(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """蒙版页参数集必须保持不变，改造不能伤到它。"""
+    store = LayerStore(LayerKind.OVERLAY, store_path=tmp_path / "overlay-tracks.json")
+    source = tmp_path / "蒙版.png"
+    source.write_bytes(b"stub")
+    store.add(source)
+    page = LayerPage(
+        store,
+        title="蒙版模板",
+        file_filter="*",
+        hint="测试",
+        ffmpeg=Path("ffmpeg"),
+    )
+
+    assert page._is_sticker is False
+    assert not hasattr(page, "_library_list")
+    for attribute in ("_feather", "_fit", "_split_position", "_remove_black"):
+        assert getattr(page, attribute) is not None
+    assert page._preview_button is not None
+
+
+def test_random_library_toggle_reports_empty_library(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """开启随机替换但素材库为空时要提示，否则渲染时静默不替换。"""
+    from jingxu.infrastructure.sticker_library import StickerLibrary
+
+    library = StickerLibrary(tmp_path / "empty-library.json")
+    page = LayerPage(
+        LayerStore(LayerKind.STICKER, store_path=tmp_path / "tracks.json"),
+        title="贴纸轨道",
+        file_filter="*",
+        hint="测试",
+        ffmpeg=Path("ffmpeg"),
+        sticker_library=library,
+    )
+
+    page._random_library.setChecked(True)
+
+    assert page.random_library_enabled is True
+    assert "素材库为空" in page._status.text()
+    assert page._status.objectName() == "CaptionWarn"
+
+
+def test_random_library_toggle_with_entries(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _sticker_page(tmp_path)
+    page._random_library.setChecked(True)
+
+    assert page.random_library_enabled is True
+    assert "已开启随机贴纸库" in page._status.text()
+
+
+def test_clear_library_keeps_tracks(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """清空素材库不应影响已建好的轨道。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    page = _sticker_page(tmp_path)
+    page._library_list.setCurrentRow(0)
+    page._add_track_from_library()
+    assert page._list.count() == 1
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    page._clear_library()
+
+    assert page._library_list.count() == 0
+    assert page._list.count() == 1, "轨道应保留"
+    assert "轨道未改动" in page._status.text()

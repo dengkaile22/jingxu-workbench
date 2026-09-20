@@ -38,9 +38,10 @@ from jingxu.domain.media import MediaAsset
 from jingxu.domain.render import OverlayFitMode, RenderSettings
 from jingxu.infrastructure.frame_preview import FramePreviewError, render_composite_frame
 from jingxu.infrastructure.layer_store import LayerStore
+from jingxu.infrastructure.sticker_library import StickerLibrary
 from jingxu.ui import theme
 from jingxu.ui.layer_preview import LayerPreviewCanvas
-from jingxu.ui.widgets import Caption, SecondaryButton, SectionHeader
+from jingxu.ui.widgets import Caption, PrimaryButton, SecondaryButton, SectionHeader
 
 # .NET 预设：画中画（右下角）与顶部横幅（截图类场景）。
 PIP_PRESET = {"x_percent": 73.0, "y_percent": 73.0, "width_percent": 42.0, "height_percent": 0.0, "fit": "contain"}
@@ -83,12 +84,18 @@ class LayerPage(QWidget):
         hint: str,
         ffmpeg: Path | None = None,
         base_video_provider: Callable[[], object] | None = None,
+        sticker_library: StickerLibrary | None = None,
     ) -> None:
         super().__init__()
         self._store = store
         self._file_filter = file_filter
         self._ffmpeg = Path(ffmpeg) if ffmpeg else None
         self._base_video_provider = base_video_provider
+        # 贴纸模式：素材库 + 轨道两段式，参数只保留贴纸画法（对齐 .NET 贴纸页）。
+        # 蒙版模式下这些属性不参与，蒙版页保持原有参数集不变。
+        self._is_sticker = store.kind is LayerKind.STICKER
+        self._library = sticker_library or (StickerLibrary() if self._is_sticker else None)
+        self._use_random_library = False
         self._layers: list[LayerSpec] = []
         self._updating = False
         self._aspect = "9:16"
@@ -121,6 +128,17 @@ class LayerPage(QWidget):
         layout.addWidget(self._status)
 
         layout.addSpacing(12)
+        if self._is_sticker:
+            # .NET 贴纸页：先「贴纸素材库」，再「贴纸轨道」。轨道由素材库「添加」生成。
+            layout.addWidget(SectionHeader("贴纸素材库"))
+            layout.addSpacing(6)
+            layout.addLayout(self._build_sticker_library_bar())
+            layout.addSpacing(6)
+            layout.addWidget(self._build_sticker_library_list())
+            layout.addSpacing(14)
+            layout.addWidget(SectionHeader("贴纸轨道"))
+            layout.addSpacing(6)
+
         preview_row = QHBoxLayout()
         preview_row.setSpacing(12)
         self._list = QListWidget()
@@ -141,24 +159,33 @@ class LayerPage(QWidget):
         layout.addSpacing(6)
         layout.addWidget(Caption("拖拽预览中的图层可调整位置，滚轮调整宽度。"))
 
-        layout.addSpacing(14)
-        layout.addWidget(SectionHeader("合成预览"))
-        layout.addSpacing(8)
-        layout.addLayout(self._build_preview_section())
+        if not self._is_sticker:
+            # 「合成预览」是蒙版专属：它按真实滤镜链渲染主片+蒙版静帧。
+            # 贴纸是叠加元素，.NET 贴纸页没有这一区，故不显示。
+            layout.addSpacing(14)
+            layout.addWidget(SectionHeader("合成预览"))
+            layout.addSpacing(8)
+            layout.addLayout(self._build_preview_section())
 
         layout.addSpacing(16)
         layout.addWidget(SectionHeader("叠加参数"))
         layout.addSpacing(8)
         layout.addWidget(Caption(hint))
         layout.addSpacing(8)
-        layout.addWidget(self._build_form())
+        layout.addWidget(self._build_sticker_form() if self._is_sticker else self._build_form())
         layout.addStretch(0)
 
-        bridge = FramePreviewBridge(self)
-        bridge.done.connect(self._on_preview_done)
-        bridge.failed.connect(self._on_preview_failed)
-        self._bridge = bridge
-        self._preview_button.clicked.connect(self._start_preview)
+        # 合成预览（真实滤镜静帧）是蒙版专属：贴纸页没有该区块，
+        # 因此贴纸模式下把按钮置空，其余代码统一以 None 判断跳过。
+        if self._is_sticker:
+            self._preview_button = None
+            self._refresh_library()
+        else:
+            bridge = FramePreviewBridge(self)
+            bridge.done.connect(self._on_preview_done)
+            bridge.failed.connect(self._on_preview_failed)
+            self._bridge = bridge
+            self._preview_button.clicked.connect(self._start_preview)
 
         self._reload()
         self._refresh_preview_availability()
@@ -209,6 +236,242 @@ class LayerPage(QWidget):
         controls.addStretch(1)
         row.addLayout(controls, stretch=1)
         return row
+
+    def _build_sticker_library_bar(self) -> QHBoxLayout:
+        """素材库工具条：导入贴纸 / 添加到轨道 / 清空素材库。"""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        import_button = SecondaryButton("导入贴纸…")
+        import_button.setToolTip("把 PNG/GIF/WebP 或视频贴纸导入素材库（不会直接生成轨道）。")
+        import_button.clicked.connect(self._import_to_library)
+        row.addWidget(import_button)
+
+        self._add_from_library = PrimaryButton("添加到轨道")
+        self._add_from_library.setToolTip("用素材库里选中的贴纸生成一条贴纸轨道。")
+        self._add_from_library.clicked.connect(self._add_track_from_library)
+        self._add_from_library.setEnabled(False)
+        row.addWidget(self._add_from_library)
+
+        clear_button = SecondaryButton("清空素材库")
+        clear_button.clicked.connect(self._clear_library)
+        row.addWidget(clear_button)
+
+        self._library_caption = Caption("")
+        row.addWidget(self._library_caption, stretch=1)
+        return row
+
+    def _build_sticker_library_list(self) -> QWidget:
+        self._library_list = QListWidget()
+        self._library_list.setObjectName("CompositionMaterials")
+        self._library_list.setMinimumHeight(112)
+        self._library_list.setMaximumHeight(150)
+        self._library_list.currentRowChanged.connect(self._on_library_selection_changed)
+        return self._library_list
+
+    def _build_sticker_form(self) -> QWidget:
+        """贴纸参数：只保留「贴纸画法」，不含羽化/蒙版适配/源取景等蒙版专属项。"""
+        widget = QWidget()
+        grid = QGridLayout(widget)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+
+        self._start = self._make_seconds_spin()
+        self._end = self._make_seconds_spin()
+        grid.addWidget(Caption("起点（秒）"), 0, 0)
+        grid.addWidget(self._start, 0, 1)
+        grid.addWidget(Caption("终点（0=片尾）"), 0, 2)
+        grid.addWidget(self._end, 0, 3)
+
+        self._x = self._make_percent_spin(50)
+        self._y = self._make_percent_spin(50)
+        grid.addWidget(Caption("中心 X (%)"), 1, 0)
+        grid.addWidget(self._x, 1, 1)
+        grid.addWidget(Caption("中心 Y (%)"), 1, 2)
+        grid.addWidget(self._y, 1, 3)
+
+        self._width = self._make_percent_spin(30)
+        self._height = QSpinBox()
+        self._height.setRange(0, 100)
+        self._height.setSuffix("%")
+        self._height.setSpecialValueText("自然高度")
+        grid.addWidget(Caption("宽度 (%)"), 2, 0)
+        grid.addWidget(self._width, 2, 1)
+        grid.addWidget(Caption("高度 (%)"), 2, 2)
+        grid.addWidget(self._height, 2, 3)
+
+        self._opacity = QSpinBox()
+        self._opacity.setRange(0, 100)
+        self._opacity.setValue(100)
+        self._opacity.setSuffix("%")
+        self._rotation = QSpinBox()
+        self._rotation.setRange(-180, 180)
+        self._rotation.setSuffix("°")
+        grid.addWidget(Caption("透明度（%）"), 3, 0)
+        grid.addWidget(self._opacity, 3, 1)
+        grid.addWidget(Caption("旋转（±180°）"), 3, 2)
+        grid.addWidget(self._rotation, 3, 3)
+
+        # 比例行：预览画幅（只影响本页画布）与宽高比锁定
+        ratio_row = QHBoxLayout()
+        ratio_row.setSpacing(8)
+        ratio_row.addWidget(Caption("预览画幅"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._aspect_mode = QComboBox()
+        for mode in LayerAspectMode:
+            self._aspect_mode.addItem(mode.display_text, mode.value)
+        self._aspect_mode.setToolTip("只影响本页预览画布比例，不改变成片画幅。")
+        self._aspect_mode.currentIndexChanged.connect(self._on_aspect_mode_changed)
+        ratio_row.addWidget(self._aspect_mode)
+
+        ratio_row.addWidget(Caption("锁定宽高比"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._fixed_ratio = QComboBox()
+        for ratio in LayerFixedRatio:
+            self._fixed_ratio.addItem(ratio.display_text, ratio.value)
+        self._fixed_ratio.setToolTip("锁定后调整宽度或高度会按比例联动另一个方向。")
+        self._fixed_ratio.currentIndexChanged.connect(self._on_fixed_ratio_changed)
+        ratio_row.addWidget(self._fixed_ratio)
+
+        self._ratio_hint = Caption("")
+        ratio_row.addWidget(self._ratio_hint)
+        ratio_row.addStretch(1)
+        grid.addLayout(ratio_row, 4, 0, 1, 4)
+
+        options = QHBoxLayout()
+        options.setSpacing(14)
+        self._enabled = QCheckBox("启用该图层")
+        options.addWidget(self._enabled)
+        # 「随机贴纸库」：渲染时把轨道素材替换为素材库里随机一款（确定性洗牌）。
+        self._random_library = QCheckBox("随机贴纸库（每次成片从素材库随机替换）")
+        self._random_library.setToolTip(
+            "开启后，每条轨道会从素材库中按种子确定性选取一款贴纸："
+            "同一成片序号结果固定可复现，一个成片内多条轨道不重复。"
+        )
+        self._random_library.stateChanged.connect(self._on_random_library_changed)
+        options.addWidget(self._random_library)
+        options.addStretch(1)
+        grid.addLayout(options, 5, 0, 1, 4)
+
+        for spin in (self._start, self._end, self._x, self._y, self._opacity, self._rotation):
+            spin.valueChanged.connect(self._on_form_changed)
+        self._width.valueChanged.connect(self._on_width_changed)
+        self._height.valueChanged.connect(self._on_height_changed)
+        self._enabled.stateChanged.connect(self._on_form_changed)
+
+        self._split_position = None
+        self._top_fade = None
+        self._feather = None
+        self._source_crop_y = None
+        self._fit = None
+        self._remove_black = None
+        self._mix_audio = None
+        self._source_crop_canvas = None
+        self._start_clip = None
+        return widget
+
+    # ─────────────────────────── 贴纸素材库操作 ───────────────────────────
+
+    def _refresh_library(self) -> None:
+        if self._library is None:
+            return
+        self._library.prune_missing()
+        entries = self._library.entries
+        previous = self._library_list.currentRow()
+        self._library_list.blockSignals(True)
+        try:
+            self._library_list.clear()
+            for entry in entries:
+                item = QListWidgetItem(f"{entry.display_name} · {entry.kind_text}")
+                item.setData(Qt.ItemDataRole.UserRole, entry.id)
+                item.setToolTip(f"{entry.path}\n双击可添加到轨道")
+                self._library_list.addItem(item)
+        finally:
+            self._library_list.blockSignals(False)
+        if 0 <= previous < len(entries):
+            self._library_list.setCurrentRow(previous)
+        self._library_caption.setText(
+            f"素材库 {len(entries)} 项" if entries else "素材库为空，点「导入贴纸…」添加"
+        )
+        self._add_from_library.setEnabled(bool(entries))
+        if self._random_library.isChecked() and not entries:
+            self._set_status(
+                "已开启随机贴纸库，但素材库为空；渲染时不会替换贴纸。请先导入贴纸。",
+                warn=True,
+            )
+
+    def _on_library_selection_changed(self, row: int) -> None:
+        self._add_from_library.setEnabled(row >= 0)
+
+    def _import_to_library(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "导入贴纸素材", "", self._file_filter)
+        if not paths:
+            return
+        assert self._library is not None
+        added = self._library.add([Path(path) for path in paths])
+        self._refresh_library()
+        skipped = len(paths) - added
+        message = f"已导入 {added} 项贴纸素材。"
+        if skipped > 0:
+            message += f"（{skipped} 项已在库中或格式不支持）"
+        self._set_status(message)
+
+    def _add_track_from_library(self) -> None:
+        """用素材库里选中的贴纸生成一条轨道（对齐 .NET「添加」）。"""
+        if self._library is None:
+            return
+        row = self._library_list.currentRow()
+        entries = self._library.entries
+        if not (0 <= row < len(entries)):
+            self._set_status("请先在素材库中选择一项贴纸。", warn=True)
+            return
+        entry = entries[row]
+        if not entry.exists():
+            self._set_status(f"贴纸文件已不存在：{entry.path}", warn=True)
+            return
+        self._store.add(entry.path)
+        self._reload(keep_selection=False)
+        rows = self._list.count()
+        if rows:
+            self._list.setCurrentRow(rows - 1)
+        self._set_status(f"已从素材库添加轨道：{entry.display_name}")
+
+    def _clear_library(self) -> None:
+        if self._library is None:
+            return
+        entries = self._library.entries
+        if not entries:
+            self._set_status("素材库已经是空的。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "清空素材库",
+            f"确认清空贴纸素材库（{len(entries)} 项）？已存在的贴纸轨道不会受影响。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        removed = self._library.clear()
+        self._refresh_library()
+        self._set_status(f"已清空 {removed} 项贴纸素材（轨道未改动）。")
+
+    def _on_random_library_changed(self, *_args: object) -> None:
+        self._use_random_library = bool(self._random_library.isChecked())
+        if self._use_random_library and self._library is not None and not self._library.entries:
+            self._set_status(
+                "已开启随机贴纸库，但素材库为空。请先导入贴纸，否则渲染时不会替换。",
+                warn=True,
+            )
+            return
+        self._set_status(
+            "已开启随机贴纸库：每次成片会按种子从素材库替换贴纸。"
+            if self._use_random_library
+            else "已关闭随机贴纸库：轨道使用各自绑定的素材。"
+        )
+
+    @property
+    def random_library_enabled(self) -> bool:
+        """是否开启随机贴纸库（供渲染编排读取）。"""
+        return self._use_random_library
 
     def _build_form(self) -> QWidget:
         widget = QWidget()
@@ -441,7 +704,9 @@ class LayerPage(QWidget):
             self._fixed_ratio,
             self._aspect_mode,
         ):
-            widget.setEnabled(has_selection)
+            # 贴纸模式下蒙版专属控件不存在（值为 None），跳过即可。
+            if widget is not None:
+                widget.setEnabled(has_selection)
 
         if layer is not None:
             self._start.setValue(layer.start_seconds)
@@ -453,19 +718,28 @@ class LayerPage(QWidget):
             # 透明度语义（对齐 .NET）：0 = 完全不透明，100 = 完全透明。
             self._opacity.setValue(int(round((1.0 - max(0.0, min(layer.opacity, 1.0))) * 100)))
             self._rotation.setValue(int(round(layer.rotation_degrees)))
-            self._start_clip.setValue(max(1, int(layer.start_clip_index)))
-            self._top_fade.setValue(max(0.0, min(layer.top_fade, 1.0)))
-            self._feather.setValue(max(0.0, min(layer.feather, 1.0)))
-            fit_index = self._fit.findData(layer.fit)
-            self._fit.setCurrentIndex(fit_index if fit_index >= 0 else 0)
-            self._source_crop_y.setValue(max(-1.0, min(layer.source_crop_y, 1.0)))
-            self._source_crop_canvas.setChecked(layer.source_crop_canvas)
-            self._mix_audio.setChecked((layer.audio_mode or "discard").lower() == "mix")
-            self._remove_black.setChecked(layer.remove_black)
+            if self._start_clip is not None:
+                self._start_clip.setValue(max(1, int(layer.start_clip_index)))
+            if self._top_fade is not None:
+                self._top_fade.setValue(max(0.0, min(layer.top_fade, 1.0)))
+            if self._feather is not None:
+                self._feather.setValue(max(0.0, min(layer.feather, 1.0)))
+            if self._fit is not None:
+                fit_index = self._fit.findData(layer.fit)
+                self._fit.setCurrentIndex(fit_index if fit_index >= 0 else 0)
+            if self._source_crop_y is not None:
+                self._source_crop_y.setValue(max(-1.0, min(layer.source_crop_y, 1.0)))
+            if self._source_crop_canvas is not None:
+                self._source_crop_canvas.setChecked(layer.source_crop_canvas)
+            if self._mix_audio is not None:
+                self._mix_audio.setChecked((layer.audio_mode or "discard").lower() == "mix")
+            if self._remove_black is not None:
+                self._remove_black.setChecked(layer.remove_black)
             self._enabled.setChecked(layer.enabled)
             ratio_index = self._fixed_ratio.findData(layer.fixed_ratio.value)
             self._fixed_ratio.setCurrentIndex(ratio_index if ratio_index >= 0 else 0)
-        self._sync_split_display(layer.y_percent if layer else 50.0)
+        if self._split_position is not None:
+            self._sync_split_display(layer.y_percent if layer else 50.0)
         self._updating = False
         self._refresh_ratio_hint()
         self._canvas.set_selected(layer.id if layer else None)
@@ -746,7 +1020,7 @@ class LayerPage(QWidget):
         layer = self._selected()
         if layer is None:
             return
-        fit_value = self._fit.currentData()
+        fit_value = self._fit.currentData() if self._fit is not None else OverlayFitMode.FILL_CROP.value
         updated = layer.with_changes(
             start_seconds=float(self._start.value()),
             end_seconds=float(self._end.value()),
@@ -756,15 +1030,40 @@ class LayerPage(QWidget):
             height_percent=float(self._height.value()),
             # 透明度语义（对齐 .NET）：0 = 不透明，100 = 完全透明。
             opacity=1.0 - self._opacity.value() / 100.0,
-            remove_black=self._remove_black.isChecked(),
+            # 以下为蒙版专属项：贴纸模式没有对应控件，保留图层原值不覆盖。
+            remove_black=(
+                self._remove_black.isChecked() if self._remove_black is not None else layer.remove_black
+            ),
             rotation_degrees=float(self._rotation.value()),
-            start_clip_index=max(1, int(self._start_clip.value())),
-            top_fade=max(0.0, min(float(self._top_fade.value()), 1.0)),
-            feather=max(0.0, min(float(self._feather.value()), 1.0)),
+            start_clip_index=(
+                max(1, int(self._start_clip.value())) if self._start_clip is not None else layer.start_clip_index
+            ),
+            top_fade=(
+                max(0.0, min(float(self._top_fade.value()), 1.0))
+                if self._top_fade is not None
+                else layer.top_fade
+            ),
+            feather=(
+                max(0.0, min(float(self._feather.value()), 1.0))
+                if self._feather is not None
+                else layer.feather
+            ),
             fit=str(fit_value or OverlayFitMode.FILL_CROP.value),
-            source_crop_y=max(-1.0, min(float(self._source_crop_y.value()), 1.0)),
-            source_crop_canvas=self._source_crop_canvas.isChecked(),
-            audio_mode="mix" if self._mix_audio.isChecked() else "discard",
+            source_crop_y=(
+                max(-1.0, min(float(self._source_crop_y.value()), 1.0))
+                if self._source_crop_y is not None
+                else layer.source_crop_y
+            ),
+            source_crop_canvas=(
+                self._source_crop_canvas.isChecked()
+                if self._source_crop_canvas is not None
+                else layer.source_crop_canvas
+            ),
+            audio_mode=(
+                ("mix" if self._mix_audio.isChecked() else "discard")
+                if self._mix_audio is not None
+                else layer.audio_mode
+            ),
             enabled=self._enabled.isChecked(),
         )
         if self._store.replace(updated):
@@ -774,7 +1073,8 @@ class LayerPage(QWidget):
             if item is not None:
                 item.setText(self._row_text(updated))
                 item.setCheckState(Qt.CheckState.Checked if updated.enabled else Qt.CheckState.Unchecked)
-            self._sync_split_display(updated.y_percent)
+            if self._split_position is not None:
+                self._sync_split_display(updated.y_percent)
             self._updating = False
             self._layers = self._store.layers
             self._canvas.set_layers(self._layers)
@@ -787,7 +1087,11 @@ class LayerPage(QWidget):
         同为「底边」语义；本页 Y 轴以图层中心为锚点（见 ``filter_graph`` 的
         ``y=main_h*pct-overlay_h/2``），故换算为中心 + 高度/2。
         自然高度时没有底边，该项禁用。
+
+        贴纸页没有「分割位置」（蒙版专属），此时直接返回。
         """
+        if self._split_position is None:
+            return
         height = self._height.value()
         if height > 0:
             self._split_position.setEnabled(self._selected() is not None)
@@ -887,7 +1191,13 @@ class LayerPage(QWidget):
         return asset if isinstance(asset, MediaAsset) else None
 
     def _refresh_preview_availability(self) -> None:
-        """按 FFmpeg 与主片素材可用性刷新预览按钮和提示。"""
+        """按 FFmpeg 与主片素材可用性刷新预览按钮和提示。
+
+        贴纸页没有「合成预览」区块（该区块渲染主片+蒙版的真实滤镜静帧），
+        此时 ``_preview_button`` 为 ``None``，直接跳过。
+        """
+        if self._preview_button is None:
+            return
         if self._ffmpeg is None:
             self._preview_button.setEnabled(False)
             self._set_preview_status(PREVIEW_FFMPEG_MISSING_TEXT)

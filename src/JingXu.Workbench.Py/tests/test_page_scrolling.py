@@ -85,3 +85,52 @@ def test_spider_page_is_scrollable(qapp, tmp_path: Path) -> None:  # noqa: ANN00
         check_environment=lambda: SpiderEnvironment(available=True, message="ok"),
     )
     assert page.findChildren(QScrollArea)
+
+
+# ── 窗口边缘调整大小（回归：Qt.Edge 不能直接 int()）─────────────────────────
+
+
+class _FakeWindowSurface:
+    """只提供 _edges_at 需要的几何信息。"""
+
+    _resize_margin = 6
+
+    def width(self) -> int:
+        return 1600
+
+    def height(self) -> int:
+        return 900
+
+
+@pytest.mark.parametrize(
+    ("point", "expect_edges"),
+    [
+        ((3, 300), True),      # 左边
+        ((1597, 300), True),   # 右边
+        ((800, 3), True),      # 上边
+        ((800, 897), True),    # 下边
+        ((3, 3), True),        # 左上角
+        ((800, 450), False),   # 中央不属于边缘
+    ],
+)
+def test_edges_at_does_not_raise_and_detects_edges(point, expect_edges) -> None:  # noqa: ANN001
+    """回归：``Qt.Edge`` 是 Flag 枚举，直接 ``int()`` 会抛 TypeError。
+
+    实测崩溃日志里全是
+    ``TypeError: int() argument must be ... not 'Edge'``，来自
+    ``shell_window._edges_at``，导致窗口边缘拖拽调整大小失效并刷满日志。
+    """
+    from PySide6.QtCore import QPoint
+
+    from jingxu.ui.shell_window import ShellWindow
+
+    edges = ShellWindow._edges_at(_FakeWindowSurface(), QPoint(*point))
+    assert (edges is not None) is expect_edges
+
+
+def test_edges_at_returns_none_in_centre() -> None:
+    from PySide6.QtCore import QPoint
+
+    from jingxu.ui.shell_window import ShellWindow
+
+    assert ShellWindow._edges_at(_FakeWindowSurface(), QPoint(800, 450)) is None

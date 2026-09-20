@@ -181,6 +181,11 @@ class LayerStore:
         return self._store_path
 
     @property
+    def kind(self) -> LayerKind:
+        """轨道类型（贴纸 / 蒙版）。界面据此决定显示哪些参数区。"""
+        return self._kind
+
+    @property
     def layers(self) -> list[LayerSpec]:
         return list(self._layers)
 

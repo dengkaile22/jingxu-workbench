@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QProgressBar,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -116,7 +117,19 @@ class SubtitlePage(QWidget):
         ocr_bridge.failed.connect(self._on_ocr_failed)
         self._ocr_bridge = ocr_bridge
 
-        layout = QVBoxLayout(self)
+        # 整页放进滚动区：字幕表 + 烧录样式 + 硬字幕去除 + OCR 定位很长，
+        # 窗口不够高时下方区块会被截断且无法滚动到。与合成页保持同一写法。
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(0)
 
@@ -141,7 +154,9 @@ class SubtitlePage(QWidget):
         self._table.setColumnWidth(0, 130)
         self._table.setColumnWidth(1, 130)
         self._table.itemChanged.connect(self._on_cue_edited)
-        layout.addWidget(self._table, stretch=1)
+        # 滚动区里 stretch 不再分配高度，必须给下限，否则字幕表会被压成一条。
+        self._table.setMinimumHeight(200)
+        layout.addWidget(self._table)
 
         layout.addSpacing(12)
         layout.addWidget(SectionHeader("烧录样式"))

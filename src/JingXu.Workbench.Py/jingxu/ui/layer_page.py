@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -97,7 +98,21 @@ class LayerPage(QWidget):
         self._preview_running = False
         self._preview_thread: threading.Thread | None = None
 
-        layout = QVBoxLayout(self)
+        # 整个页面放进滚动区：蒙版/贴纸的参数区很长，窗口不够高时下方选项
+        # （旋转、上淡入、羽化、预设、画幅等）会被直接截断且无法滚动到。
+        # 与合成页保持同一写法。
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        self._scroll_area = scroll
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(0)
         layout.addLayout(self._build_header(title))
@@ -112,13 +127,16 @@ class LayerPage(QWidget):
         self._list.setObjectName("CompositionMaterials")
         self._list.currentRowChanged.connect(self._on_selection_changed)
         self._list.itemChanged.connect(self._on_item_changed)
+        # 滚动区里 stretch 不再分配高度，必须给下限，否则列表会被压成一条。
+        self._list.setMinimumHeight(240)
         preview_row.addWidget(self._list, stretch=1)
 
         self._canvas = LayerPreviewCanvas()
+        self._canvas.setMinimumHeight(240)
         self._canvas.layer_moved.connect(self._on_layer_moved)
         self._canvas.layer_scaled.connect(self._on_layer_scaled)
         preview_row.addWidget(self._canvas, stretch=1)
-        layout.addLayout(preview_row, stretch=1)
+        layout.addLayout(preview_row)
 
         layout.addSpacing(6)
         layout.addWidget(Caption("拖拽预览中的图层可调整位置，滚轮调整宽度。"))

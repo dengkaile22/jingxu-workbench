@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -106,7 +107,19 @@ class SpiderPage(QWidget):
         self._bridge.finished.connect(self._on_run_finished)
         self._bridge.log.connect(self._append_log)
 
-        layout = QVBoxLayout(self)
+        # 整页放进滚动区：本页内容很长（账号表 + 门槛 + 登录 + 结果 + 日志），
+        # 窗口不够高时下方区块会被截断且无法滚动到。与合成页保持同一写法。
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(0)
 

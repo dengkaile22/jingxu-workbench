@@ -698,19 +698,53 @@ def test_failed_run_still_surfaces_diagnostics(monkeypatch, tmp_path: Path) -> N
 # ── 不得往安装目录写字节码 ──────────────────────────────────────────────────
 
 
-def test_spider_command_uses_dash_b_flag() -> None:
-    """必须带 -B：随包运行时位于安装目录，写 .pyc 会污染安装目录。
+def test_every_bundled_python_launch_disables_bytecode() -> None:
+    """扫描 spider 模块内所有启动随包解释器的地方，必须带 -B。
 
-    实测：不带 -B 跑一次 cli.py 会在 runtime/spider/core 下生成 __pycache__，
-    导致安装目录文件数与 MSI 清单不一致，而且卸载不会清理这些「安装后新增」文件。
-    环境变量 PYTHONDONTWRITEBYTECODE 可能被用户 shell 配置覆盖，因此再加 -B 保险。
+    实测教训：先只给 SpiderRunner 加了 -B，但 check_environment 的启动探测同样会
+    调用随包解释器，于是**应用一启动**就在安装目录写出 __pycache__，导致文件数
+    与 MSI 清单不一致（且卸载不清理这类「安装后新增」文件）。
+    这类遗漏用静态扫描守住，比逐个记着更可靠。
     """
+    import ast
+
     source = Path(spider_service.__file__).read_text(encoding="utf-8")
-    assert '"-B"' in source or "'-B'" in source, "SpiderRunner 未给随包解释器加 -B"
+    tree = ast.parse(source)
+    offenders: list[int] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+            continue
+        if func.value.id != "subprocess" or func.attr not in {"run", "Popen"}:
+            continue
+        # 只关心启动随包 python 的调用：命令列表里以 python 解释器变量开头
+        if not node.args:
+            continue
+        first = node.args[0]
+        if not isinstance(first, ast.List) or not first.elts:
+            continue
+        head = first.elts[0]
+        launches_python = (
+            isinstance(head, ast.Attribute) and head.attr == "python"
+        ) or (isinstance(head, ast.Name) and "python" in head.id)
+        if not launches_python:
+            continue
+        literals = [
+            element.value
+            for element in first.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        ]
+        if "-B" not in literals:
+            offenders.append(node.lineno)
+
+    assert offenders == [], f"以下调用未加 -B，会往安装目录写字节码：行 {offenders}"
 
 
-def test_spider_environment_disables_bytecode(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    """环境变量也要设：两道保险互为补充。"""
+def test_spider_python_launch_sets_dont_write_bytecode_env(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """环境变量也要设：-B 是命令行保险，两者互为补充（用户 shell 可能覆盖环境变量）。"""
     captured: dict[str, str] = {}
 
     class _Process:

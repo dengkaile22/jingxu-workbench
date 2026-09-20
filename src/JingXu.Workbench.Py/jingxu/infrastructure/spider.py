@@ -262,8 +262,10 @@ def check_environment(*, timeout: float = 60.0) -> SpiderEnvironment:
         "print(json.dumps([m for m in mods if u.find_spec(m) is None]))"
     )
     try:
+        # -B：禁止写 __pycache__。这个探测在应用启动时就会跑，随包运行时位于
+        # 安装目录，写字节码会污染安装目录（且卸载不清理这类"安装后新增"文件）。
         completed = subprocess.run(
-            [python, "-c", probe],
+            [python, "-B", "-c", probe],
             **no_window_kwargs(),
             capture_output=True,
             text=True,

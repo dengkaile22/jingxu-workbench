@@ -119,14 +119,17 @@ ASPECT_SIZES: dict[str, tuple[int, int]] = {
 }
 
 RESOLUTION_OPTIONS = (
+    # 文案对齐 .NET CompositionView「输出分辨率」。
+    # 保留 480P 作为额外档位（.NET 只有三档，多一档不影响既有选择）。
     ("原画（保持当前画幅）", "original"),
-    ("1080P（短边 1080）", "p1080"),
-    ("720P（短边 720）", "p720"),
-    ("480P（短边 480）", "p480"),
+    ("1080P", "p1080"),
+    ("720P", "p720"),
+    ("480P", "p480"),
 )
 
 FPS_OPTIONS = (
-    ("原帧率", "original"),
+    # 文案对齐 .NET CompositionView「输出帧率」。
+    ("原帧率（跟随首段）", "original"),
     ("24 fps", "24"),
     ("25 fps", "25"),
     ("30 fps", "30"),
@@ -530,7 +533,7 @@ class CompositionPage(QWidget):
         row.addWidget(self._fps)
 
         row.addSpacing(12)
-        row.addWidget(Caption("非原画时按短边等比缩放输出画幅。"), stretch=1)
+        row.addWidget(Caption("非原画时按短边等比缩放输出画幅（1080P / 720P / 480P）。"), stretch=1)
         return row
 
     def _build_aspect_row(self) -> QVBoxLayout:

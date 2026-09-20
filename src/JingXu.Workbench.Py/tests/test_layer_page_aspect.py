@@ -300,3 +300,99 @@ def test_clear_library_keeps_tracks(qapp, tmp_path: Path, monkeypatch) -> None: 
     assert page._library_list.count() == 0
     assert page._list.count() == 1, "轨道应保留"
     assert "轨道未改动" in page._status.text()
+
+
+# ── 源素材取景（对齐 .NET「源素材取景（独立于输出叠层框）」）────────────────
+
+
+def _mask_page(tmp_path: Path, name: str = "mask-tracks.json"):  # noqa: ANN202
+    store = LayerStore(LayerKind.OVERLAY, store_path=tmp_path / name)
+    source = tmp_path / "蒙版.png"
+    source.write_bytes(b"stub")
+    store.add(source)
+    return LayerPage(
+        store,
+        title="蒙版模板",
+        file_filter="*",
+        hint="测试",
+        ffmpeg=Path("ffmpeg"),
+    )
+
+
+def test_mask_page_has_source_crop_controls(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """源取景此前只在后端与持久化里存在，界面没有入口。"""
+    page = _mask_page(tmp_path)
+
+    for attribute in ("_crop_x", "_crop_y", "_crop_width", "_crop_height", "_crop_reset"):
+        assert getattr(page, attribute) is not None, f"{attribute} 应存在"
+
+    assert "自动取景" in page._crop_hint.text()
+    assert page._store.layers[0].source_crop_bounds is None
+
+
+def test_setting_source_crop_persists_bounds(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _mask_page(tmp_path)
+
+    page._crop_x.setValue(10)
+    page._crop_y.setValue(20)
+    page._crop_width.setValue(80)
+    page._crop_height.setValue(70)
+
+    assert page._store.layers[0].source_crop_bounds == pytest.approx((0.1, 0.2, 0.8, 0.7))
+    assert "已手动取景" in page._crop_hint.text()
+
+
+def test_zero_width_means_automatic(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """宽或高置 0 视为「不手动取景」，回到自动。"""
+    page = _mask_page(tmp_path)
+    page._crop_x.setValue(10)
+    page._crop_width.setValue(80)
+    assert page._store.layers[0].source_crop_bounds is not None
+
+    page._crop_width.setValue(0)
+
+    assert page._store.layers[0].source_crop_bounds is None
+
+
+def test_reset_source_crop_restores_automatic(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _mask_page(tmp_path)
+    page._crop_x.setValue(30)
+    page._crop_width.setValue(50)
+    assert page._store.layers[0].source_crop_bounds is not None
+
+    page._reset_source_crop()
+
+    assert page._store.layers[0].source_crop_bounds is None
+    assert page._crop_x.value() == 0
+    assert page._crop_width.value() == 100
+    assert "已重置" in page._status.text()
+
+
+def test_source_crop_backfills_from_layer(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """持久化的取景值要能回填到控件，否则用户看不到已保存的设置。"""
+    store = LayerStore(LayerKind.OVERLAY, store_path=tmp_path / "backfill.json")
+    source = tmp_path / "蒙版.png"
+    source.write_bytes(b"stub")
+    layer = store.add(source)
+    store.replace(layer.with_changes(source_crop_bounds=(0.2, 0.1, 0.5, 0.4)))
+
+    page = LayerPage(
+        store,
+        title="蒙版模板",
+        file_filter="*",
+        hint="测试",
+        ffmpeg=Path("ffmpeg"),
+    )
+
+    assert page._crop_x.value() == 20
+    assert page._crop_y.value() == 10
+    assert page._crop_width.value() == 50
+    assert page._crop_height.value() == 40
+
+
+def test_sticker_page_has_no_source_crop(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """贴纸本身就是素材，没有「源素材取景」概念。"""
+    page = _sticker_page(tmp_path)
+    assert page._crop_x is None
+    assert page._crop_reset is None
+    assert page._crop_hint is None

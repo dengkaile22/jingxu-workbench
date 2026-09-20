@@ -290,9 +290,9 @@ class LayerPage(QWidget):
 
         self._x = self._make_percent_spin(50)
         self._y = self._make_percent_spin(50)
-        grid.addWidget(Caption("中心 X (%)"), 1, 0)
+        grid.addWidget(Caption("X %"), 1, 0)
         grid.addWidget(self._x, 1, 1)
-        grid.addWidget(Caption("中心 Y (%)"), 1, 2)
+        grid.addWidget(Caption("Y %"), 1, 2)
         grid.addWidget(self._y, 1, 3)
 
         self._width = self._make_percent_spin(30)
@@ -300,9 +300,9 @@ class LayerPage(QWidget):
         self._height.setRange(0, 100)
         self._height.setSuffix("%")
         self._height.setSpecialValueText("自然高度")
-        grid.addWidget(Caption("宽度 (%)"), 2, 0)
+        grid.addWidget(Caption("宽 %"), 2, 0)
         grid.addWidget(self._width, 2, 1)
-        grid.addWidget(Caption("高度 (%)"), 2, 2)
+        grid.addWidget(Caption("高 %"), 2, 2)
         grid.addWidget(self._height, 2, 3)
 
         self._opacity = QSpinBox()
@@ -312,9 +312,9 @@ class LayerPage(QWidget):
         self._rotation = QSpinBox()
         self._rotation.setRange(-180, 180)
         self._rotation.setSuffix("°")
-        grid.addWidget(Caption("透明度（%）"), 3, 0)
+        grid.addWidget(Caption("透明度 %"), 3, 0)
         grid.addWidget(self._opacity, 3, 1)
-        grid.addWidget(Caption("旋转（±180°）"), 3, 2)
+        grid.addWidget(Caption("旋转 °"), 3, 2)
         grid.addWidget(self._rotation, 3, 3)
 
         # 比例行：预览画幅（只影响本页画布）与宽高比锁定
@@ -371,6 +371,13 @@ class LayerPage(QWidget):
         self._mix_audio = None
         self._source_crop_canvas = None
         self._start_clip = None
+        # 源素材取景也是蒙版专属（贴纸没有「源素材」概念，贴纸本身就是素材）。
+        self._crop_x = None
+        self._crop_y = None
+        self._crop_width = None
+        self._crop_height = None
+        self._crop_reset = None
+        self._crop_hint = None
         return widget
 
     # ─────────────────────────── 贴纸素材库操作 ───────────────────────────
@@ -589,6 +596,34 @@ class LayerPage(QWidget):
         preset_row.addStretch(1)
         grid.addLayout(preset_row, 7, 0, 1, 4)
 
+        # 源素材取景（独立于输出叠层框）：对齐 .NET 同名的四个数值 + 「重置为自动」。
+        # 未手动取景时由「蒙版适配」与「源上下偏移」自动决定；一旦设置即优先生效
+        # （见 filter_graph._source_crop_filters）。
+        layout_index = 8
+        grid.addWidget(SectionHeader("源素材取景（独立于输出叠层框）"), layout_index, 0, 1, 4)
+        crop_row = QHBoxLayout()
+        crop_row.setSpacing(6)
+        crop_row.addWidget(Caption("X"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._crop_x = self._make_percent_spin(0, minimum=0)
+        crop_row.addWidget(self._crop_x)
+        crop_row.addWidget(Caption("Y"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._crop_y = self._make_percent_spin(0, minimum=0)
+        crop_row.addWidget(self._crop_y)
+        crop_row.addWidget(Caption("宽"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._crop_width = self._make_percent_spin(100, minimum=0)
+        crop_row.addWidget(self._crop_width)
+        crop_row.addWidget(Caption("高"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._crop_height = self._make_percent_spin(100, minimum=0)
+        crop_row.addWidget(self._crop_height)
+        self._crop_reset = SecondaryButton("重置为自动")
+        self._crop_reset.setToolTip("清除手动取景，改由「蒙版适配」与「源上下偏移」自动决定。")
+        self._crop_reset.clicked.connect(self._reset_source_crop)
+        crop_row.addWidget(self._crop_reset)
+        crop_row.addStretch(1)
+        grid.addLayout(crop_row, layout_index + 1, 0, 1, 4)
+        self._crop_hint = Caption("")
+        grid.addWidget(self._crop_hint, layout_index + 2, 0, 1, 4)
+
         # 比例行：预览画幅模式（不改成片）与宽高比锁定（对齐 .NET FixedAspectRatio）。
         ratio_row = QHBoxLayout()
         ratio_row.setSpacing(8)
@@ -609,7 +644,7 @@ class LayerPage(QWidget):
         self._ratio_hint = Caption("")
         ratio_row.addWidget(self._ratio_hint)
         ratio_row.addStretch(1)
-        grid.addLayout(ratio_row, 8, 0, 1, 4)
+        grid.addLayout(ratio_row, layout_index + 3, 0, 1, 4)
 
         for spin in (
             self._start,
@@ -630,6 +665,9 @@ class LayerPage(QWidget):
         self._split_position.valueChanged.connect(self._on_split_changed)
         self._fit.currentIndexChanged.connect(self._on_form_changed)
         self._remove_black.stateChanged.connect(self._on_form_changed)
+        # 源素材取景：四个数值任一变化都写回 source_crop_bounds。
+        for spin in (self._crop_x, self._crop_y, self._crop_width, self._crop_height):
+            spin.valueChanged.connect(self._on_source_crop_changed)
         self._enabled.stateChanged.connect(self._on_form_changed)
         self._mix_audio.stateChanged.connect(self._on_form_changed)
         self._source_crop_canvas.stateChanged.connect(self._on_form_changed)
@@ -647,9 +685,9 @@ class LayerPage(QWidget):
         return spin
 
     @staticmethod
-    def _make_percent_spin(value: int) -> QSpinBox:
+    def _make_percent_spin(value: int, *, minimum: int = 1) -> QSpinBox:
         spin = QSpinBox()
-        spin.setRange(1, 200)
+        spin.setRange(minimum, 200)
         spin.setValue(value)
         spin.setSuffix("%")
         return spin
@@ -708,6 +746,11 @@ class LayerPage(QWidget):
             self._enabled,
             self._fixed_ratio,
             self._aspect_mode,
+            self._crop_x,
+            self._crop_y,
+            self._crop_width,
+            self._crop_height,
+            self._crop_reset,
         ):
             # 贴纸模式下蒙版专属控件不存在（值为 None），跳过即可。
             if widget is not None:
@@ -736,6 +779,22 @@ class LayerPage(QWidget):
                 self._source_crop_y.setValue(max(-1.0, min(layer.source_crop_y, 1.0)))
             if self._source_crop_canvas is not None:
                 self._source_crop_canvas.setChecked(layer.source_crop_canvas)
+            if self._crop_width is not None:
+                # 回填手动取景；未设置时显示为「全幅」（100/100/0/0）并给出自动提示。
+                bounds = layer.source_crop_bounds
+                if bounds is None:
+                    self._crop_x.setValue(0)
+                    self._crop_y.setValue(0)
+                    self._crop_width.setValue(100)
+                    self._crop_height.setValue(100)
+                    if self._crop_hint is not None:
+                        self._crop_hint.setText("当前为自动取景（由「蒙版适配」与「源上下偏移」决定）。")
+                else:
+                    self._crop_x.setValue(int(round(bounds[0] * 100)))
+                    self._crop_y.setValue(int(round(bounds[1] * 100)))
+                    self._crop_width.setValue(int(round(bounds[2] * 100)))
+                    self._crop_height.setValue(int(round(bounds[3] * 100)))
+                    self._refresh_source_crop_hint()
             if self._mix_audio is not None:
                 self._mix_audio.setChecked((layer.audio_mode or "discard").lower() == "mix")
             if self._remove_black is not None:
@@ -1107,6 +1166,52 @@ class LayerPage(QWidget):
             self._canvas.set_layers(self._layers)
             self._refresh_sticker_summary(updated)
             self.layers_changed.emit()
+
+    def _on_source_crop_changed(self, *_args: object) -> None:
+        """写入手动源素材取景（宽高为 0 视为不设置）。
+
+        与 .NET「源素材取景（独立于输出叠层框）」等价：一旦设置，它就优先于
+        「蒙版适配」与「源上下偏移」生效。
+        """
+        if self._updating:
+            return
+        layer = self._selected()
+        if layer is None:
+            return
+        width = self._crop_width.value() / 100.0
+        height = self._crop_height.value() / 100.0
+        if width <= 0 or height <= 0:
+            bounds = None
+        else:
+            bounds = (
+                self._crop_x.value() / 100.0,
+                self._crop_y.value() / 100.0,
+                width,
+                height,
+            )
+        if self._store.replace(layer.with_changes(source_crop_bounds=bounds)):
+            self._layers = self._store.layers
+            self._refresh_source_crop_hint()
+            self.layers_changed.emit()
+
+    def _reset_source_crop(self) -> None:
+        """清除手动取景，回到自动（蒙版适配 + 源上下偏移）。"""
+        layer = self._selected()
+        if layer is None:
+            self._set_status("请先选择一条轨道。", warn=True)
+            return
+        self._store.replace(layer.with_changes(source_crop_bounds=None))
+        self._layers = self._store.layers
+        self._populate_form()
+        self._set_status("已重置源素材取景为自动（按「蒙版适配」与「源上下偏移」决定）。")
+        self.layers_changed.emit()
+
+    def _refresh_source_crop_hint(self) -> None:
+        if self._crop_hint is None:
+            return
+        self._crop_hint.setText(
+            "已手动取景：该设置优先于「蒙版适配」与「源上下偏移」。"
+        )
 
     def _sync_split_display(self, y_percent: float) -> None:
         """重算分割位置显示：覆盖区底边 = 中心 Y + 高度上限 / 2。

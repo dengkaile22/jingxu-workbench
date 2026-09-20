@@ -14,6 +14,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from jingxu.infrastructure.process_control import no_window_kwargs
+
 MANIFEST_FILE_NAME = "runtime-manifest.json"
 RUNTIME_ENV = "JINGXU_RUNTIME_DIR"
 SKIP_HASH_ENV = "JINGXU_SKIP_HASH_VERIFY"
@@ -220,6 +222,7 @@ def _version_probe(path: Path, arguments: tuple[str, ...]) -> str:
     try:
         completed = subprocess.run(
             [str(path), *arguments],
+            **no_window_kwargs(),
             capture_output=True,
             text=True,
             encoding="utf-8",

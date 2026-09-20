@@ -30,6 +30,7 @@ from pathlib import Path
 from jingxu.domain.media import MediaAsset
 from jingxu.domain.render import FitMode, ProcessingMode
 from jingxu.infrastructure.encoders import CPU_ENCODER, EncoderChoice
+from jingxu.infrastructure.process_control import no_window_kwargs
 from jingxu.infrastructure.paths import temp_directory
 
 # ── 常量（取值来源见 .NET HardwareVideoProcessingPlan）───────────────────────
@@ -548,6 +549,7 @@ def _run_probe(ffmpeg: Path, arguments: list[str], directory: Path, *, timeout: 
     try:
         completed = subprocess.run(
             command,
+            **no_window_kwargs(),
             capture_output=True,
             text=True,
             encoding="utf-8",

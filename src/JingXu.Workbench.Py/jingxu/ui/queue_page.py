@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from jingxu.infrastructure.queue import JobState, RenderJob, RenderQueue
+from jingxu.infrastructure.process_control import no_window_kwargs
 from jingxu.ui import icons, theme
 from jingxu.ui.widgets import Caption, SecondaryButton, SegmentedControl, render_svg_path
 
@@ -55,9 +56,9 @@ def open_folder(path) -> None:  # noqa: ANN001 - UI 回调
         if sys.platform == "win32":
             os.startfile(directory)  # noqa: S606 - 用户主动打开输出目录
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", directory])
+            subprocess.Popen(["open", directory], **no_window_kwargs())
         else:
-            subprocess.Popen(["xdg-open", directory])
+            subprocess.Popen(["xdg-open", directory], **no_window_kwargs())
     except OSError:
         pass
 

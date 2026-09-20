@@ -9,6 +9,8 @@ from pathlib import Path
 
 from jingxu.domain.render import ProcessingMode
 
+from jingxu.infrastructure.process_control import no_window_kwargs
+
 
 @dataclass(frozen=True, slots=True)
 class EncoderChoice:
@@ -215,6 +217,7 @@ class EncoderRegistry:
         try:
             completed = subprocess.run(
                 command,
+                **no_window_kwargs(),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

@@ -9,6 +9,8 @@ from pathlib import Path
 
 from jingxu.domain.splitscreen import SplitMode
 
+from jingxu.infrastructure.process_control import no_window_kwargs
+
 
 class FeatherError(RuntimeError):
     """羽化渐变生成失败。"""
@@ -66,6 +68,7 @@ def feather_gradient(
     try:
         completed = subprocess.run(
             command,
+            **no_window_kwargs(),
             capture_output=True,
             text=True,
             encoding="utf-8",

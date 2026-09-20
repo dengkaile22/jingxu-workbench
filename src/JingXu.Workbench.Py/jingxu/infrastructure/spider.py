@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 from jingxu.infrastructure.app_paths import search_roots
+from jingxu.infrastructure.process_control import no_window_kwargs
 from jingxu.infrastructure.paths import data_directory
 
 SPIDER_ENV_DIR = "JINGXU_SPIDER_DIR"
@@ -252,6 +253,7 @@ def check_environment(*, timeout: float = 60.0) -> SpiderEnvironment:
     try:
         completed = subprocess.run(
             [python, "-c", probe],
+            **no_window_kwargs(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -835,6 +837,7 @@ class SpiderRunner:
         try:
             process = subprocess.Popen(
                 [environment.python, *arguments],
+                **no_window_kwargs(),
                 cwd=str(directory),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

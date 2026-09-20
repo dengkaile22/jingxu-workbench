@@ -18,6 +18,7 @@ from pathlib import Path
 
 from jingxu.domain.render import ProcessingMode
 from jingxu.infrastructure.encoders import EncoderRegistry
+from jingxu.infrastructure.process_control import no_window_kwargs
 from jingxu.infrastructure.ffmpeg_runner import PART_SUFFIX
 from jingxu.infrastructure.paths import data_directory, temp_directory
 
@@ -75,6 +76,7 @@ def _tool_version(executable: Path) -> str:
     try:
         completed = subprocess.run(
             [str(executable), "-version"],
+            **no_window_kwargs(),
             capture_output=True,
             text=True,
             encoding="utf-8",

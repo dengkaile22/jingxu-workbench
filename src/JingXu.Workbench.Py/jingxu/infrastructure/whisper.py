@@ -14,6 +14,7 @@ from pathlib import Path
 import jingxu.infrastructure.runtime as runtime_module
 from jingxu.domain.subtitles import SubtitleCue
 from jingxu.infrastructure.runtime import ToolNotFoundError
+from jingxu.infrastructure.process_control import no_window_kwargs
 from jingxu.infrastructure.subtitles import parse_srt
 
 PROGRESS_PATTERN = re.compile(r"progress\s*=\s*(\d+)\s*%", re.IGNORECASE)
@@ -107,6 +108,7 @@ def _extract_audio(ffmpeg_path: Path, video_path: Path, output_path: Path) -> No
     ]
     completed = subprocess.run(
         command,
+        **no_window_kwargs(),
         capture_output=True,
         text=True,
         encoding="utf-8",

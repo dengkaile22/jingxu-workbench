@@ -2,6 +2,9 @@
 
 取消渲染时必须连带终止 FFmpeg 及其子进程，否则残留进程会继续占用
 输出文件与硬件编码器。
+
+同时提供 :func:`no_window_kwargs`：GUI 程序自身没有控制台，启动任何控制台
+子进程都会弹出黑色窗口并闪烁，必须统一抑制。
 """
 
 from __future__ import annotations
@@ -11,6 +14,22 @@ import signal
 import subprocess
 import sys
 from typing import Any
+
+
+def no_window_kwargs() -> dict:
+    """抑制子进程控制台窗口的附加参数。
+
+    GUI 程序（PyInstaller ``--windowed``）自身没有控制台，此时再启动任何
+    控制台子进程，Windows 都会**新建并弹出一个黑色控制台窗口**，一瞬间
+    反复闪烁。实测表现为「导入音频时一直跳黑框」「抓取时黑窗口老是弹出来」。
+
+    因此所有非交互式子进程都必须带上这些参数：
+    Windows 用 ``CREATE_NO_WINDOW``；POSIX 用 ``start_new_session``
+    （同时避免子进程收到终端的 Ctrl-C）。
+    """
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    return {"start_new_session": True}
 
 
 class ProcessTreeGuard:
@@ -26,9 +45,7 @@ class ProcessTreeGuard:
 
     def spawn_kwargs(self) -> dict:
         """传给 ``subprocess.Popen`` 的附加参数。"""
-        if os.name == "nt":
-            return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
-        return {"start_new_session": True}
+        return no_window_kwargs()
 
     def attach(self, process: subprocess.Popen) -> None:
         """进程创建后立即绑定（Windows 作业对象）。"""

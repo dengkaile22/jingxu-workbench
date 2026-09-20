@@ -16,6 +16,7 @@ from pathlib import Path
 
 from jingxu.domain.subtitles import DetectedSubtitleSegment
 from jingxu.infrastructure.diagnostics import runtime_tesseract
+from jingxu.infrastructure.process_control import no_window_kwargs
 from jingxu.infrastructure.ffprobe import ProbeError, probe_media
 
 SESSION_PREFIX = "jingxu-ocr-"
@@ -261,6 +262,7 @@ def _extract_frame(ffmpeg_path: Path, video_path: Path, timestamp: float, output
     try:
         completed = subprocess.run(
             command,
+            **no_window_kwargs(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -290,7 +292,7 @@ def _run_tesseract(
     stderr_path = session_dir / "ocr-error.log"
     try:
         with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
-            process = subprocess.Popen(command, cwd=str(session_dir), stdout=stdout_file, stderr=stderr_file)
+            process = subprocess.Popen(command, **no_window_kwargs(), cwd=str(session_dir), stdout=stdout_file, stderr=stderr_file)
             deadline = time.monotonic() + timeout
             while process.poll() is None:
                 if cancel_event is not None and cancel_event.is_set():

@@ -9,6 +9,8 @@ from pathlib import Path
 
 from jingxu.domain.media import MediaAsset, extract_sequence_index
 
+from jingxu.infrastructure.process_control import no_window_kwargs
+
 
 class ProbeError(RuntimeError):
     """素材探测失败。"""
@@ -117,6 +119,7 @@ def probe_media(path: Path, ffprobe_path: Path, *, timeout: float = 60.0) -> Med
     try:
         completed = subprocess.run(
             command,
+            **no_window_kwargs(),
             capture_output=True,
             text=True,
             encoding="utf-8",

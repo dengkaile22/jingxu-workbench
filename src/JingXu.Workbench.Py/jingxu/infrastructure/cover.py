@@ -7,6 +7,8 @@ from pathlib import Path
 
 from jingxu.domain.render import CoverMode
 
+from jingxu.infrastructure.process_control import no_window_kwargs
+
 
 class CoverError(RuntimeError):
     """封面生成失败。"""
@@ -87,6 +89,7 @@ def generate_cover(
     try:
         completed = subprocess.run(
             command,
+            **no_window_kwargs(),
             capture_output=True,
             text=True,
             encoding="utf-8",

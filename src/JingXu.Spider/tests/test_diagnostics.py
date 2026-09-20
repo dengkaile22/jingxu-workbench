@@ -79,6 +79,37 @@ def test_preflight_includes_login_state_hint(profile) -> None:  # noqa: ANN001
     assert "尚无登录记录" in report.info["loginState.douyin"]
 
 
+def test_preflight_reports_interpreter_info(profile) -> None:  # noqa: ANN001
+    """解释器也要检查：版本过低时依赖会以晦涩方式失败。"""
+    report = run_preflight(headless=False, profile_dir=str(profile))
+
+    assert report.info["interpreter"]
+    assert report.info["interpreterVersion"].count(".") >= 2
+    assert report.info["interpreterSupported"] is True
+
+
+def test_preflight_blocks_old_interpreter(profile, monkeypatch) -> None:  # noqa: ANN001
+    import sys as _sys
+
+    import core.diagnostics as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "_interpreter_info",
+        lambda: {
+            "interpreter": "python",
+            "interpreterVersion": "3.7.9",
+            "interpreterSupported": False,
+        },
+    )
+    report = run_preflight(headless=False, profile_dir=str(profile))
+
+    assert report.ok is False
+    blocker = next(item for item in report.blockers if item.code == "bad_interpreter")
+    assert "3.7.9" in blocker.message
+    assert _sys.version_info[:2] >= (3, 9)  # 本机确实是受支持的版本
+
+
 def test_preflight_serialises_to_dict(profile) -> None:  # noqa: ANN001
     report = run_preflight(headless=False, profile_dir=str(profile))
     payload = json.dumps(report.to_dict(), ensure_ascii=False)

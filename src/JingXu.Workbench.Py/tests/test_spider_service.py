@@ -559,6 +559,142 @@ def test_urls_for_entries_dedupes_across_entries() -> None:
     assert result.urls_for_entries(list(result.retained)) == ("https://same",)
 
 
+# ── 失败留档与预检诊断透出 ──────────────────────────────────────────────────
+
+
+def test_archive_failure_output_writes_log(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
+    """失败信息会被翻译成中文，但原始输出必须留档，否则无法排查。"""
+    monkeypatch.setenv("JINGXU_DATA_DIRECTORY", str(tmp_path))
+    lines = [f"line {index}" for index in range(500)]
+
+    path = spider_service.archive_failure_output(lines, exit_code=1)
+
+    assert path is not None and path.is_file()
+    text = path.read_text(encoding="utf-8")
+    assert "退出码：1" in text
+    assert "输出行数：500" in text
+    # 只保留尾部，避免日志文件过大
+    assert "line 499" in text
+    assert "\nline 0\n" not in text
+
+
+def test_archive_failure_output_returns_none_for_empty() -> None:
+    assert spider_service.archive_failure_output([], exit_code=1) is None
+
+
+def test_read_diagnostics_returns_none_for_missing_file(tmp_path: Path) -> None:
+    assert spider_service._read_diagnostics(tmp_path / "absent.json") is None
+
+
+def test_read_diagnostics_returns_none_for_broken_json(tmp_path: Path) -> None:
+    target = tmp_path / "broken.json"
+    target.write_text("{not json", encoding="utf-8")
+    assert spider_service._read_diagnostics(target) is None
+
+
+def test_read_diagnostics_parses_preflight_payload(tmp_path: Path) -> None:
+    """爬虫预检失败时（退出码 2）诊断只存在于结果文件里。"""
+    target = tmp_path / "result.json"
+    target.write_text(
+        json.dumps(
+            {
+                "retained_products": [],
+                "all_items": [],
+                "diagnostics": {
+                    "blocked": True,
+                    "issues": [
+                        {
+                            "level": "blocker",
+                            "code": "profile_locked",
+                            "message": "浏览器档案正被另一个浏览器占用",
+                            "suggestion": "请先关闭登录窗口",
+                        }
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    view = spider_service._read_diagnostics(target)
+
+    assert view is not None
+    assert view.blocked is True
+    assert "浏览器档案" in view.blocking_message
+
+
+def test_failed_run_still_surfaces_diagnostics(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
+    """非零退出也要读诊断：否则界面只能看到一句「抓取失败」。"""
+    monkeypatch.setenv("JINGXU_DATA_DIRECTORY", str(tmp_path))
+    payload = {
+        "retained_products": [],
+        "all_items": [],
+        "diagnostics": {
+            "blocked": True,
+            "issues": [
+                {
+                    "level": "blocker",
+                    "code": "no_browser",
+                    "message": "未找到 Chromium 内核浏览器（Chrome/Edge）",
+                    "suggestion": "安装 Chrome 或 Edge",
+                }
+            ],
+        },
+    }
+
+    class _FailingProcess:
+        def __init__(self, json_out: Path) -> None:
+            self._json_out = json_out
+            self.stdout = iter(["[*] 运行前自检\n", "✗ [no_browser] 未找到浏览器\n"])
+            self.returncode = 2
+            self.args = ["python", "cli.py"]
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *exc):  # noqa: ANN002, ANN204
+            return False
+
+        def wait(self, timeout=None):  # noqa: ANN001
+            self._json_out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            return 2
+
+        def poll(self):  # noqa: ANN201
+            return 2
+
+        def kill(self) -> None:
+            pass
+
+        def terminate(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        spider_service,
+        "check_environment",
+        lambda **_: spider_service.SpiderEnvironment(
+            available=True, message="ok", directory=Path.cwd(), python="python"
+        ),
+    )
+
+    def fake_popen(arguments, **kwargs):  # noqa: ANN001
+        index = arguments.index("--json-out")
+        return _FailingProcess(Path(arguments[index + 1]))
+
+    monkeypatch.setattr(spider_service.subprocess, "Popen", fake_popen)
+
+    result = spider_service.SpiderRunner().run(
+        SpiderConfig(accounts=(SpiderAccount(platform="douyin", url_or_id="a"),))
+    )
+
+    assert result.success is False
+    assert result.diagnostics is not None
+    assert result.diagnostics.blocked is True
+    assert "未找到 Chromium" in result.diagnostics.blocking_message
+    # 原始输出也要留档并告知用户
+    assert "完整输出已留档" in result.message
+
+
 # ── 日期范围校验 ────────────────────────────────────────────────────────────
 
 

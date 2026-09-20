@@ -200,11 +200,22 @@ def run_preflight(
     browser_path: Optional[str] = None,
     requires_browser: bool = True,
 ) -> PreflightReport:
-    """运行前自检：浏览器、profile 占用、依赖、登录态记录。
+    """运行前自检：解释器、浏览器、profile 占用、依赖、登录态记录。
 
     每一项都给出「问题 + 建议」，避免用户面对底层异常。
     """
     report = PreflightReport()
+
+    # 0. 解释器：版本过低时 DrissionPage 等依赖会以晦涩方式失败
+    interpreter = _interpreter_info()
+    report.info.update(interpreter)
+    if not interpreter["interpreterSupported"]:
+        report.add(
+            "blocker",
+            "bad_interpreter",
+            f"Python 版本过低（当前 {interpreter['interpreterVersion']}，需要 3.9 以上）",
+            "请使用随包的 runtime/python，或安装较新的 Python 后重试",
+        )
 
     # 1. 依赖
     missing = _missing_modules()
@@ -258,6 +269,19 @@ def run_preflight(
         report.info[f"loginState.{platform}"] = describe_login_state(platform, profile_dir)
 
     return report
+
+
+def _interpreter_info() -> dict:
+    """当前解释器信息与最低版本判定（DrissionPage 需要 3.9+）。"""
+    import sys
+
+    version = ".".join(str(part) for part in sys.version_info[:3])
+    supported = sys.version_info[:2] >= (3, 9)
+    return {
+        "interpreter": sys.executable,
+        "interpreterVersion": version,
+        "interpreterSupported": supported,
+    }
 
 
 def _missing_modules() -> list[str]:

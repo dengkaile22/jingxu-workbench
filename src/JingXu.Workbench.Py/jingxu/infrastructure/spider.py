@@ -23,7 +23,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-
 from jingxu.infrastructure.app_paths import search_roots
 from jingxu.infrastructure.process_control import no_window_kwargs
 from jingxu.infrastructure.paths import data_directory
@@ -886,6 +885,54 @@ def summarise_failure(lines: Sequence[str], *, exit_code: int | None = None) -> 
     return cleaned[-1]
 
 
+def archive_failure_output(lines: Sequence[str], *, exit_code: int | None) -> Path | None:
+    """把爬虫子进程的完整输出留档，返回文件路径。
+
+    失败信息会被翻译成可读中文，但**原始输出不能丢**：没有它就无法排查
+    「为什么失败」。因此这里把完整输出（含回溯）写入
+    ``<数据目录>/logs/spider-YYYYMMDD-HHMMSS.log``，失败信息里会指向该文件。
+    """
+    if not lines:
+        return None
+    from jingxu.infrastructure.diagnostics import logs_directory
+
+    try:
+        directory = logs_directory()
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = directory / f"spider-{stamp}.log"
+        header = [
+            f"# 选品爬虫运行输出留档",
+            f"# 时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"# 退出码：{exit_code if exit_code is not None else '未知'}",
+            f"# 输出行数：{len(lines)}",
+            "",
+        ]
+        # 全量写入会很大（翻页日志很多），保留尾部即可定位问题
+        body = list(lines)[-400:]
+        target.write_text("\n".join(header + body), encoding="utf-8")
+        return target
+    except OSError:
+        return None
+
+
+def _read_diagnostics(json_out: Path) -> SpiderDiagnosticsView | None:
+    """从结果文件里取出 diagnostics 段；缺失或损坏时返回 ``None``。
+
+    失败路径也要调用：爬虫的预检失败会以退出码 2 结束，此时诊断**只**存在于
+    结果文件里。
+    """
+    if not json_out.is_file():
+        return None
+    try:
+        payload = json.loads(json_out.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return SpiderDiagnosticsView.from_payload(payload.get("diagnostics"))
+
+
 class SpiderRunner:
     """以子进程执行一次抓取；支持取消。"""
 
@@ -981,7 +1028,8 @@ class SpiderRunner:
                 text = line.rstrip()
                 if text:
                     tail.append(text)
-                    del tail[:-40]
+                    # 保留足够行数：失败时要留档完整上下文（留档函数再截取尾部 400 行）
+                    del tail[:-400]
                     if on_log is not None:
                         on_log(text)
             code = process.wait(timeout=self._timeout)
@@ -993,10 +1041,15 @@ class SpiderRunner:
                 process.kill()
 
         if code != 0:
-            return SpiderRunResult(
-                success=False,
-                message=f"抓取失败：{summarise_failure(tail, exit_code=code)}",
-            )
+            # 非零退出也要读结果文件：爬虫在运行前自检失败时（退出码 2）会把
+            # 环境诊断写进 --json-out。不读的话，界面只能看到一句「抓取失败」，
+            # 而真正的阻断原因（缺浏览器/profile 被占用/未登录）永远到不了界面。
+            diagnostics = _read_diagnostics(json_out)
+            archive = archive_failure_output(tail, exit_code=code)
+            message = f"抓取失败：{summarise_failure(tail, exit_code=code)}"
+            if archive is not None:
+                message += f"\n完整输出已留档：{archive}"
+            return SpiderRunResult(success=False, message=message, diagnostics=diagnostics)
 
         if not json_out.is_file():
             return SpiderRunResult(success=False, message="爬虫未生成结果文件，请查看日志。")

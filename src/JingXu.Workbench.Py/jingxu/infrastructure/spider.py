@@ -995,7 +995,11 @@ class SpiderRunner:
         )
         try:
             process = subprocess.Popen(
-                [environment.python, *arguments],
+                # -B 抑制字节码写入：随包运行时位于安装目录（可能只读），
+                # 写 .pyc 会污染安装目录并与 MSI 清单文件数不一致。
+                # 环境变量 PYTHONDONTWRITEBYTECODE 已设，这里再加一道保险，
+                # 因为环境变量可能被用户的 shell 配置覆盖。
+                [environment.python, "-B", *arguments],
                 **no_window_kwargs(),
                 cwd=str(directory),
                 stdout=subprocess.PIPE,

@@ -695,6 +695,66 @@ def test_failed_run_still_surfaces_diagnostics(monkeypatch, tmp_path: Path) -> N
     assert "完整输出已留档" in result.message
 
 
+# ── 不得往安装目录写字节码 ──────────────────────────────────────────────────
+
+
+def test_spider_command_uses_dash_b_flag() -> None:
+    """必须带 -B：随包运行时位于安装目录，写 .pyc 会污染安装目录。
+
+    实测：不带 -B 跑一次 cli.py 会在 runtime/spider/core 下生成 __pycache__，
+    导致安装目录文件数与 MSI 清单不一致，而且卸载不会清理这些「安装后新增」文件。
+    环境变量 PYTHONDONTWRITEBYTECODE 可能被用户 shell 配置覆盖，因此再加 -B 保险。
+    """
+    source = Path(spider_service.__file__).read_text(encoding="utf-8")
+    assert '"-B"' in source or "'-B'" in source, "SpiderRunner 未给随包解释器加 -B"
+
+
+def test_spider_environment_disables_bytecode(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """环境变量也要设：两道保险互为补充。"""
+    captured: dict[str, str] = {}
+
+    class _Process:
+        stdout = iter([])
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *exc):  # noqa: ANN002, ANN204
+            return False
+
+        def wait(self, timeout=None):  # noqa: ANN001
+            return 1
+
+        def poll(self):  # noqa: ANN201
+            return 1
+
+        def kill(self) -> None:
+            pass
+
+        def terminate(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        spider_service,
+        "check_environment",
+        lambda **_: spider_service.SpiderEnvironment(
+            available=True, message="ok", directory=Path.cwd(), python="python"
+        ),
+    )
+
+    def fake_popen(arguments, **kwargs):  # noqa: ANN001
+        captured.update(kwargs.get("env") or {})
+        return _Process()
+
+    monkeypatch.setattr(spider_service.subprocess, "Popen", fake_popen)
+
+    spider_service.SpiderRunner().run(
+        SpiderConfig(accounts=(SpiderAccount(platform="douyin", url_or_id="a"),))
+    )
+
+    assert captured.get("PYTHONDONTWRITEBYTECODE") == "1"
+
+
 # ── 日期范围校验 ────────────────────────────────────────────────────────────
 
 

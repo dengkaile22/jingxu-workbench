@@ -158,6 +158,11 @@ class LayerPage(QWidget):
 
         layout.addSpacing(6)
         layout.addWidget(Caption("拖拽预览中的图层可调整位置，滚轮调整宽度。"))
+        # .NET 贴纸页在预览下方给出一行参数摘要（位置/尺寸/透明度/旋转），
+        # 便于不看控件也能确认当前画法。
+        if self._is_sticker:
+            self._sticker_summary = Caption("")
+            layout.addWidget(self._sticker_summary)
 
         if not self._is_sticker:
             # 「合成预览」是蒙版专属：它按真实滤镜链渲染主片+蒙版静帧。
@@ -742,7 +747,29 @@ class LayerPage(QWidget):
             self._sync_split_display(layer.y_percent if layer else 50.0)
         self._updating = False
         self._refresh_ratio_hint()
+        self._refresh_sticker_summary(layer)
         self._canvas.set_selected(layer.id if layer else None)
+
+    def _refresh_sticker_summary(self, layer: LayerSpec | None) -> None:
+        """刷新贴纸参数摘要（对齐 .NET「成片画面示意」的位置/尺寸/透明度/旋转）。
+
+        这里显示图层**实际生效的可见度**（100% = 完全不透明），而不是编辑控件
+        的「透明度」值（该控件 0 = 不透明）。摘要用来看效果，用控件值会让人
+        以为贴纸是透明的。
+        """
+        if not self._is_sticker or not hasattr(self, "_sticker_summary"):
+            return
+        if layer is None:
+            self._sticker_summary.setText("")
+            return
+        height_text = f"{int(round(layer.height_percent))}%" if layer.height_percent > 0 else "自然"
+        visible_percent = int(round(max(0.0, min(layer.opacity, 1.0)) * 100))
+        self._sticker_summary.setText(
+            f"位置：({int(round(layer.x_percent))}%, {int(round(layer.y_percent))}%)　"
+            f"尺寸：{int(round(layer.width_percent))}% × {height_text}　"
+            f"可见度：{visible_percent}%　"
+            f"旋转：{int(round(layer.rotation_degrees))}°"
+        )
 
     def _apply_pip_preset(self) -> None:
         self._apply_preset_to_selected(PIP_PRESET, "已应用画中画预设（右下角，完整适配）。")
@@ -1078,6 +1105,7 @@ class LayerPage(QWidget):
             self._updating = False
             self._layers = self._store.layers
             self._canvas.set_layers(self._layers)
+            self._refresh_sticker_summary(updated)
             self.layers_changed.emit()
 
     def _sync_split_display(self, y_percent: float) -> None:

@@ -27,6 +27,7 @@
 | [验收报告](acceptance-report.md) | Task 矩阵与已知阻塞项 |
 | [Python 版迁移验收报告](python-migration-acceptance.md) | .NET → Python 迁移的能力对齐、测试证据与已知限制 |
 | [选品爬虫重写说明与验证状态](spider-rewrite-status.md) | 分层提取/环境自检/登录态记录的设计、实测证据与**未验证部分** |
+| [UI 与 .NET 版一致性对照](ui-parity-with-dotnet.md) | 逐页对照结果：已对齐项、已知差异与后续顺序 |
 
 ## 开发现状与对齐（2026-07-11）
 

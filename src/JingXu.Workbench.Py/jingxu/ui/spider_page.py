@@ -642,13 +642,25 @@ class SpiderPage(QWidget):
             self._set_result_caption(date_issue, warn=True)
             return
 
+        # 关键：必须先释放登录浏览器。登录与抓取共用同一个 Chromium profile 目录，
+        # 而 Chromium 对 profile 加独占锁；两个实例同时用它会导致启动失败
+        # （实测表现为 python.exe 应用程序错误 0xc0000142，直接崩掉）。
+        if self._login_session is not None:
+            label = self._login_session.platform_label
+            self._login_session.close()
+            self._login_session = None
+            self._login_done.setEnabled(False)
+            self._refresh_login_status()
+            self._set_result_caption(f"已关闭{label}登录浏览器以释放 profile，开始抓取…")
+
         self._running = True
         self._cancel.clear()
         self._run_button.setEnabled(False)
         self._cancel_button.setEnabled(True)
         self._send_button.setEnabled(False)
         self._log.clear()
-        self._set_result_caption("正在抓取…（首次会打开浏览器，可能需要扫码登录）")
+        if not self._result_caption.text().startswith("已关闭"):
+            self._set_result_caption("正在抓取…（首次会打开浏览器，可能需要扫码登录）")
         config = self._config
 
         def work() -> None:

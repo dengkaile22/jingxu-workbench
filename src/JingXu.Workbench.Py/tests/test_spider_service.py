@@ -82,6 +82,73 @@ def test_parse_accounts_text_ignores_blank_lines() -> None:
     assert parse_accounts_text("\n\n  \n") == []
 
 
+# ── 分享文案解析（用户实际粘贴的就是这种整段文字）────────────────────────────
+
+
+def test_parse_accounts_text_extracts_link_from_douyin_share_text() -> None:
+    """此前会把整段分享文案当成账号链接存进账号表，爬虫无法处理。"""
+    share = (
+        "0- 长按复制此条消息，打开抖音搜索，查看TA的更多作品。 "
+        "https://v.douyin.com/iTXqs_ymHlg/ 8@0.com :2pm"
+    )
+    accounts = parse_accounts_text(share)
+
+    assert len(accounts) == 1
+    assert accounts[0].url_or_id == "https://v.douyin.com/iTXqs_ymHlg/"
+    assert accounts[0].platform == "douyin"
+    # 抖音话术里没有昵称，展示名回落到链接尾段而不是整段文案
+    assert accounts[0].display_name == "iTXqs_ymHlg"
+
+
+def test_parse_accounts_text_reads_nickname_from_kuaishou_share_text() -> None:
+    share = (
+        "https://v.kuaishou.com/KoL53UgI 看了这么多快手，还是「牛奶巧巧」最好玩了！ "
+        "复制此消息，打开【快手】直接观看！"
+    )
+    accounts = parse_accounts_text(share)
+
+    assert len(accounts) == 1
+    assert accounts[0].url_or_id == "https://v.kuaishou.com/KoL53UgI"
+    assert accounts[0].platform == "kuaishou"
+    assert accounts[0].name == "牛奶巧巧"
+
+
+def test_parse_accounts_text_extracts_nickname_from_square_brackets() -> None:
+    accounts = parse_accounts_text("https://v.kuaishou.com/abc 【老铁严选】最好玩！")
+    assert accounts[0].name == "老铁严选"
+
+
+def test_share_nickname_never_returns_a_link() -> None:
+    """「」里若是链接片段不能当昵称（抖音文案的括号里含网址）。"""
+    from jingxu.infrastructure.spider import extract_share_nickname
+
+    assert extract_share_nickname("看「https://v.douyin.com/abc/」") == ""
+    assert extract_share_nickname("看「牛奶巧巧」") == "牛奶巧巧"
+
+
+def test_share_link_strips_leading_index() -> None:
+    from jingxu.infrastructure.spider import extract_share_link
+
+    assert extract_share_link("2- https://v.douyin.com/x/ 5@4.com :1pm") == "https://v.douyin.com/x/"
+
+
+def test_share_link_returns_bare_id_when_no_url() -> None:
+    from jingxu.infrastructure.spider import extract_share_link
+
+    assert extract_share_link("3- MS4wLjABAAAAxyz") == "MS4wLjABAAAAxyz"
+
+
+def test_display_name_truncates_long_ids() -> None:
+    account = SpiderAccount(platform="douyin", url_or_id="M" * 40)
+    assert account.display_name.endswith("…")
+    assert len(account.display_name) <= 17
+
+
+def test_display_name_prefers_explicit_name() -> None:
+    account = SpiderAccount(platform="douyin", url_or_id="https://v.douyin.com/x/", name="达人A")
+    assert account.display_name == "达人A"
+
+
 # ── 配置模型与持久化 ────────────────────────────────────────────────────────
 
 

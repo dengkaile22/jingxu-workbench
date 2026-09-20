@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -62,7 +63,18 @@ class SpiderAccount:
 
     @property
     def display_name(self) -> str:
-        return self.name or self.url_or_id
+        """表格展示用名称：优先备注名，其次可读的账号标识。
+
+        直接显示完整链接会占满整列且难以分辨，因此短链/Sec-UID 只显示尾部
+        片段；抓取拿到真实昵称后会替换为昵称。
+        """
+        if self.name:
+            return self.name
+        value = self.url_or_id
+        if value.startswith("http"):
+            tail = value.rstrip("/").rsplit("/", 1)[-1]
+            return tail or value
+        return value[:16] + ("…" if len(value) > 16 else "")
 
     def to_dict(self) -> dict:
         return {
@@ -375,6 +387,40 @@ def profile_status() -> tuple[bool, str]:
 def profile_ready() -> bool:
     """是否已建立可复用的浏览器档案。"""
     return profile_status()[0]
+
+
+def profile_in_use() -> bool:
+    """profile 目录是否正被浏览器占用。
+
+    Chromium 对 ``user_data_dir`` 加独占锁；登录浏览器还没关就又点「开始抓取」
+    时，两个实例抢同一 profile 会启动失败（实测表现为 python.exe 应用程序错误
+    0xc0000142，进程直接崩掉）。抓取前检查可给出可读提示，而不是让用户面对
+    系统级崩溃弹窗。
+    """
+    directory = profile_directory()
+    if not directory.is_dir():
+        return False
+    for name in ("SingletonLock", "lockfile"):
+        if (directory / name).exists():
+            return True
+
+    lock = directory / "Default" / "LOCK"
+    if not lock.is_file():
+        return False
+    try:
+        with lock.open("a+b"):
+            return False
+    except OSError:
+        return True
+
+
+def probe_time_filter(filters: "SpiderFilters") -> str:
+    """把时间配置翻译成一句可读说明，便于用户核对设置是否生效。"""
+    if filters.time_mode == "days":
+        return f"近 {filters.days} 天"
+    if filters.time_mode == "range":
+        return f"{filters.start_date or '最早'} ~ {filters.end_date or '现在'}"
+    return "全部历史"
 
 
 @dataclass(slots=True)
@@ -936,12 +982,71 @@ def _cli_config_document(config: SpiderConfig) -> dict:
     }
 
 
+# 分享文案里的链接（抖音/快手短链、主页链接，以及 http(s) 通用形式）
+_SHARE_LINK_RE = re.compile(r"https?://[^\s\u4e00-\u9fff，。！？、；：「」【】（）]+")
+# 行首序号：分享文案常带「0- 」「2- 」前缀
+_LEADING_INDEX_RE = re.compile(r"^\s*\d+\s*[-—.、]\s*")
+# 昵称：快手用「」包裹；抖音话术为「查看TA的更多作品」不带昵称
+_SHARE_NICKNAME_PATTERNS = (
+    re.compile(r"[「【]([^」】]{1,32})[」】]"),
+    re.compile(r"名为\s*([^\s，。！]{1,32})"),
+)
+
+
+def extract_share_link(text: str) -> str:
+    """从分享文案/混合文本中抽出第一个链接；没有链接时返回空串。"""
+    if not text:
+        return ""
+    candidate = _LEADING_INDEX_RE.sub("", text.strip())
+    match = _SHARE_LINK_RE.search(candidate)
+    if not match:
+        # 没有链接：可能是纯 ID（数字或 Sec-UID），去掉序号前缀后原样返回
+        stripped = candidate.strip()
+        return stripped if stripped and " " not in stripped[:64] else ""
+    return match.group(0).rstrip(".,;，。；、)]）】")
+
+
+def extract_share_nickname(text: str) -> str:
+    """从分享文案里取账号昵称；取不到返回空串。
+
+    抖音的分享话术只写「查看TA的更多作品」，其中没有昵称，因此返回空是正常的，
+    抓取完成后会用真实昵称补上。
+    """
+    if not text:
+        return ""
+    for pattern in _SHARE_NICKNAME_PATTERNS:
+        for match in pattern.finditer(text):
+            name = match.group(1).strip()
+            if not name or _looks_like_link(name):
+                continue
+            return name
+    return ""
+
+
+def _looks_like_link(value: str) -> bool:
+    """判断一段文本是否更像链接/标识，而不是昵称。"""
+    lowered = value.lower()
+    if "http" in lowered or "/" in value or "@" in value:
+        return True
+    # 含 .com / .cn 等域名特征
+    if re.search(r"\.(com|cn|net|org)\b", lowered):
+        return True
+    return False
+
+
 def parse_accounts_text(text: str, *, platform: str = "") -> list[SpiderAccount]:
-    """批量导入账号：每行一个链接或 ID，可用 ``名称=链接`` 指定备注名。
+    """批量导入账号：每行一个账号，可用 ``名称=链接`` 指定备注名。
+
+    直接粘贴 App 的**分享文案**也要能用——用户实际粘的就是这种整段文字：
+
+    * ``0- 长按复制此条消息，打开抖音搜索，查看TA的更多作品。 https://v.douyin.com/xxx/ 8@0.com :2pm``
+    * ``https://v.kuaishou.com/xxx 看了这么多快手，还是「牛奶巧巧」最好玩了！ 复制此消息，打开【快手】直接观看！``
+
+    因此需要从中抽出真正的链接与昵称；此前会把整段文案当成账号链接存进
+    账号表，爬虫自然无法处理。
 
     ``platform`` 仅在显式传入 ``douyin``/``kuaishou`` 时生效；默认空表示
-    按每条内容的特征自动识别平台（此前用形参默认值 ``"douyin"`` 覆盖了识别，
-    导致快手链接被当成抖音账号）。
+    按每条内容的特征自动识别平台。
     """
     forced = platform.strip().lower() if platform.strip().lower() in PLATFORMS else ""
     accounts: list[SpiderAccount] = []
@@ -958,6 +1063,14 @@ def parse_accounts_text(text: str, *, platform: str = "") -> list[SpiderAccount]
                     if tail.strip():
                         name, target = head.strip(), tail.strip()
                         break
+
+            # 分享文案：抽出链接，并从固定话术里取昵称
+            link = extract_share_link(target)
+            if link:
+                target = link
+                if not name:
+                    name = extract_share_nickname(item)
+
             if not target:
                 continue
 

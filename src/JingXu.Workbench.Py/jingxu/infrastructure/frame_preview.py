@@ -14,10 +14,62 @@ from jingxu.domain.media import MediaAsset
 from jingxu.domain.render import RenderSettings
 from jingxu.infrastructure.ffmpeg_runner import _append_input, _hidden_process_kwargs
 from jingxu.infrastructure.filter_graph import build_filter_graph
+from jingxu.infrastructure.process_control import no_window_kwargs
 
 
 class FramePreviewError(RuntimeError):
     """单帧合成预览失败。"""
+
+
+def extract_single_frame(
+    ffmpeg_path: Path,
+    video_path: Path,
+    output_path: Path,
+    *,
+    timestamp: float = 0.0,
+    timeout: float = 60.0,
+) -> Path:
+    """抽取单帧 PNG，供「预览与区域选择」在画面上框选区域。
+
+    .NET 字幕实验室支持在视频画面上直接框选字幕区域；Python 版此前只有百分比
+    输入框，用户很难填对。这里抽出首帧作为底图，配合可拖拽的选框使用。
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(ffmpeg_path),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        f"{max(0.0, timestamp):.3f}",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        str(output_path),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+            **no_window_kwargs(),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise FramePreviewError("抽取预览帧超时。") from error
+    except OSError as error:
+        raise FramePreviewError(f"无法启动 FFmpeg：{error}") from error
+
+    if completed.returncode != 0 or not output_path.is_file():
+        detail = (completed.stderr or "").strip().splitlines()
+        message = detail[-1] if detail else f"退出码 {completed.returncode}"
+        raise FramePreviewError(f"抽取预览帧失败：{message}")
+    return output_path
 
 
 def composite_frame_command(

@@ -5,8 +5,10 @@ from __future__ import annotations
 import threading
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -36,6 +38,7 @@ from jingxu.domain.subtitles import (
     has_pending_reviews,
     validate_timeline,
 )
+from jingxu.infrastructure.frame_preview import FramePreviewError, extract_single_frame
 from jingxu.infrastructure.ocr import (
     OcrCancelled,
     OcrError,
@@ -51,6 +54,7 @@ from jingxu.infrastructure.whisper import (
     find_whisper,
     transcribe,
 )
+from jingxu.ui.subtitle_region import SubtitleRegionCanvas
 from jingxu.ui.widgets import Caption, PrimaryButton, SecondaryButton, SectionHeader, SegmentedControl
 
 COLUMNS = ("起点", "终点", "字幕文本")
@@ -146,6 +150,16 @@ class SubtitlePage(QWidget):
         self._progress.setTextVisible(False)
         self._progress.setVisible(False)
         layout.addWidget(self._progress)
+
+        # 「预览与区域选择」：对齐 .NET 字幕实验室——导入视频后可直接在画面上
+        # 框选字幕区域，而不必手填百分比（手填很难填对，是此前「字幕功能不用」的主因）。
+        layout.addSpacing(12)
+        layout.addWidget(SectionHeader("预览与区域选择"))
+        layout.addSpacing(6)
+        self._region_canvas = SubtitleRegionCanvas()
+        layout.addWidget(self._region_canvas)
+        layout.addSpacing(6)
+        layout.addLayout(self._build_region_actions())
 
         layout.addSpacing(12)
         self._table = QTableWidget(0, len(COLUMNS))
@@ -334,6 +348,99 @@ class SubtitlePage(QWidget):
             Caption("区域按成片宽高百分比；模糊模式对区域降采样，遮盖为纯黑块，去标用邻域插值。")
         )
         return column
+
+    def _build_region_actions(self) -> QHBoxLayout:
+        """框选区工具条：加载预览帧 / 确认手动区域 / 全画面 OCR 扫描。"""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        self._region_load = SecondaryButton("加载预览帧")
+        self._region_load.setToolTip("从当前选中素材抽取一帧作为框选底图。")
+        self._region_load.clicked.connect(self._load_region_frame)
+        row.addWidget(self._region_load)
+
+        self._region_confirm = PrimaryButton("确认手动区域")
+        self._region_confirm.setToolTip("把画面上框选的区域应用到「硬字幕去除」的区域参数。")
+        self._region_confirm.clicked.connect(self._commit_manual_region)
+        row.addWidget(self._region_confirm)
+
+        self._region_hint = Caption("导入视频后可在此框选字幕区域")
+        row.addWidget(self._region_hint, stretch=1)
+        return row
+
+    def _load_region_frame(self) -> None:
+        """抽取当前素材首帧作为框选底图。"""
+        source = getattr(self, "_source", None)
+        if source is None or not Path(source).is_file():
+            self._set_status("请先在「混剪」页选中一个素材，再回到本页框选区域。", warn=True)
+            return
+        if self._ffmpeg is None:
+            self._set_status("未找到 FFmpeg，无法抽取预览帧。", warn=True)
+            return
+        try:
+            frame_path = extract_single_frame(
+                Path(self._ffmpeg),
+                Path(source),
+                self._frame_directory() / f"subtitle-frame-{uuid4().hex[:8]}.png",
+            )
+        except FramePreviewError as error:
+            self._set_status(str(error), warn=True)
+            return
+        pixmap = QPixmap(str(frame_path))
+        if pixmap.isNull():
+            self._set_status("预览帧无法读取。", warn=True)
+            return
+        self._region_canvas.set_frame(pixmap)
+        # 同步当前区域参数到画布，避免画面与数值不一致
+        self._region_canvas.set_region(
+            self._region_spins["x"].value() / 100.0,
+            self._region_spins["y"].value() / 100.0,
+            self._region_spins["w"].value() / 100.0,
+            self._region_spins["h"].value() / 100.0,
+        )
+        self._region_hint.setText(
+            f"预览帧 {pixmap.width()}×{pixmap.height()}：拖拽选框调整区域，完成后点「确认手动区域」。"
+        )
+
+    def _frame_directory(self) -> Path:
+        from jingxu.infrastructure.paths import data_directory
+
+        directory = data_directory() / "subtitle-frames"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def _commit_manual_region(self) -> None:
+        """把画布上的框选结果写入区域参数（对齐 .NET「确认手动区域」）。"""
+        if not self._region_canvas.has_frame():
+            self._set_status("请先点「加载预览帧」，再在画面上框选区域。", warn=True)
+            return
+        x, y, width, height = self._region_canvas.region()
+        self._updating = True
+        try:
+            self._region_spins["x"].setValue(int(round(x * 100)))
+            self._region_spins["y"].setValue(int(round(y * 100)))
+            self._region_spins["w"].setValue(int(round(width * 100)))
+            self._region_spins["h"].setValue(int(round(height * 100)))
+        finally:
+            self._updating = False
+        if not self._removal_enable.isChecked():
+            self._removal_enable.setChecked(True)
+        self._on_removal_changed()
+        self._set_status(
+            f"已应用手动区域：左 {int(round(x * 100))}% / 上 {int(round(y * 100))}% / "
+            f"宽 {int(round(width * 100))}% / 高 {int(round(height * 100))}%。"
+        )
+
+    def _sync_region_canvas_from_spins(self) -> None:
+        """手改百分比时同步画布选框，保持两者一致。"""
+        if not hasattr(self, "_region_canvas") or not self._region_canvas.has_frame():
+            return
+        self._region_canvas.set_region(
+            self._region_spins["x"].value() / 100.0,
+            self._region_spins["y"].value() / 100.0,
+            self._region_spins["w"].value() / 100.0,
+            self._region_spins["h"].value() / 100.0,
+        )
 
     def _build_ocr_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -780,6 +887,7 @@ class SubtitlePage(QWidget):
                     self._updating = False
         self._store.document.removal = self._current_removal()
         self._persist()
+        self._sync_region_canvas_from_spins()
 
     # ────────────────────────────── 输出 ──────────────────────────────
 

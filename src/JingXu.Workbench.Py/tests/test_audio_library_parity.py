@@ -172,3 +172,35 @@ class TestSpiderUrlExtraction:
     def test_empty_input(self) -> None:
         assert extract_video_urls([]) == []
         assert extract_video_urls([object()]) == []
+
+
+class TestUnsupportedDownloadUrl:
+    """主页链接应给出可照做的说明，而不是抛 yt-dlp 原文。
+
+    实测：用户从对标账号复制分享文案得到的是主页链接，粘到下载页后看到的是一大串
+    ``Unsupported URL: https://live.kuaishou.com/profile/...``，因而误判为
+    「下载功能失效」。
+    """
+
+    def test_detects_profile_urls(self) -> None:
+        from jingxu.infrastructure.downloader import looks_like_profile_url
+
+        assert looks_like_profile_url("https://www.douyin.com/user/MS4wLjABAAAAx") is True
+        assert looks_like_profile_url("https://live.kuaishou.com/profile/abc?cc=x") is True
+        assert looks_like_profile_url("https://www.douyin.com/video/712345") is False
+        assert looks_like_profile_url("https://v.kuaishou.com/KoL53UgI") is False
+
+    def test_profile_url_message_tells_user_what_to_do(self) -> None:
+        from jingxu.infrastructure.downloader import describe_unsupported_url
+
+        message = describe_unsupported_url("https://www.douyin.com/user/MS4wLjABAAAAx")
+        assert "主页链接" in message
+        assert "分享" in message  # 告诉用户怎么拿到正确的链接
+
+    def test_other_unsupported_url_gets_generic_guidance(self) -> None:
+        from jingxu.infrastructure.downloader import describe_unsupported_url
+
+        message = describe_unsupported_url("https://example.com/weird-page")
+        assert "支持" in message
+        assert "分享链接" in message
+        assert "主页链接" not in message

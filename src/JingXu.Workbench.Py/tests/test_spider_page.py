@@ -676,3 +676,55 @@ def test_shutdown_cancels_running_crawl(qapp, tmp_path: Path) -> None:
 def test_shutdown_is_safe_without_session_or_run(qapp, tmp_path: Path) -> None:  # noqa: ANN001
     page = _page(tmp_path)
     page.shutdown()  # 不应抛异常
+
+
+# ── 抓取完成但零结果时的提示 ────────────────────────────────────────────────
+
+
+def test_empty_success_result_explains_likely_causes(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """「累计发现带货商品 0 件」时只说「抓取完成」会让人以为程序坏了。"""
+    page = _page(tmp_path)
+
+    page._on_run_finished(
+        SpiderRunResult(success=True, message="抓取完成：保留 0 款商品，共 0 条带货记录。")
+    )
+
+    caption = page._result_caption.text()
+    assert page._result_caption.objectName() == "CaptionWarn"
+    assert "没有发现有带货商品的视频" in caption
+    assert "时间范围" in caption
+    assert page._send_button.isEnabled() is False
+
+
+def test_nonempty_result_keeps_plain_message(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._on_run_finished(_two_product_result())
+
+    assert "保留 2 款商品" in page._result_caption.text()
+    assert page._result_caption.objectName() == "Caption"
+
+
+def test_failed_run_keeps_failure_message(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    page = _page(tmp_path)
+    page._on_run_finished(SpiderRunResult(success=False, message="抓取失败：超时，已终止。"))
+
+    assert "抓取失败" in page._result_caption.text()
+    assert "没有发现有带货商品" not in page._result_caption.text()
+
+
+# ── 表格可读性（窄窗口下不得挤掉列）────────────────────────────────────────
+
+
+def test_accounts_table_keeps_readable_minimum_width(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """实测窄窗口下「平台」列被挤没，账号串到链接列，看着像平台识别错了。"""
+    from jingxu.ui.spider_page import ACCOUNT_COLUMN_WIDTHS
+
+    page = _page(tmp_path)
+    assert page._accounts_table.minimumWidth() >= sum(ACCOUNT_COLUMN_WIDTHS)
+
+
+def test_results_table_keeps_readable_minimum_width(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    from jingxu.ui.spider_page import RESULT_COLUMN_WIDTHS
+
+    page = _page(tmp_path)
+    assert page._results_table.minimumWidth() >= sum(RESULT_COLUMN_WIDTHS)

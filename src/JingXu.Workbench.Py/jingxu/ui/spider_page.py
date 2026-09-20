@@ -211,11 +211,14 @@ class SpiderPage(QWidget):
         self._accounts_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._accounts_table.verticalHeader().setVisible(False)
         self._accounts_table.setFixedHeight(150)
+        # 列宽之和作为最小宽度：窗口不够宽时横向滚动，而不是把「平台」列挤没
+        # （实测窄窗口下「快手」会串到链接列，看起来像平台识别错了）。
         header = self._accounts_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
         for column, width in enumerate(ACCOUNT_COLUMN_WIDTHS):
             self._accounts_table.setColumnWidth(column, width)
+        self._accounts_table.setMinimumWidth(sum(ACCOUNT_COLUMN_WIDTHS) + 24)
         self._accounts_table.itemChanged.connect(self._on_account_item_changed)
         return self._accounts_table
 
@@ -427,6 +430,7 @@ class SpiderPage(QWidget):
         header.setStretchLastSection(True)
         for column, width in enumerate(RESULT_COLUMN_WIDTHS):
             self._results_table.setColumnWidth(column, width)
+        self._results_table.setMinimumWidth(sum(RESULT_COLUMN_WIDTHS) + 24)
         self._results_table.itemChanged.connect(self._on_result_item_changed)
         return self._results_table
 
@@ -689,7 +693,21 @@ class SpiderPage(QWidget):
         self._run_button.setEnabled(True)
         self._cancel_button.setEnabled(False)
         self._last_result = result
-        self._set_result_caption(result.message, warn=not result.success)
+
+        # 「抓取完成但一件商品都没发现」很常见（视频里没有挂商品、或平台页面
+        # 结构变化导致解析不到）。此时只说「抓取完成」会让用户以为程序坏了，
+        # 因此明确说清可能原因。
+        if result.success and not result.has_payload and not result.message.startswith("抓取失败"):
+            hint = (
+                "抓取完成，但没有发现有带货商品的视频。常见原因："
+                "① 这些账号近期视频没挂商品；② 时间范围太窄（当前 "
+                f"{spider_service.probe_time_filter(self._config.filters)}）；"
+                "③ 平台页面结构变化导致解析不到。建议放宽时间范围后重试。"
+            )
+            self._set_result_caption(hint, warn=True)
+        else:
+            self._set_result_caption(result.message, warn=not result.success)
+
         self._fill_results(result)
         self._send_button.setEnabled(bool(result.video_urls))
         if result.has_payload:

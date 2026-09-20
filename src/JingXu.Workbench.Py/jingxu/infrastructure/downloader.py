@@ -197,8 +197,14 @@ def download_with_yt_dlp(
     except Exception as error:  # noqa: BLE001 - yt-dlp 抛出的异常类型繁多
         if cancel_event.is_set():
             raise DownloadCancelled("下载已取消。") from error
-        message = f"下载失败：{error}"
-        log_download_error(url, message)
+        # yt-dlp 原文（如一大串 Unsupported URL）对用户毫无指导意义，
+        # 换成可照做的说明；其余错误保留原文便于排查。
+        raw = str(error)
+        if "Unsupported URL" in raw or "unsupported url" in raw.lower():
+            message = describe_unsupported_url(url)
+        else:
+            message = f"下载失败：{raw}"
+        log_download_error(url, f"{message}\n  原始错误：{raw}")
         raise DownloadError(message) from error
 
     path = state["path"]
@@ -286,6 +292,39 @@ _HTTP_ERROR_MESSAGES = {
 def describe_http_error(status: int) -> str:
     """把常见 HTTP 状态映射为可操作的中文提示（对齐 .NET 下载错误映射）。"""
     return _HTTP_ERROR_MESSAGES.get(status, f"下载失败：服务器返回 HTTP {status}。")
+
+
+# 主页/个人页链接：yt-dlp 不支持，且这类链接在选品流程里很常见
+# （用户从对标账号复制分享文案得到的就是主页链接）。
+_PROFILE_URL_MARKERS = (
+    "/user/",
+    "/profile/",
+    "/share/user/",
+    "live.kuaishou.com/profile",
+)
+
+
+def looks_like_profile_url(url: str) -> bool:
+    """判断是否为主页/个人页链接而非单个视频链接。"""
+    lowered = (url or "").lower()
+    return any(marker in lowered for marker in _PROFILE_URL_MARKERS)
+
+
+def describe_unsupported_url(url: str) -> str:
+    """把「不支持的链接」翻译成用户能照做的说明。
+
+    直接抛 yt-dlp 原文会让用户看到一大串 ``Unsupported URL: https://...``，
+    既不知道原因也不知道怎么改；实测用户正是被这个误导为「下载功能失效」。
+    """
+    if looks_like_profile_url(url):
+        return (
+            "这是账号主页链接，不是单个视频链接，下载器无法处理。\n"
+            "请在抖音/快手里打开要下载的那条视频，用「分享 → 复制链接」取得视频链接。"
+        )
+    return (
+        "该链接不被下载器支持（可能是短剧/直播等特殊页面）。\n"
+        "请改用视频的分享链接，或先确认该内容可正常播放。"
+    )
 
 
 def log_download_error(url: str, message: str) -> None:

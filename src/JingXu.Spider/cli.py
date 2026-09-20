@@ -18,6 +18,38 @@ from core.config import AppConfig
 from core.browser_manager import BrowserManager
 from core.douyin_crawler import DouyinCrawler
 from core.kuaishou_crawler import KuaishouCrawler
+from core.extraction import collect_diagnostics_summary
+from core.diagnostics import (
+    LOGIN_URLS,
+    build_diagnostics_payload,
+    describe_login_state,
+    detect_login_state_in_text,
+    format_issues,
+    load_login_state,
+    record_login_state,
+    run_diagnosis,
+    run_preflight,
+)
+
+
+def login_states_snapshot(profile_dir) -> dict:  # noqa: ANN001
+    """读取各平台登录态记录（供诊断输出）。"""
+    return {platform: load_login_state(profile_dir).get(platform, {}) for platform in LOGIN_URLS}
+
+
+def _probe_login_state(crawler) -> str:  # noqa: ANN001
+    """从浏览器当前页面文本判断登录态：``ok`` / ``required`` / ``risk``。
+
+    Chromium 不支持低成本地「读取 cookie 判断是否登录」，因此改用**行为证据**：
+    站点若把访客当未登录处理，页面上会出现登录引导或验证码文案。这比解析
+    cookie 数据库可靠，也不需要额外依赖。
+    """
+    try:
+        page = crawler.browser_manager.get_page()
+        text = page.ele("tag:body", timeout=1).text or ""
+    except Exception:  # noqa: BLE001 - 探测失败不影响抓取
+        return "ok"
+    return detect_login_state_in_text(text)
 from core.analyzer import ProductAnalyzer
 from core.exporter import DataExporter
 
@@ -120,6 +152,36 @@ def run_cli() -> None:
           f"总频次 >= {app_config.filter_config.min_total_occurrences}, "
           f"过滤准则: {app_config.filter_config.filter_by}", flush=True)
     print(f"[*] 浏览器模式: {'无头后台运行' if app_config.headless else '可视窗口运行'}", flush=True)
+
+    # ── 运行前自检：把「跑不起来」变成可读结论 ──────────────────────────────
+    preflight = run_preflight(
+        headless=app_config.headless,
+        profile_dir=args.profile_dir,
+        browser_path=args.browser_path,
+    )
+    for platform in LOGIN_URLS:
+        print(f"[*] {platform} 登录态: {describe_login_state(platform, args.profile_dir)}", flush=True)
+    if preflight.issues:
+        print(format_issues(preflight.issues), flush=True)
+    if not preflight.ok:
+        blocker_text = "\n".join(item.line() for item in preflight.blockers)
+        print("\n[-] 环境检查未通过，已停止运行：", flush=True)
+        print(blocker_text, flush=True)
+        # 仍然写出诊断，便于工作台界面展示原因
+        if args.json_out:
+            DataExporter.export_to_json(
+                args.json_out,
+                [],
+                [],
+                diagnostics=build_diagnostics_payload(
+                    preflight=preflight,
+                    login_states=login_states_snapshot(args.profile_dir),
+                    extraction_summary={},
+                    issues=preflight.issues,
+                ),
+            )
+        sys.exit(2)
+
     print("=" * 60, flush=True)
 
     browser_manager = BrowserManager(
@@ -142,18 +204,52 @@ def run_cli() -> None:
         for idx, target in enumerate(enabled_accounts, 1):
             print(f"\n>>> [{idx}/{len(enabled_accounts)}] 正在爬取: {target.name or target.url_or_id} ({target.platform})", flush=True)
             if target.platform == "douyin":
-                items = douyin_crawler.crawl_account(target, app_config.time_config, app_config.max_scrolls_per_account)
+                crawler = douyin_crawler
             elif target.platform == "kuaishou":
-                items = kuaishou_crawler.crawl_account(target, app_config.time_config, app_config.max_scrolls_per_account)
+                crawler = kuaishou_crawler
             else:
                 continue
+
+            items = crawler.crawl_account(target, app_config.time_config, app_config.max_scrolls_per_account)
             all_crawled_items.extend(items)
+
+            # 登录态行为证据：从页面文本判断站点是否把访客当未登录/触发风控，
+            # 记录到 login_state.json，供界面提示「是否需要重新扫码」。
+            state = _probe_login_state(crawler)
+            if state != "ok":
+                record_login_state(target.platform, state, profile_dir=args.profile_dir)
+                print(f"[!] {target.platform} 登录态异常（{state}）：{describe_login_state(target.platform, args.profile_dir)}", flush=True)
+            elif items:
+                record_login_state(target.platform, "ok", profile_dir=args.profile_dir)
 
         print("\n" + "=" * 60, flush=True)
         print(f"[*] 爬取结束！累计抓取商品明细: {len(all_crawled_items)} 条，开始聚合保留相同项...", flush=True)
 
         analyzer = ProductAnalyzer(app_config.filter_config)
         retained, _ = analyzer.aggregate_and_filter(all_crawled_items)
+
+        # ── 运行后诊断：解释「为什么没抓到」 ────────────────────────────────
+        all_diagnostics = list(douyin_crawler.diagnostics) + list(kuaishou_crawler.diagnostics)
+        extraction_summary = collect_diagnostics_summary(all_diagnostics)
+        login_states = [
+            (load_login_state(args.profile_dir).get(target.platform) or {}).get("status", "")
+            for target in enabled_accounts
+        ]
+        issues = run_diagnosis(
+            videos_scanned=extraction_summary.get("videosScanned", 0),
+            items_found=len(all_crawled_items),
+            retained=len(retained),
+            diagnostics={
+                "scannedNodes": sum(item.scanned_nodes for item in all_diagnostics),
+                "scanCandidates": sum(item.scan_candidates for item in all_diagnostics),
+            },
+            login_states=login_states,
+        )
+        if issues:
+            print("\n[*] 诊断：", flush=True)
+            print(format_issues(issues), flush=True)
+        print(f"[*] 提取统计：扫描 {extraction_summary.get('videosScanned', 0)} 个视频，"
+              f"其中 {extraction_summary.get('videosWithProducts', 0)} 个含商品", flush=True)
 
         print(f"[+] 筛选出跨账号共同带货商品: {len(retained)} 款", flush=True)
         print("=" * 60, flush=True)
@@ -183,7 +279,18 @@ def run_cli() -> None:
         print(f"\n[✓] 完整数据报表已导出至: {export_file}", flush=True)
 
         if args.json_out:
-            DataExporter.export_to_json(args.json_out, retained, all_crawled_items, excel_path=export_file)
+            DataExporter.export_to_json(
+                args.json_out,
+                retained,
+                all_crawled_items,
+                excel_path=export_file,
+                diagnostics=build_diagnostics_payload(
+                    preflight=preflight,
+                    login_states=login_states_snapshot(args.profile_dir),
+                    extraction_summary=extraction_summary,
+                    issues=issues,
+                ),
+            )
             print(f"[✓] 结构化数据已输出至: {args.json_out}", flush=True)
 
     finally:

@@ -728,3 +728,92 @@ def test_results_table_keeps_readable_minimum_width(qapp, tmp_path: Path) -> Non
 
     page = _page(tmp_path)
     assert page._results_table.minimumWidth() >= sum(RESULT_COLUMN_WIDTHS)
+
+
+# ── 爬虫诊断透出到界面 ──────────────────────────────────────────────────────
+
+
+def test_diagnostics_view_parses_payload() -> None:
+    """爬虫写入 --json-out 的 diagnostics 段应被解析成界面可用的视图。"""
+    from jingxu.infrastructure.spider import SpiderDiagnosticsView
+
+    view = SpiderDiagnosticsView.from_payload(
+        {
+            "extraction": {"videosScanned": 57, "videosWithProducts": 0},
+            "issues": [
+                {
+                    "level": "blocker",
+                    "code": "no_products",
+                    "message": "一个带货商品都没提取到",
+                    "suggestion": "换有带货的账号",
+                }
+            ],
+            "loginState": {"douyin": {"status": "required"}},
+        }
+    )
+    assert view is not None
+    assert view.videos_scanned == 57
+    assert view.blocked is True
+    assert "带货商品" in view.blocking_message
+    assert "换有带货的账号" in view.blocking_message
+    assert view.login_states == (("douyin", "required"),)
+
+
+def test_diagnostics_view_ignores_empty_payload() -> None:
+    from jingxu.infrastructure.spider import SpiderDiagnosticsView
+
+    assert SpiderDiagnosticsView.from_payload(None) is None
+    assert SpiderDiagnosticsView.from_payload({}) is None
+
+
+def test_blocking_diagnosis_is_shown_instead_of_completion_message(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """环境/登录/提取异常必须压过「抓取完成」，否则用户要从日志里找原因。"""
+    from jingxu.infrastructure.spider import SpiderDiagnosticsView
+
+    page = _page(tmp_path)
+    result = SpiderRunResult(
+        success=True,
+        message="抓取完成：保留 0 款商品，共 0 条带货记录。",
+        diagnostics=SpiderDiagnosticsView(
+            issues=(
+                {
+                    "level": "blocker",
+                    "code": "no_products",
+                    "message": "一个带货商品都没提取到",
+                    "suggestion": "请把 [未提取到商品] 日志行提供给开发者",
+                },
+            ),
+            videos_scanned=57,
+        ),
+    )
+
+    page._on_run_finished(result)
+
+    caption = page._result_caption.text()
+    assert "✗" in caption
+    assert "一个带货商品都没提取到" in caption
+    assert "提供给开发者" in caption
+    assert page._result_caption.objectName() == "CaptionWarn"
+    # 扫描统计也一并展示
+    assert "扫描 57 个视频" in page._export_label.text()
+
+
+def test_warning_diagnosis_uses_normal_style(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    from jingxu.infrastructure.spider import SpiderDiagnosticsView
+
+    page = _page(tmp_path)
+    page._on_run_finished(
+        SpiderRunResult(
+            success=True,
+            message="ok",
+            retained=({"name": "A"},),
+            diagnostics=SpiderDiagnosticsView(
+                issues=({"level": "warning", "code": "no_retained", "message": "没有交集", "suggestion": "增加账号"},),
+                videos_scanned=10,
+                videos_with_products=4,
+            ),
+        )
+    )
+
+    assert page._result_caption.objectName() == "Caption"
+    assert "!" in page._result_caption.text()

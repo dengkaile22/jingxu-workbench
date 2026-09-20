@@ -185,8 +185,13 @@ class DataExporter:
         retained_products: List[RetainedProduct],
         all_items: List[VideoProductItem],
         excel_path: Optional[str] = None,
+        diagnostics: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Export full data to JSON."""
+        """Export full data to JSON.
+
+        ``diagnostics`` 携带环境、登录态与商品提取诊断；工作台用它把
+        「为什么一个商品都没提取到」直接展示给用户，而不是只报「0 件」。
+        """
         data = {
             "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "retained_count": len(retained_products),
@@ -194,6 +199,7 @@ class DataExporter:
             "excel_path": excel_path or "",
             "retained_products": [p.to_summary_dict() for p in retained_products],
             "all_items": [it.to_dict() for it in all_items],
+            "diagnostics": diagnostics or {},
         }
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:

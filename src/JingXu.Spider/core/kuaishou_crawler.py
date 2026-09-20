@@ -11,6 +11,7 @@ import requests
 
 from core.models import VideoProductItem, AccountTarget, TimeFilterConfig
 from core.text_utils import clean_product_title
+from core.extraction import ExtractionDiagnostic, extract_products
 from core.browser_manager import BrowserManager
 
 
@@ -173,6 +174,8 @@ class KuaishouCrawler:
         self.log = log_callback or (lambda msg: None)
         self.progress = progress_callback or (lambda status, cur, tot: None)
         self.should_stop = stop_check or (lambda: False)
+        # 每个视频的提取诊断，供上层汇总排查「为什么是 0 件」
+        self.diagnostics: List[ExtractionDiagnostic] = []
 
     def crawl_account(
         self,
@@ -287,8 +290,31 @@ class KuaishouCrawler:
                             consecutive_old_videos = 0
 
                         # Video in valid time window, extract products
-                        items = extract_kuaishou_products_from_photo(photo, account_name, user_id)
-                        if items:
+                        raw_ts = photo.get("timestamp") or 0
+                        item_create_time = int(raw_ts / 1000) if raw_ts > 1e11 else int(raw_ts)
+                        item_time_str = (
+                            datetime.fromtimestamp(item_create_time).strftime("%Y-%m-%d %H:%M:%S")
+                            if item_create_time
+                            else ""
+                        )
+                        item_video_url = (
+                            f"https://www.kuaishou.com/short-video/{photo_id}" if photo_id else ""
+                        )
+                        items, diagnostic = extract_products(
+                            "kuaishou",
+                            photo,
+                            account_name,
+                            user_id,
+                            video_title=str(photo.get("caption") or photo.get("title") or ""),
+                            video_url=item_video_url,
+                            publish_time=item_create_time,
+                            publish_time_str=item_time_str,
+                        )
+                        self.diagnostics.append(diagnostic)
+                        if not items:
+                            # 逐条记录未命中的原因，否则「0 件」永远无从排查
+                            self.log(f"  [未提取到商品] {item_video_url} → {diagnostic.summary()}")
+                        else:
                             for it in items:
                                 all_products.append(it)
                                 self.log(f"  [快手发现商品] {account_name} | {it.product_name} ({it.price or '未知价'}) | 视频: {it.video_title[:20]}...")

@@ -694,10 +694,14 @@ class SpiderPage(QWidget):
         self._cancel_button.setEnabled(False)
         self._last_result = result
 
-        # 「抓取完成但一件商品都没发现」很常见（视频里没有挂商品、或平台页面
-        # 结构变化导致解析不到）。此时只说「抓取完成」会让用户以为程序坏了，
-        # 因此明确说清可能原因。
-        if result.success and not result.has_payload and not result.message.startswith("抓取失败"):
+        # 诊断优先：环境异常/登录失效/提取不到商品都比「抓取完成」更重要，
+        # 必须让用户第一眼看到原因与建议，而不是自己从日志里找。
+        diagnostics = result.diagnostics
+        if diagnostics is not None and diagnostics.issues:
+            self._set_result_caption(
+                "\n".join(diagnostics.lines()), warn=diagnostics.blocked or not result.success
+            )
+        elif result.success and not result.has_payload and not result.message.startswith("抓取失败"):
             hint = (
                 "抓取完成，但没有发现有带货商品的视频。常见原因："
                 "① 这些账号近期视频没挂商品；② 时间范围太窄（当前 "
@@ -716,6 +720,12 @@ class SpiderPage(QWidget):
             except OSError as error:
                 self._set_result_caption(f"结果保存失败：{error}", warn=True)
         self._refresh_export_label(result)
+        # 诊断统计写在最后：_refresh_export_label 会先重置该标签。
+        if diagnostics is not None and diagnostics.videos_scanned:
+            self._export_label.setText(
+                f"扫描 {diagnostics.videos_scanned} 个视频 · 含商品 "
+                f"{diagnostics.videos_with_products} 个"
+            )
 
     def _restore_last_result(self) -> None:
         """恢复上次抓取结果：抓取耗时以分钟计，关掉应用不该丢。"""

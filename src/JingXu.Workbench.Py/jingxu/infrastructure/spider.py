@@ -630,6 +630,63 @@ def build_arguments(
 
 
 @dataclass(frozen=True, slots=True)
+class SpiderDiagnosticsView:
+    """爬虫诊断摘要（环境 / 登录态 / 提取），供界面直接展示。
+
+    原始结构由爬虫写入 ``--json-out`` 的 ``diagnostics`` 段；这里只提取界面需要
+    的部分，避免把整棵结构耦合进 UI。
+    """
+
+    issues: tuple[dict, ...] = ()
+    videos_scanned: int = 0
+    videos_with_products: int = 0
+    login_states: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def blocked(self) -> bool:
+        return any(str(item.get("level")) == "blocker" for item in self.issues)
+
+    @property
+    def blocking_message(self) -> str:
+        """第一条阻断级问题的「说明 + 建议」，用于界面主提示。"""
+        for item in self.issues:
+            if str(item.get("level")) != "blocker":
+                continue
+            message = str(item.get("message") or "").strip()
+            suggestion = str(item.get("suggestion") or "").strip()
+            return f"{message}。{suggestion}" if suggestion else message
+        return ""
+
+    def lines(self) -> list[str]:
+        """全部问题的可读行（阻断项标 ✗，提醒项标 !）。"""
+        rendered: list[str] = []
+        for item in self.issues:
+            mark = "✗" if str(item.get("level")) == "blocker" else "!"
+            message = str(item.get("message") or "").strip()
+            suggestion = str(item.get("suggestion") or "").strip()
+            rendered.append(f"{mark} {message}" + (f" → {suggestion}" if suggestion else ""))
+        return rendered
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "SpiderDiagnosticsView | None":
+        if not isinstance(payload, dict) or not payload:
+            return None
+        extraction = payload.get("extraction") or {}
+        raw_issues = payload.get("issues") or []
+        login = payload.get("loginState") or {}
+        return cls(
+            issues=tuple(item for item in raw_issues if isinstance(item, dict)),
+            videos_scanned=int(extraction.get("videosScanned") or 0),
+            videos_with_products=int(extraction.get("videosWithProducts") or 0),
+            login_states=tuple(
+                (str(platform), str((entry or {}).get("status") or ""))
+                for platform, entry in login.items()
+                if isinstance(entry, dict)
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SpiderRunResult:
     """一次抓取的结果。"""
 
@@ -640,6 +697,7 @@ class SpiderRunResult:
     excel_path: str = ""
     json_path: str = ""
     finished_at: str = ""
+    diagnostics: SpiderDiagnosticsView | None = None
 
     @property
     def has_payload(self) -> bool:
@@ -666,12 +724,18 @@ class SpiderRunResult:
             "excelPath": self.excel_path,
             "jsonPath": self.json_path,
             "finishedAt": self.finished_at,
+            "issues": [dict(item) for item in (self.diagnostics.issues if self.diagnostics else ())],
         }
 
     @classmethod
     def from_dict(cls, payload: object) -> "SpiderRunResult":
         if not isinstance(payload, dict):
             return cls(success=False, message="结果格式无效。")
+        raw_issues = payload.get("issues") or []
+        issues = tuple(item for item in raw_issues if isinstance(item, dict))
+        diagnostics = (
+            SpiderDiagnosticsView(issues=issues) if issues else None
+        )
         return cls(
             success=bool(payload.get("success")),
             message=str(payload.get("message") or ""),
@@ -680,6 +744,7 @@ class SpiderRunResult:
             excel_path=str(payload.get("excelPath") or payload.get("excel_path") or ""),
             json_path=str(payload.get("jsonPath") or payload.get("json_path") or ""),
             finished_at=str(payload.get("finishedAt") or payload.get("finished_at") or ""),
+            diagnostics=diagnostics,
         )
 
     @property
@@ -779,6 +844,7 @@ def parse_result_payload(payload: dict) -> SpiderRunResult:
         retained=retained,
         items=items,
         excel_path=str(payload.get("excel_path") or payload.get("excelPath") or ""),
+        diagnostics=SpiderDiagnosticsView.from_payload(payload.get("diagnostics")),
     )
 
 

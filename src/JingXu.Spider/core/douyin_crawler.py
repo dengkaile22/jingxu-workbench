@@ -12,6 +12,7 @@ import requests
 from core.models import VideoProductItem, AccountTarget, TimeFilterConfig
 from core.text_utils import clean_product_title
 from core.browser_manager import BrowserManager
+from core.extraction import ExtractionDiagnostic, extract_products
 
 
 def resolve_douyin_url_or_secuid(input_str: str) -> str:
@@ -189,6 +190,8 @@ class DouyinCrawler:
         self.log = log_callback or (lambda msg: None)
         self.progress = progress_callback or (lambda status, cur, tot: None)
         self.should_stop = stop_check or (lambda: False)
+        # 每个视频的提取诊断，供上层汇总排查「为什么是 0 件」
+        self.diagnostics: List[ExtractionDiagnostic] = []
 
     def crawl_account(
         self,
@@ -304,8 +307,29 @@ class DouyinCrawler:
                                 consecutive_old_videos = 0
 
                         # Video is in valid time window, extract products
-                        items = extract_douyin_products_from_aweme(aweme, account_name, sec_uid)
-                        if items:
+                        item_time_str = (
+                            datetime.fromtimestamp(create_time).strftime("%Y-%m-%d %H:%M:%S")
+                            if create_time
+                            else ""
+                        )
+                        item_video_url = (
+                            f"https://www.douyin.com/video/{aweme_id}" if aweme_id else ""
+                        )
+                        items, diagnostic = extract_products(
+                            "douyin",
+                            aweme,
+                            account_name,
+                            sec_uid,
+                            video_title=str(aweme.get("desc") or ""),
+                            video_url=item_video_url,
+                            publish_time=create_time,
+                            publish_time_str=item_time_str,
+                        )
+                        self.diagnostics.append(diagnostic)
+                        if not items:
+                            # 逐条记录未命中的原因，否则「0 件」永远无从排查
+                            self.log(f"  [未提取到商品] {item_video_url} → {diagnostic.summary()}")
+                        else:
                             for it in items:
                                 all_products.append(it)
                                 self.log(f"  [发现商品] {account_name} | {it.product_name} ({it.price or '未知价'}) | 视频: {it.video_title[:20]}...")

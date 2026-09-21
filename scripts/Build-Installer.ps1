@@ -68,7 +68,11 @@ else {
 }
 
 $msiHash = (Get-FileHash -Path $msiPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$sumsContent = "$msiHash  炳恒快速混剪-win-x64.msi`r`n$msiHash  JingXu.Workbench.msi`r`n"
+# 只登记实际产出的那一个文件名。
+# 此前这里把同一份 MSI 记成两个名字（炳恒快速混剪-win-x64.msi 与
+# JingXu.Workbench.msi），而后者并不存在——校验和文件因此长期指向一个缺失文件，
+# 且让人以为有两个不同的交付物。
+$sumsContent = "$msiHash  炳恒快速混剪-win-x64.msi`r`n"
 
 $releaseSums = Join-Path $releaseDir 'SHA256SUMS.txt'
 Set-Content -Path $releaseSums -Value $sumsContent -Encoding UTF8

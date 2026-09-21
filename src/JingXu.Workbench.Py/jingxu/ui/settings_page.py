@@ -33,6 +33,7 @@ from jingxu.infrastructure.queue import RenderQueue
 from jingxu.infrastructure.video_processing import default_processing_selector
 from jingxu.infrastructure.whisper import find_whisper
 from jingxu.ui import theme
+from jingxu.ui.brand import build_logo_widget
 from jingxu.ui.widgets import Caption, PrimaryButton, SecondaryButton, SectionExpander
 
 
@@ -234,9 +235,21 @@ class SettingsPage(QWidget):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 8)
         layout.setSpacing(6)
+
+        # 品牌 logo（与壳层标题栏同源；对齐 .NET GateMonitor 的 64×64 展示）。
+        # 资源缺失时 build_logo_widget 自动回退为「炳」文字标记，不留空白。
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(12)
+        brand_row.addWidget(build_logo_widget(size=64))
+        brand_text = QVBoxLayout()
+        brand_text.setSpacing(2)
+        brand_text.addWidget(Caption(f"炳恒快速混剪 · Python 跨平台版 {__version__}"))
         self._platform_label = Caption("")
-        layout.addWidget(Caption(f"炳恒快速混剪 · Python 跨平台版 {__version__}"))
-        layout.addWidget(self._platform_label)
+        brand_text.addWidget(self._platform_label)
+        brand_row.addLayout(brand_text)
+        brand_row.addStretch(1)
+        layout.addLayout(brand_row)
+
         layout.addWidget(Caption("与 .NET 版共用 FFmpeg 语义与业务规则；离线运行，不上传任何素材。"))
         return SectionExpander("关于", body)
 

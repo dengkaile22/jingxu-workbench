@@ -7,7 +7,16 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QFont, QDesktopServices, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QFont,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -46,6 +55,7 @@ from jingxu.infrastructure.subtitle_store import SubtitleStore
 from jingxu.infrastructure.sticker_library import StickerLibrary
 from jingxu.ui import icons, theme
 from jingxu.ui.audio_page import AudioPage
+from jingxu.ui.brand import app_icon, build_logo_widget
 from jingxu.ui.composition_page import CompositionPage
 from jingxu.ui.download_page import DownloadPage
 from jingxu.ui.layer_page import LayerPage
@@ -246,6 +256,11 @@ class ShellWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("炳恒快速混剪")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        # 窗口/任务栏图标（.NET 版为 Assets/AppIcon.ico）。
+        # 无边框窗口仍需要它，任务栏与 Alt+Tab 才会显示正确图标。
+        window_icon = app_icon()
+        if window_icon is not None:
+            self.setWindowIcon(window_icon)
         self.resize(1600, 920)
         self.setMinimumSize(1120, 720)
         self._ffmpeg = Path(ffmpeg)
@@ -341,14 +356,9 @@ class ShellWindow(QMainWindow):
         row.setContentsMargins(16, 0, 0, 0)
         row.setSpacing(0)
 
-        logo = QLabel("炳")
-        logo.setFixedSize(28, 28)
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo.setStyleSheet(
-            f"background: {theme.BRAND_PRIMARY}; color: {theme.ON_BRAND};"
-            f"border-radius: 7px; font-weight: 700; font-size: 14px;"
-        )
-        row.addWidget(logo)
+        # 品牌 logo：优先用 .NET 版同款 AppLogo.png（对齐 ShellWindow.xaml）。
+        # 资源缺失时回退到文字标记，界面功能不受影响。
+        row.addWidget(build_logo_widget(size=28))
         row.addSpacing(12)
         divider = Divider(horizontal=False)
         divider.setFixedHeight(20)

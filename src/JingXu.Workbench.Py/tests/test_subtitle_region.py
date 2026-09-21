@@ -376,3 +376,97 @@ def test_removal_overlay_label_names_the_mode(qapp, tmp_path: Path) -> None:  # 
     label = page._region_canvas._removal_label
     assert label.startswith("实际去除区域")
     assert any(key in label for key in ("模糊", "遮盖", "裁切", "去标"))
+
+
+# ── 无帧时不得假装可拖拽 ────────────────────────────────────────────────────
+
+
+def test_canvas_does_not_draw_region_without_frame(qapp) -> None:
+    """没有预览帧时不画选框。
+
+    此前无帧仍画出选区，看起来已就绪却拖不动——实测用户就是卡在这里
+    （「字幕那个怎么移动不了」）。
+    """
+    canvas = SubtitleRegionCanvas()
+    canvas.resize(800, 400)
+
+    assert canvas.has_frame() is False
+    # 无帧时 _region_rect 仍有几何值，但绘制流程会在有帧判断处提前返回；
+    # 这里断言拖拽被拒绝（不产生状态变化）。
+    before = canvas.region()
+    _drag(canvas, QPoint(400, 200), QPoint(400, 120))
+    assert canvas.region() == before, "无帧时不应响应拖拽"
+
+
+def test_drag_works_once_frame_is_loaded(qapp) -> None:
+    """加载画面后拖拽必须生效。"""
+    canvas = _canvas()
+    canvas.set_region(0.2, 0.8, 0.5, 0.08)
+    before = canvas.region()
+    rect = canvas._region_rect()
+
+    _drag(canvas, rect.center(), rect.center() + QPoint(0, -30))
+
+    assert canvas.region()[1] < before[1]
+
+
+# ── 自动加载预览帧 ──────────────────────────────────────────────────────────
+
+
+def test_set_source_material_clears_previous_frame(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """换素材时先清掉旧画面，避免拿上一个素材的帧选框。"""
+    page = _subtitle_page(tmp_path)
+    pixmap = QPixmap(1080, 1920)
+    pixmap.fill(Qt.GlobalColor.black)
+    page._region_canvas.set_frame(pixmap)
+    page._region_canvas.set_removal_region((0.1, 0.8, 0.5, 0.1))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"stub")
+    monkeypatch.setattr(page, "_load_region_frame_async", lambda source: None)
+
+    page.set_source_material(video)
+
+    assert page._region_canvas.has_frame() is False
+    assert page._region_canvas.removal_region() is None
+    assert "正在读取预览帧" in page._region_hint.text()
+
+
+def test_same_source_does_not_reload(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """重复传同一素材不应反复抽帧（切页频繁触发）。"""
+    page = _subtitle_page(tmp_path)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"stub")
+    calls: list[str] = []
+    monkeypatch.setattr(page, "_load_region_frame_async", lambda source: calls.append(str(source)))
+
+    page.set_source_material(video)
+    page.set_source_material(video)
+
+    assert len(calls) == 1
+
+
+def test_frame_result_from_stale_source_is_ignored(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """过期结果必须丢弃：否则快速切素材会显示上一个素材的画面。"""
+    page = _subtitle_page(tmp_path)
+    stale = tmp_path / "old.mp4"
+    stale.write_bytes(b"stub")
+    page._source = tmp_path / "new.mp4"
+    pixmap = QPixmap(100, 100)
+    pixmap.fill(Qt.GlobalColor.red)
+
+    page._on_region_frame_ready(str(stale), pixmap, "")
+
+    assert page._region_canvas.has_frame() is False, "过期帧不得上屏"
+
+
+def test_frame_failure_reports_message(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """抽帧失败要给可读提示，不能静默。"""
+    page = _subtitle_page(tmp_path)
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"stub")
+    page._source = source
+
+    page._on_region_frame_ready(str(source), None, "抽取预览帧失败：素材损坏。")
+
+    assert "抽取预览帧失败" in page._region_hint.text()
+    assert page._status.objectName() == "CaptionWarn"

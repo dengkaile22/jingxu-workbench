@@ -220,13 +220,20 @@ class SubtitleRegionCanvas(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         display = self._display_rect()
 
-        if self.has_frame():
-            assert self._pixmap is not None
-            painter.drawPixmap(display, self._pixmap)
-        else:
+        if not self.has_frame():
+            # 没有画面时不画选框：画了会让人以为已就绪，实际拖不动（实测用户卡在这里）。
             painter.fillRect(display, QColor(theme.GATE_WELL))
             painter.setPen(QColor(theme.ON_GATE_MUTED))
-            painter.drawText(display, Qt.AlignmentFlag.AlignCenter, self._placeholder)
+            painter.drawText(
+                display,
+                Qt.AlignmentFlag.AlignCenter,
+                "正在读取预览帧…\n若长时间无画面，请在「混剪」页选中一个视频素材",
+            )
+            painter.end()
+            return
+
+        assert self._pixmap is not None
+        painter.drawPixmap(display, self._pixmap)
 
         # 区域遮罩：区域外压暗，区域本身画描边与四角把手
         painter.fillRect(self.rect(), QColor(0, 0, 0, 0))

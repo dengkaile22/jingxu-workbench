@@ -83,6 +83,12 @@ class OcrBridge(QObject):
     failed = Signal(str)
 
 
+class RegionFrameBridge(QObject):
+    """预览帧抽帧结果回主线程（跨线程必须走信号，不能用 QTimer）。"""
+
+    done = Signal(str, object, str)
+
+
 def _coerce(enum_type, value):  # noqa: ANN001, ANN202
     """Qt 会把 str 枚举退化成普通字符串（如 QComboBox 数据），这里统一还原。"""
     if isinstance(value, enum_type):
@@ -120,6 +126,9 @@ class SubtitlePage(QWidget):
         ocr_bridge.finished.connect(self._on_ocr_finished)
         ocr_bridge.failed.connect(self._on_ocr_failed)
         self._ocr_bridge = ocr_bridge
+
+        # 预览帧抽帧结果回主线程（跨线程不能用 QTimer，见 _load_region_frame_async）。
+        self._frame_bridge = RegionFrameBridge(self)
 
         # 整页放进滚动区：字幕表 + 烧录样式 + 硬字幕去除 + OCR 定位很长，
         # 窗口不够高时下方区块会被截断且无法滚动到。与合成页保持同一写法。
@@ -636,8 +645,79 @@ class SubtitlePage(QWidget):
     # ────────────────────────────── 识别 ──────────────────────────────
 
     def set_source_material(self, path: Path | None) -> None:
+        """接收混剪页选中的素材，并**自动加载预览帧**。
+
+        此前需要用户手动点「加载预览帧」才出现画面；没加载时画布只有占位提示，
+        区域框却仍然显示，看起来像已就绪但拖不动——实测用户会卡在这里。
+        现在换素材即自动取帧（后台线程，不阻塞界面）。
+        """
+        previous = getattr(self, "_source", None)
         self._source = Path(path) if path else None
         self._refresh_whisper_status()
+        if self._source is None or self._source == previous:
+            return
+        if not self._source.is_file():
+            return
+        # 先清掉旧画面，避免显示上一个素材的帧造成误判。
+        self._region_canvas.set_frame(None)
+        self._region_canvas.set_removal_region(None)
+        self._region_hint.setText(f"正在读取预览帧：{self._source.name} …")
+        self._load_region_frame_async(self._source)
+
+    def _load_region_frame_async(self, source: Path) -> None:
+        """后台抽帧并通过信号回主线程上屏（避免大文件阻塞界面，也避免跨线程改界面）。
+
+        注意：不能在**工作线程**里用 ``QTimer.singleShot`` 回调主线程——该线程
+        没有事件循环，回调永不执行（实测帧一直加载不出来）。必须用 Qt 信号跨线程。
+        """
+        import threading
+
+        bridge = self._frame_bridge
+        bridge.done.connect(self._on_region_frame_ready)
+
+        def work() -> None:
+            pixmap: QPixmap | None = None
+            message = ""
+            try:
+                frame_path = extract_single_frame(
+                    Path(self._ffmpeg),
+                    source,
+                    self._frame_directory() / f"subtitle-frame-{uuid4().hex[:8]}.png",
+                )
+                loaded = QPixmap(str(frame_path))
+                if loaded.isNull():
+                    message = "预览帧无法读取。"
+                else:
+                    pixmap = loaded
+            except FramePreviewError as error:
+                message = str(error)
+            except Exception as error:  # noqa: BLE001 - 后台线程不得抛出
+                message = f"读取预览帧失败：{error}"
+            # 信号跨线程投递，由主线程执行 _on_region_frame_ready
+            bridge.done.emit(str(source), pixmap, message)
+
+        threading.Thread(target=work, name="jingxu-subtitle-frame", daemon=True).start()
+
+    def _on_region_frame_ready(
+        self,
+        source_text: str,
+        pixmap: object,
+        message: str,
+    ) -> None:
+        """主线程接收抽帧结果。期间又换了素材则丢弃本次结果。"""
+        if self._source is None or str(self._source) != source_text:
+            return
+        if not isinstance(pixmap, QPixmap) or pixmap.isNull():
+            text = message or "读取预览帧失败。"
+            self._region_hint.setText(text)
+            self._set_status(text, warn=True)
+            return
+        self._region_canvas.set_frame(pixmap)
+        self._region_hint.setText(
+            f"预览帧 {pixmap.width()}×{pixmap.height()}：拖拽选框调整区域，"
+            "橙框为实际去除范围。"
+        )
+        self._refresh_removal_overlay()
 
     def start_transcription(self) -> None:
         if self._worker is not None and self._worker.is_alive():

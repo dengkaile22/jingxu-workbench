@@ -306,3 +306,73 @@ def test_page_has_preview_section(qapp, tmp_path: Path) -> None:  # noqa: ANN001
     ]
     assert "预览与区域选择" in headers
     assert page._region_canvas is not None
+
+
+# ── 实际去除区域的可视标记（防止「框选偏了却看不出来」）────────────────────
+
+
+def test_removal_overlay_is_drawn_after_confirm(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """确认手动区域后，画布必须标出**实际生效**的去除范围。
+
+    只让用户拖框、却不显示真正会被去掉的范围，就无法发现框偏了——
+    实测出现过模糊只盖住文字上半截、下半截仍然清晰的情况。
+    """
+    page = _subtitle_page(tmp_path)
+    pixmap = QPixmap(1080, 1920)
+    pixmap.fill(Qt.GlobalColor.black)
+    page._region_canvas.set_frame(pixmap)
+    page._region_canvas.set_region(0.3, 0.84, 0.4, 0.05)
+
+    page._commit_manual_region()
+
+    overlay = page._region_canvas.removal_region()
+    assert overlay is not None, "画布应标出实际去除区域"
+    assert overlay == pytest.approx((0.30, 0.84, 0.40, 0.05), abs=1e-3)
+    assert "实际去除区域" in page._region_canvas._removal_label
+
+
+def test_removal_overlay_clears_when_disabled(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """关闭「启用硬字幕去除」后不应再显示去除标记（否则误导）。"""
+    page = _subtitle_page(tmp_path)
+    pixmap = QPixmap(1080, 1920)
+    pixmap.fill(Qt.GlobalColor.black)
+    page._region_canvas.set_frame(pixmap)
+    page._region_canvas.set_region(0.2, 0.8, 0.5, 0.06)
+    page._commit_manual_region()
+    assert page._region_canvas.removal_region() is not None
+
+    page._removal_enable.setChecked(False)
+
+    assert page._region_canvas.removal_region() is None
+
+
+def test_removal_overlay_follows_manual_percent_edits(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """手改百分比时标记要跟着动，否则标记与真实参数不一致。"""
+    page = _subtitle_page(tmp_path)
+    pixmap = QPixmap(1080, 1920)
+    pixmap.fill(Qt.GlobalColor.black)
+    page._region_canvas.set_frame(pixmap)
+    page._removal_enable.setChecked(True)
+
+    page._region_spins["y"].setValue(70)
+    page._region_spins["h"].setValue(12)
+
+    overlay = page._region_canvas.removal_region()
+    assert overlay is not None
+    assert overlay[1] == pytest.approx(0.70, abs=1e-3)
+    assert overlay[3] == pytest.approx(0.12, abs=1e-3)
+
+
+def test_removal_overlay_label_names_the_mode(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """标签要写清用哪种方式去除，便于判断效果差异。"""
+    page = _subtitle_page(tmp_path)
+    pixmap = QPixmap(1080, 1920)
+    pixmap.fill(Qt.GlobalColor.black)
+    page._region_canvas.set_frame(pixmap)
+    page._removal_enable.setChecked(True)
+    page._region_spins["w"].setValue(50)
+    page._region_spins["h"].setValue(10)
+
+    label = page._region_canvas._removal_label
+    assert label.startswith("实际去除区域")
+    assert any(key in label for key in ("模糊", "遮盖", "裁切", "去标"))

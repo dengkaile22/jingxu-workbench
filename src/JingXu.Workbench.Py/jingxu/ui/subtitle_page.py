@@ -401,6 +401,8 @@ class SubtitlePage(QWidget):
         self._region_hint.setText(
             f"预览帧 {pixmap.width()}×{pixmap.height()}：拖拽选框调整区域，完成后点「确认手动区域」。"
         )
+        # 载入帧后立即标出当前生效的去字幕区域，便于先看偏差再调整。
+        self._refresh_removal_overlay()
 
     def _frame_directory(self) -> Path:
         from jingxu.infrastructure.paths import data_directory
@@ -432,14 +434,42 @@ class SubtitlePage(QWidget):
         )
 
     def _sync_region_canvas_from_spins(self) -> None:
-        """手改百分比时同步画布选框，保持两者一致。"""
-        if not hasattr(self, "_region_canvas") or not self._region_canvas.has_frame():
+        """手改百分比时同步画布选框，并刷新「实际去除区域」标记。"""
+        if not hasattr(self, "_region_canvas"):
+            return
+        self._refresh_removal_overlay()
+        if not self._region_canvas.has_frame():
             return
         self._region_canvas.set_region(
             self._region_spins["x"].value() / 100.0,
             self._region_spins["y"].value() / 100.0,
             self._region_spins["w"].value() / 100.0,
             self._region_spins["h"].value() / 100.0,
+        )
+
+    def _refresh_removal_overlay(self) -> None:
+        """把**实际生效**的去字幕区域画到预览帧上。
+
+        只让用户拖框、却不显示「真正会被去掉的范围」，就无法发现框偏了——
+        实测出现过模糊只盖住文字上半截、下半截仍然清晰的情况。
+        """
+        canvas = getattr(self, "_region_canvas", None)
+        if canvas is None:
+            return
+        if not self._removal_enable.isChecked():
+            canvas.set_removal_region(None)
+            return
+        x = self._region_spins["x"].value() / 100.0
+        y = self._region_spins["y"].value() / 100.0
+        width = self._region_spins["w"].value() / 100.0
+        height = self._region_spins["h"].value() / 100.0
+        if width <= 0 or height <= 0:
+            canvas.set_removal_region(None)
+            return
+        mode = _coerce(RemovalMode, self._removal_mode.value())
+        canvas.set_removal_region(
+            (x, y, width, height),
+            label=f"实际去除区域 · {mode.display_text}",
         )
 
     def _build_ocr_row(self) -> QHBoxLayout:
@@ -808,6 +838,7 @@ class SubtitlePage(QWidget):
             self._updating = False
         self._persist()
         self._refresh_review_hint()
+        self._refresh_removal_overlay()
         span = f"{segment.start_seconds:.1f}s–{segment.end_seconds:.1f}s"
         if segment.requires_review:
             self._set_ocr_status(f"已应用检测区域（{span}），低置信区域已记录并完成人工复核。")

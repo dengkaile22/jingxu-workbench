@@ -42,6 +42,11 @@ class SubtitleRegionCanvas(QWidget):
         self._drag_mode: str | None = None
         self._drag_origin = QPoint()
         self._drag_start_region = DEFAULT_REGION
+        # 实际生效的去字幕区域（可能来自 OCR 或手填百分比，与上面的可拖拽选框
+        # 未必一致）。必须画出来：否则用户框选后无法判断是否真的对准字幕——
+        # 实测出现过「模糊只盖住文字上半截、下半截仍清晰」的情况。
+        self._removal_region: tuple[float, float, float, float] | None = None
+        self._removal_label = ""
 
     # ────────────────────────────── 数据 ──────────────────────────────
 
@@ -58,6 +63,20 @@ class SubtitleRegionCanvas(QWidget):
     def set_region(self, x: float, y: float, width: float, height: float) -> None:
         self._region = _clamp_region((x, y, width, height))
         self.update()
+
+    def set_removal_region(
+        self,
+        region: tuple[float, float, float, float] | None,
+        *,
+        label: str = "",
+    ) -> None:
+        """标出**实际生效**的去字幕区域（与可拖拽选框分开显示）。"""
+        self._removal_region = region
+        self._removal_label = label
+        self.update()
+
+    def removal_region(self) -> tuple[float, float, float, float] | None:
+        return self._removal_region
 
     # ────────────────────────────── 几何 ──────────────────────────────
 
@@ -78,8 +97,11 @@ class SubtitleRegionCanvas(QWidget):
         return QRect(left, top, width, height)
 
     def _region_rect(self) -> QRect:
+        return self._rect_for(self._region)
+
+    def _rect_for(self, region: tuple[float, float, float, float]) -> QRect:
         display = self._display_rect()
-        x, y, width, height = self._region
+        x, y, width, height = region
         return QRect(
             display.left() + int(round(x * display.width())),
             display.top() + int(round(y * display.height())),
@@ -224,6 +246,29 @@ class SubtitleRegionCanvas(QWidget):
             painter.drawRect(
                 QRect(corner.x() - handle, corner.y() - handle, handle * 2, handle * 2)
             )
+
+        # 实际生效的去字幕区域：用虚线单独标出并加标签。
+        # 它与上面的可拖拽选框是两回事（可来自 OCR 或手填百分比），
+        # 画出来用户才能判断「手上的框」是否真的对上了字幕。
+        if self._removal_region is not None:
+            removal = self._rect_for(self._removal_region)
+            marker = QColor(theme.STATUS_RUNNING)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(marker, 2, Qt.PenStyle.DashLine))
+            painter.drawRect(removal)
+            label = self._removal_label or "实际去除区域"
+            metrics = painter.fontMetrics()
+            text_width = metrics.horizontalAdvance(label) + 10
+            text_height = metrics.height() + 2
+            label_rect = QRect(
+                removal.left(),
+                max(0, removal.top() - text_height - 2),
+                text_width,
+                text_height,
+            )
+            painter.fillRect(label_rect, marker)
+            painter.setPen(QColor(theme.ON_BRAND))
+            painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, label)
         painter.end()
 
 

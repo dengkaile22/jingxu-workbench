@@ -249,3 +249,149 @@ def test_entry_defaults_display_name_to_stem(tmp_path: Path) -> None:
     entry = StickerEntry(path=Path("素材/我的贴纸.png"))
     assert entry.display_name == "我的贴纸"
     assert entry.id
+
+
+# ── 随机贴纸库接进渲染（入队请求层的素材替换）──────────────────────────────
+
+
+def _media_assets(tmp_path: Path, count: int = 3):  # noqa: ANN202
+    from jingxu.domain.media import MediaAsset
+
+    assets = []
+    for index in range(1, count + 1):
+        path = tmp_path / f"clip{index}.mp4"
+        path.write_bytes(b"x" * 4096)
+        assets.append(
+            MediaAsset(
+                path=path, duration=3.0, width=1080, height=1920, fps=30.0, has_audio=True
+            )
+        )
+    return assets
+
+
+def _sticker_layers(tmp_path: Path, count: int = 2):  # noqa: ANN202
+    from jingxu.domain.layers import LayerKind, LayerSpec
+
+    layers = []
+    for index in range(count):
+        path = tmp_path / f"track{index}.png"
+        path.write_bytes(b"y" * 2048)
+        layers.append(
+            LayerSpec(kind=LayerKind.STICKER, source=path, x_percent=10.0 + index * 10)
+        )
+    return tuple(layers)
+
+
+def _build(tmp_path: Path, *, randomize: bool, batch: int = 3):  # noqa: ANN202
+    from jingxu.application.composition_service import CompositionDraft, build_requests
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    assets = _media_assets(tmp_path)
+    stickers = _make_files(tmp_path, "lib1.png", "lib2.png", "lib3.png")
+    draft = CompositionDraft(
+        batch_count=batch,
+        layers=_sticker_layers(tmp_path),
+        randomize_sticker_library=randomize,
+        sticker_library=tuple(stickers),
+    )
+    return build_requests(
+        assets=assets, draft=draft, output_directory=tmp_path / "out", pool=assets
+    )
+
+
+def test_disabled_random_library_keeps_track_sources(tmp_path: Path) -> None:
+    """开关关闭时必须原样使用轨道绑定的素材（不得偷偷替换）。"""
+    requests = _build(tmp_path, randomize=False)
+
+    for request in requests:
+        assert [layer.source.name for layer in request.layers] == ["track0.png", "track1.png"]
+
+
+def test_enabled_random_library_replaces_sources(tmp_path: Path) -> None:
+    """开启后每条成片的贴纸素材应来自素材库。"""
+    requests = _build(tmp_path, randomize=True)
+    library_names = {"lib1.png", "lib2.png", "lib3.png"}
+
+    for request in requests:
+        picked = {layer.source.name for layer in request.layers}
+        assert picked <= library_names, f"出现了库外素材：{picked}"
+
+
+def test_random_library_keeps_track_geometry(tmp_path: Path) -> None:
+    """只换素材、不动画法（位置/尺寸/透明度/旋转沿用轨道）。"""
+    requests = _build(tmp_path, randomize=True)
+
+    for request in requests:
+        assert [layer.x_percent for layer in request.layers] == [10.0, 20.0]
+
+
+def test_random_library_does_not_repeat_within_a_plan(tmp_path: Path) -> None:
+    """一个成片内的多条轨道应取到不同素材，否则随机没意义。"""
+    requests = _build(tmp_path, randomize=True)
+
+    for request in requests:
+        sources = [layer.source for layer in request.layers]
+        assert len(set(sources)) == len(sources)
+
+
+def test_random_library_varies_across_plans(tmp_path: Path) -> None:
+    """不同成片应产生不同组合（确定性洗牌重新洗牌）。"""
+    requests = _build(tmp_path, randomize=True, batch=3)
+    combos = {tuple(layer.source.name for layer in request.layers) for request in requests}
+    assert len(combos) > 1
+
+
+def test_random_library_is_reproducible(tmp_path: Path) -> None:
+    """同一输入两次构建结果必须一致（批量出片可复现）。"""
+    first = _build(tmp_path / "run", randomize=True)
+    second = _build(tmp_path / "run", randomize=True)
+
+    assert [tuple(l.source.name for l in r.layers) for r in first] == [
+        tuple(l.source.name for l in r.layers) for r in second
+    ]
+
+
+def test_random_library_with_empty_library_keeps_sources(tmp_path: Path) -> None:
+    """开启随机但库为空：不得清空素材，交由界面提示（否则成片会丢贴纸）。"""
+    from jingxu.application.composition_service import CompositionDraft, build_requests
+
+    assets = _media_assets(tmp_path)
+    draft = CompositionDraft(
+        batch_count=2,
+        layers=_sticker_layers(tmp_path),
+        randomize_sticker_library=True,
+        sticker_library=(),
+    )
+    requests = build_requests(
+        assets=assets, draft=draft, output_directory=tmp_path / "out", pool=assets
+    )
+
+    for request in requests:
+        assert [layer.source.name for layer in request.layers] == ["track0.png", "track1.png"]
+
+
+def test_random_library_ignores_non_sticker_layers(tmp_path: Path) -> None:
+    """蒙版图层不受贴纸随机替换影响。"""
+    from jingxu.application.composition_service import CompositionDraft, build_requests
+    from jingxu.domain.layers import LayerKind, LayerSpec
+
+    assets = _media_assets(tmp_path)
+    stickers = _make_files(tmp_path, "lib1.png", "lib2.png")
+    mask = tmp_path / "mask.png"
+    mask.write_bytes(b"z" * 2048)
+    draft = CompositionDraft(
+        batch_count=2,
+        layers=(
+            LayerSpec(kind=LayerKind.OVERLAY, source=mask, x_percent=50.0),
+            LayerSpec(kind=LayerKind.STICKER, source=stickers[0], x_percent=10.0),
+        ),
+        randomize_sticker_library=True,
+        sticker_library=tuple(stickers),
+    )
+    requests = build_requests(
+        assets=assets, draft=draft, output_directory=tmp_path / "out", pool=assets
+    )
+
+    for request in requests:
+        overlay = next(l for l in request.layers if l.kind is LayerKind.OVERLAY)
+        assert overlay.source.name == "mask.png", "蒙版素材不得被贴纸随机替换改动"

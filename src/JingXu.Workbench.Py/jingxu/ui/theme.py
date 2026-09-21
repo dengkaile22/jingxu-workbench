@@ -5,7 +5,10 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QFont
 
 FONT_BODY = "Microsoft YaHei UI"
-FONT_MONO = "Consolas"
+# 等宽字体：优先随包的 IBM Plex Mono（SIL OFL 1.1，与 .NET 版同一份文件），
+# 由 assets_loader.register_bundled_fonts() 在启动时注册；未注册成功时按回退链。
+FONT_MONO = "IBM Plex Mono"
+FONT_MONO_FALLBACKS = ("Consolas", "Cascadia Mono", "Courier New", "monospace")
 
 SURFACE_CANVAS = "#F3F1EA"
 SURFACE_PANEL = "#FCFBF7"
@@ -56,7 +59,10 @@ def body_font(pixel_size: int = 12, *, bold: bool = False) -> QFont:
 
 
 def mono_font(pixel_size: int = 12) -> QFont:
-    font = QFont(FONT_MONO)
+    font = QFont()
+    # 与 body_font 同理：给足回退链，随包字体未注册时也不会退化成比例字体，
+    # 时间码与数字列才不会错位。
+    font.setFamilies([FONT_MONO, *FONT_MONO_FALLBACKS])
     font.setPixelSize(pixel_size)
     return font
 

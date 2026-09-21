@@ -27,7 +27,7 @@ from jingxu.domain.effects import (
     FourScreenEffectPlan,
     MainMaterialBoostPlan,
 )
-from jingxu.domain.layers import LayerSpec
+from jingxu.domain.layers import LayerKind, LayerSpec
 from jingxu.domain.media import MediaAsset
 from jingxu.domain.render import (
     BgmSettings,
@@ -40,6 +40,7 @@ from jingxu.domain.render import (
 from jingxu.domain.splitscreen import SplitScreenSpec
 from jingxu.domain.subtitles import SubtitleBurnSpec, SubtitleRemovalSpec
 from jingxu.infrastructure.paths import unique_output_path
+from jingxu.infrastructure.sticker_library import select_random_sticker
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +66,10 @@ class CompositionDraft:
     layers: tuple[LayerSpec, ...] = ()
     subtitles: SubtitleBurnSpec | None = None
     removal: SubtitleRemovalSpec | None = None
+    # 「随机贴纸库」：开启后每条成片的贴纸轨道从素材库按种子确定性替换素材
+    # （对齐 .NET StickerEditorViewModel.TryBuildEnabledTracksForPlan）。
+    randomize_sticker_library: bool = False
+    sticker_library: tuple[Path, ...] = ()
 
 
 def build_preview(
@@ -175,13 +180,50 @@ def build_requests(
                 split=draft.split,
                 double_screen=_materialize_double(draft, plan, material_pool, offset),
                 four_screen=_materialize_four(draft, plan, material_pool, offset),
-                layers=draft.layers,
+                layers=_materialize_sticker_library(draft, offset),
                 subtitles=draft.subtitles,
                 removal=draft.removal,
             )
         )
 
     return requests
+
+
+def _materialize_sticker_library(draft: CompositionDraft, plan_index: int) -> tuple[LayerSpec, ...]:
+    """按「随机贴纸库」开关替换贴纸轨道的素材。
+
+    只替换素材、不动画法（位置/尺寸/透明度/旋转沿用轨道设置），与 .NET
+    「随机替换：每条成片从素材库选择 1 个，沿用当前轨道的画法」一致。
+
+    选择走确定性洗牌：同一成片序号结果固定可复现，一个成片内多条轨道不重复。
+    """
+    layers = draft.layers
+    if not draft.randomize_sticker_library:
+        return layers
+    sources = [Path(path) for path in draft.sticker_library if str(path)]
+    if not sources:
+        # 开启随机但库为空：不静默改变画法，交由界面提示用户（见 layer_page）。
+        return layers
+
+    sticker_indexes = [
+        index for index, layer in enumerate(layers) if layer.kind is LayerKind.STICKER
+    ]
+    if not sticker_indexes:
+        return layers
+
+    seed = draft.seed if draft.seed is not None else 0
+    replaced = list(layers)
+    for position, layer_index in enumerate(sticker_indexes):
+        chosen = select_random_sticker(
+            sources,
+            seed=seed,
+            plan_ordinal=max(0, plan_index),
+            track_index=position,
+            track_count=len(sticker_indexes),
+        )
+        if chosen is not None:
+            replaced[layer_index] = replace(layers[layer_index], source=chosen)
+    return tuple(replaced)
 
 
 def _materialize_double(

@@ -20,6 +20,7 @@ from pathlib import Path
 
 LOGO_FILE_NAME = "AppLogo.png"
 ICON_FILE_NAME = "AppIcon.ico"
+MONO_FONT_FILE_NAME = "IBMPlexMono-Regular.ttf"
 
 _ASSET_DIRECTORY = Path(__file__).resolve().parent / "assets"
 
@@ -53,6 +54,36 @@ def logo_path() -> Path | None:
 @lru_cache(maxsize=1)
 def icon_path() -> Path | None:
     return asset_path(ICON_FILE_NAME)
+
+
+@lru_cache(maxsize=1)
+def mono_font_path() -> Path | None:
+    """随包等宽字体（数字与时间码用）。
+
+    设计规格 6.2 要求「正文使用可随包分发的开源中文字体，数字和时间码使用等宽
+    字体」。.NET 版以 WPF Resource 方式随包携带 IBM Plex Mono；Python 版此前直接
+    用系统 ``Consolas``，在未安装该字体的机器上会回退到非等宽，时间码与数字列
+    无法对齐。这里复用 .NET 版同一份字体文件（同为 Apache-2.0，不新增许可）。
+    """
+    return asset_path(MONO_FONT_FILE_NAME)
+
+
+def register_bundled_fonts() -> list[str]:
+    """把随包字体注册进 Qt，返回成功注册的族名（供主题选用）。
+
+    必须在创建 QApplication 之后、设置应用字体之前调用。
+    """
+    from PySide6.QtGui import QFontDatabase
+
+    registered: list[str] = []
+    path = mono_font_path()
+    if path is None:
+        return registered
+    font_id = QFontDatabase.addApplicationFont(str(path))
+    if font_id >= 0:
+        families = QFontDatabase.applicationFontFamilies(font_id)
+        registered.extend(families)
+    return registered
 
 
 def has_logo() -> bool:

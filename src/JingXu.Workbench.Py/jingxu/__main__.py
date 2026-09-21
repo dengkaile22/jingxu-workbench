@@ -200,9 +200,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     from jingxu.infrastructure.queue import RenderQueue
+    from jingxu.ui.assets_loader import register_bundled_fonts
     from jingxu.ui.shell_window import ShellWindow
     from jingxu.ui.theme import apply_application_theme
 
+    # 必须先注册随包字体，再应用主题（主题按族名引用）。
+    register_bundled_fonts()
     apply_application_theme(app)
     queue = RenderQueue(ffmpeg)
     window = ShellWindow(ffmpeg, ffprobe, queue)

@@ -50,6 +50,9 @@ class SettingsPage(QWidget):
         self._ffprobe = Path(ffprobe)
         self._registry = registry
         self._queue = queue
+        # 页面销毁后置位：后台探测线程据此放弃发信号（否则向已释放的信号源 emit
+        # 会抛「Signal source has been deleted」）。
+        self._disposed = False
 
         bridge = SettingsBridge(self)
         bridge.ready.connect(self._apply_runtime_info)
@@ -263,15 +266,30 @@ class SettingsPage(QWidget):
         self._load_component_table()
 
         def work() -> None:
+            if self._disposed:
+                return
             info = collect_runtime_info(
                 self._ffmpeg,
                 self._ffprobe,
                 self._registry,
                 default_processing_selector(self._ffmpeg),
             )
-            self._bridge.ready.emit(info)
+            # 页面可能在探测期间被销毁（关闭窗口/切换项目）。此时桥对象的 C++
+            # 侧已释放，emit 会抛「Signal source has been deleted」。
+            # 实测在窗口关闭后必现，故双重判断：先看标记，再兜住异常。
+            if self._disposed:
+                return
+            try:
+                self._bridge.ready.emit(info)
+            except RuntimeError:
+                # 桥已随页面析构，丢弃这次结果即可。
+                return
 
         threading.Thread(target=work, name="jingxu-settings-probe", daemon=True).start()
+
+    def shutdown(self) -> None:
+        """标记页面已销毁，避免后台探测线程向已释放的信号源发信号。"""
+        self._disposed = True
 
     def _apply_runtime_info(self, info: RuntimeInfo) -> None:
         self._ffmpeg_label.setText(info.ffmpeg_path)

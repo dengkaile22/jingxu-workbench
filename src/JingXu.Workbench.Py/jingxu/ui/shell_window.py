@@ -1102,6 +1102,10 @@ class ShellWindow(QMainWindow):
                 layers=tuple(self._enabled_layers()),
                 subtitles=self._subtitle_page.burn_spec(),
                 removal=self._subtitle_page.removal_spec(),
+                # 「随机贴纸库」：开启后每条成片从贴纸素材库确定性替换轨道素材
+                # （对齐 .NET StickerEditorViewModel.TryBuildEnabledTracksForPlan）。
+                randomize_sticker_library=self._sticker_page.random_library_enabled,
+                sticker_library=tuple(self._sticker_library.sources),
             )
             subtitle_issues = self._subtitle_page.timeline_issues()
             if subtitle_issues:
@@ -1285,4 +1289,7 @@ class ShellWindow(QMainWindow):
         self._download_queue.stop()
         # 选品抓取与扫码登录都跑在子进程里，必须一并收掉。
         self._spider_page.shutdown()
+        # 设置页有后台探测线程（编码器/运行时）；页面销毁后它会向已释放的信号源
+        # emit 并抛「Signal source has been deleted」——实测关闭窗口必现。
+        self._settings_page.shutdown()
         super().closeEvent(event)

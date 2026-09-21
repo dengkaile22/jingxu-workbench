@@ -5,8 +5,8 @@
 
 ## 交付物
 
-**Python 版与 .NET 版统一输出到 `artifacts/release/`**，交付只认这一个目录。
-为避免互相覆盖，各脚本维护各自的校验和文件：
+交付统一输出到 `artifacts/release/`，交付只认这一个目录。
+各脚本维护各自的校验和文件，避免互相覆盖：
 
 | 文件 | 说明 |
 |------|------|
@@ -14,15 +14,19 @@
 | `artifacts/release/SHA256SUMS-Py.txt` | Python 版 MSI 校验和 |
 | `artifacts/release/炳恒快速混剪-Py-Portable-win-x64.zip` | Python 版便携包（解压即用） |
 | `artifacts/release/SHA256SUMS-PyPortable.txt` | Python 版便携包校验和 |
-| `artifacts/release/炳恒快速混剪-win-x64.msi`、`SHA256SUMS.txt` | .NET 版产物（由 .NET 流水线维护） |
-| `artifacts/py-build/炳恒快速混剪/` | 未压缩的便携目录（构建中间产物，便于排查） |
+| `artifacts/py-build/炳恒快速混剪/` | 未压缩的便携目录（构建中间产物，便于排查；可安全删除，脚本会重建） |
 
 命名中的 `Py` 用于与 .NET 版产物区分，避免两者混用。
+
+> **当前交付目录只含 Python 版产物。** .NET 版交付物
+> （`炳恒快速混剪-win-x64.msi`、`炳恒快速混剪-Portable-win-x64.zip`、`SHA256SUMS.txt`）
+> 已在仓库清理中移除，以避免与在用版本混淆；.NET 源码与构建脚本仍保留，
+> 需要时用 `scripts/Publish-Msi.ps1` 重建。
 
 > 历史 `dist/` 交付目录已废弃（内容与 `artifacts/release/` 完全相同）；
 > 打包脚本不再向其同步，`Build-Installer.ps1` / `Publish-Msi.ps1` 均只写
 > `artifacts/release/`。注意 `Build-Portable-Py.ps1` 只覆盖本次产出的同名文件，
-> **不会**整目录清理，以免误删 .NET 版交付物。
+> **不会**整目录清理，以免误删同目录下的其它交付物。
 
 ## 构建 MSI 安装包
 

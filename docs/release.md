@@ -4,9 +4,12 @@
 
 描述便携包与 MSI 安装程序的目标产物与脚本。运行时哈希等 **开发现状** 见 [modules/runtime-packaging-status.md](modules/runtime-packaging-status.md) 与 [acceptance-report.md](acceptance-report.md)。
 
-> **Python 版（PySide6）另有独立打包链路**，两者统一输出到 `artifacts/release/`，见
-> [release-python.md](release-python.md)（`scripts/Build-Portable-Py.ps1` +
+> **本文描述的是 .NET 版（WPF）流水线。当前对外交付的是 Python 版**，
+> 见 [release-python.md](release-python.md)（`scripts/Build-Portable-Py.ps1` +
 > `scripts/jingxu.spec` + `scripts/Build-Installer-Py.ps1`）。
+>
+> .NET 版的安装包与便携包**已从交付目录移除**以避免与在用版本混淆；
+> .NET 源码与本文所述脚本仍保留，可随时重建。
 
 ## 目标设计
 

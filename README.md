@@ -22,12 +22,16 @@
 完全离线的 Windows 桌面视频批处理软件：随机/自定义序号拼接、画幅适配、滤镜贴纸 BGM、三类视频蒙版、离线字幕实验室与可恢复渲染队列。
 
 **平台：** Windows 10/11 x64  
-**分发：** Windows 标准 MSI 安装包（`artifacts/release/炳恒快速混剪-win-x64.msi`，未签名时可能触发 SmartScreen，见下文）
+**分发：** Windows 标准 MSI 安装包（`artifacts/release/炳恒快速混剪-Py-win-x64.msi`，未签名时可能触发 SmartScreen，见下文）
+
+> **实现说明：** 当前交付的是 **Python 版**（`src/JingXu.Workbench.Py`，PySide6）。
+> 仓库仍保留 .NET 版源码（`src/JingXu.Workbench*`）作为功能参照，
+> 但**其安装包与便携包已不再产出**；如需重建，见 `scripts/Publish-Msi.ps1`。
 
 ## 快速开始
 
-1. 双击运行 `artifacts/release/炳恒快速混剪-win-x64.msi`（或从发布页下载的 MSI 安装包）。
-2. 安装完成后从桌面或开始菜单启动「炳恒快速混剪」。本包为 **自包含** 发布，目标机器 **无需** 安装 .NET 运行时。
+1. 双击运行 `artifacts/release/炳恒快速混剪-Py-win-x64.msi`（或从发布页下载的 MSI 安装包）。
+2. 安装完成后从桌面或开始菜单启动「炳恒快速混剪」。本包为 **自包含** 发布（随包 Python 与 `runtime/`），目标机器 **无需** 安装 Python 或 .NET 运行时。
 3. 拖入 MP4/MOV/MKV 等素材，确认左侧序号与缩略图。
 4. 在中央编排区选择 **随机拼接** 或 **自定义序号**（紧凑输入 `264513` 或逗号输入 `2,6,4,5,1,3`）。
 5. 在右侧设置画幅、质量与输出目录，点击 **入队渲染**；在底部队列查看进度、日志与打开输出目录。
@@ -104,13 +108,24 @@ MSI 安装包为 `artifacts/release/炳恒快速混剪-Py-win-x64.msi`，
 
 ## 构建发布 MSI（开发者）
 
+当前交付的 Python 版：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.ps1
+```
+
+先跑便携包（生成 `artifacts/py-build/`），再跑安装包（对其打包），输出至
+`artifacts/release/炳恒快速混剪-Py-win-x64.msi`，详见 [docs/release-python.md](docs/release-python.md)。
+
+.NET 参考版仍可重建（需要 .NET 10 SDK 与 WiX 6）：
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-Msi.ps1 -AllowPlaceholderHash -BootstrapFromPath
 ```
 
-执行后将自动完成编译发布、依赖打包与 WiX 6 构建，并输出至 `artifacts/release/炳恒快速混剪-win-x64.msi`。
-
-详见 [docs/release.md](docs/release.md)。
+> 注意：该命令会重新生成 `artifacts/release/炳恒快速混剪-win-x64.msi` 与 `SHA256SUMS.txt`，
+> 即把已清理的 .NET 交付物再放回交付目录。
 
 ## SmartScreen 与代码签名
 

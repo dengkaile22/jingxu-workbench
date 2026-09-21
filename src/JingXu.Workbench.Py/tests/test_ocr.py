@@ -251,10 +251,13 @@ def test_detect_subtitle_regions_runs_full_pipeline(
 
     assert len(segments) == 1
     segment = segments[0]
-    assert segment.x_percent == pytest.approx(10.0)
-    assert segment.y_percent == pytest.approx(86.5)
-    assert segment.width_percent == pytest.approx(20.0)
-    assert segment.height_percent == pytest.approx(4.5)
+    # TSV 框 64,252 128x36 / 640x360 = 10% / 70% / 20% / 10%。
+    # 检测框会按 SEGMENT_PADDING_X/Y 外扩（去字幕需盖住描边与阴影），
+    # 因此断言「基础坐标 + 留边」而不是原始框。
+    assert segment.x_percent == pytest.approx(10.0 - ocr_module.SEGMENT_PADDING_X * 100)
+    assert segment.y_percent == pytest.approx(70.0 - ocr_module.SEGMENT_PADDING_Y * 100)
+    assert segment.width_percent == pytest.approx(20.0 + ocr_module.SEGMENT_PADDING_X * 200)
+    assert segment.height_percent == pytest.approx(10.0 + ocr_module.SEGMENT_PADDING_Y * 200)
     assert segment.start_seconds == pytest.approx(0.0)
     assert segment.end_seconds == pytest.approx(1.5)
     assert segment.confidence == pytest.approx(0.82)
@@ -308,10 +311,98 @@ def test_detect_subtitle_regions_scales_by_page_size(
     )
 
     assert len(segments) == 1
-    assert segments[0].x_percent == pytest.approx(10.0)
-    assert segments[0].y_percent == pytest.approx(80.0)
-    assert segments[0].width_percent == pytest.approx(20.0)
-    assert segments[0].height_percent == pytest.approx(10.0)
+    # TSV 框 128,576 256x72 / 1280x720 = 10% / 80% / 20% / 10%。
+    # 检测结果会按 SEGMENT_PADDING_X/Y 各外扩一圈（去字幕需要盖住描边），
+    # 因此这里断言「基础坐标 + 留边」而不是原始框。
+    assert segments[0].x_percent == pytest.approx(10.0 - ocr_module.SEGMENT_PADDING_X * 100)
+    assert segments[0].y_percent == pytest.approx(80.0 - ocr_module.SEGMENT_PADDING_Y * 100)
+    assert segments[0].width_percent == pytest.approx(20.0 + ocr_module.SEGMENT_PADDING_X * 200)
+    assert segments[0].height_percent == pytest.approx(10.0 + ocr_module.SEGMENT_PADDING_Y * 200)
+
+
+def test_detect_does_not_remap_box_into_scan_region(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：Tesseract 处理整帧，坐标已是全画面绝对比例，不得再按扫描区映射一次。
+
+    此前多映射一次：底部分区（y 0.55 起）的框被压扁并下移
+    （实测 y 90.5%/高 3.3% 被写成 y 95.7%/高 1.5%），去字幕盖不干净。
+    """
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"stub")
+
+    monkeypatch.setattr(
+        ocr_module, "_extract_frame",
+        lambda ffmpeg_path, video_path, timestamp, output_path: (
+            output_path.write_bytes(b"png") or True
+        ),
+    )
+
+    def fake_run(tesseract_path, list_file, *, language, session_dir, timeout=600.0, cancel_event=None):  # noqa: ANN001, ANN202
+        return "\n".join(
+            (
+                HEADER,
+                tsv_row(1, 1, 0, 0, 0, 0, 0, 0, 1080, 1920, -1, ""),
+                # 底部字幕：y=1737/1920=90.5%，高 63/1920=3.3%
+                tsv_row(5, 1, 1, 1, 1, 1, 317, 1737, 446, 63, 95, "字幕"),
+            )
+        )
+
+    monkeypatch.setattr(ocr_module, "_run_tesseract", fake_run)
+
+    segments = detect_subtitle_regions(
+        tmp_path / "ffmpeg",
+        video,
+        duration=1.0,
+        tesseract_path=tmp_path / "tesseract",
+        temp_directory=tmp_path,
+    )
+
+    assert len(segments) == 1
+    # 关键：y 必须落在文字本体的 90.5% 附近，而不是被压到 95% 以下。
+    assert segments[0].y_percent == pytest.approx(90.5 - ocr_module.SEGMENT_PADDING_Y * 100, abs=0.2)
+    assert segments[0].y_percent < 92.0, "不得被扫描区映射推到画面底部"
+
+
+def test_detected_region_tall_enough_for_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """单行字幕的检测框往往很扁，必须撑到最小高度，否则去字幕留残影。"""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"stub")
+
+    monkeypatch.setattr(
+        ocr_module, "_extract_frame",
+        lambda ffmpeg_path, video_path, timestamp, output_path: (
+            output_path.write_bytes(b"png") or True
+        ),
+    )
+
+    def fake_run(tesseract_path, list_file, *, language, session_dir, timeout=600.0, cancel_event=None):  # noqa: ANN001, ANN202
+        return "\n".join(
+            (
+                HEADER,
+                tsv_row(1, 1, 0, 0, 0, 0, 0, 0, 1080, 1920, -1, ""),
+                # 极扁的一行：高仅 20/1920 = 1.04%
+                tsv_row(5, 1, 1, 1, 1, 1, 300, 1700, 400, 20, 95, "字幕"),
+            )
+        )
+
+    monkeypatch.setattr(ocr_module, "_run_tesseract", fake_run)
+
+    segments = detect_subtitle_regions(
+        tmp_path / "ffmpeg",
+        video,
+        duration=1.0,
+        tesseract_path=tmp_path / "tesseract",
+        temp_directory=tmp_path,
+    )
+
+    assert len(segments) == 1
+    assert segments[0].height_percent >= ocr_module.MIN_SEGMENT_HEIGHT * 100 - 1e-6
+    # 撑开后仍须在画面内
+    assert segments[0].y_percent >= 0.0
+    assert segments[0].y_percent + segments[0].height_percent <= 100.0 + 1e-6
 
 
 def test_detect_subtitle_regions_raises_when_frames_fail(

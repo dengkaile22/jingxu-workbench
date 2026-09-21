@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from jingxu.domain.subtitles import DetectedSubtitleSegment
@@ -232,7 +232,12 @@ def map_box_to_scan_region(
     box: tuple[float, float, float, float],
     scan_region: tuple[float, float, float, float],
 ) -> tuple[float, float, float, float]:
-    """把扫描区内的相对框映射回全画面坐标。"""
+    """把「扫描区内的相对框」映射回全画面坐标。
+
+    仅适用于**先裁出扫描区再 OCR** 的流程。当前实现对整帧做 OCR，
+    Tesseract 返回的已是全画面绝对比例，因此检测链路**不再调用**本函数
+    （重复映射会把框压扁并错位）。保留此函数供裁切式流程与测试使用。
+    """
     x, y, width, height = box
     region_x, region_y, region_width, region_height = scan_region
     return (
@@ -240,6 +245,47 @@ def map_box_to_scan_region(
         region_y + y * region_height,
         width * region_width,
         height * region_height,
+    )
+
+
+# 检测框留边：只框住文字本体时，去字幕（模糊/覆盖/去标）会在字缘留下残影。
+SEGMENT_PADDING_X = 0.01
+SEGMENT_PADDING_Y = 0.006
+# 去字幕区域的最小高度：单行字幕的检测框往往很扁，太小会盖不住描边与阴影。
+MIN_SEGMENT_HEIGHT = 0.035
+
+
+def _pad_segment(segment: DetectedSubtitleSegment) -> DetectedSubtitleSegment:
+    """外扩检测框并收进画面范围，避免去字幕留残影。"""
+    left = segment.x_percent / 100.0 - SEGMENT_PADDING_X
+    top = segment.y_percent / 100.0 - SEGMENT_PADDING_Y
+    right = segment.x_percent / 100.0 + segment.width_percent / 100.0 + SEGMENT_PADDING_X
+    bottom = segment.y_percent / 100.0 + segment.height_percent / 100.0 + SEGMENT_PADDING_Y
+
+    left = max(0.0, left)
+    top = max(0.0, top)
+    right = min(1.0, right)
+    bottom = min(1.0, bottom)
+
+    # 高度不足时以中心为基准撑开，贴边时整体平移，保证框仍在画面内。
+    if bottom - top < MIN_SEGMENT_HEIGHT:
+        center = (top + bottom) / 2.0
+        top = center - MIN_SEGMENT_HEIGHT / 2.0
+        bottom = center + MIN_SEGMENT_HEIGHT / 2.0
+        if top < 0.0:
+            bottom -= top
+            top = 0.0
+        if bottom > 1.0:
+            top -= bottom - 1.0
+            bottom = 1.0
+        top = max(0.0, top)
+
+    return replace(
+        segment,
+        x_percent=left * 100.0,
+        y_percent=top * 100.0,
+        width_percent=max(0.0, right - left) * 100.0,
+        height_percent=max(0.0, bottom - top) * 100.0,
     )
 
 
@@ -287,7 +333,20 @@ def _run_tesseract(
     cancel_event: threading.Event | None = None,
 ) -> str:
     """以 TSV 输出批量识别 frames.txt，返回标准输出文本。"""
-    command = [str(tesseract_path), list_file.name, "stdout", "-l", language, "tsv"]
+    # 注意：TSV 必须用 -c tessedit_create_tsv=1 开启，**不能**把 tsv 当位置参数。
+    # tesseract 把 `outputbase` 之后的第一个位置参数当作**配置文件**，因此
+    # `tesseract frames.txt stdout -l chi_sim+eng tsv` 会报
+    # 「read_params_file: Can't open tsv」，然后退回纯文本输出。
+    # 后果是 parse_tesseract_tsv 解析不到任何词 → 检测到 0 个区域（此前实测如此）。
+    command = [
+        str(tesseract_path),
+        list_file.name,
+        "stdout",
+        "-l",
+        language,
+        "-c",
+        "tessedit_create_tsv=1",
+    ]
     stdout_path = session_dir / "ocr-output.tsv"
     stderr_path = session_dir / "ocr-error.log"
     try:
@@ -456,11 +515,16 @@ def detect_subtitle_regions(
                 word.width / size[0],
                 word.height / size[1],
             )
-            mapped = map_box_to_scan_region(normalized, scan_region)
-            observations.append((frame_times[page_index], *mapped, word.confidence))
+            # 注意：Tesseract 处理的是**整帧**图像，返回的坐标已经是全画面绝对
+            # 比例，**不能**再按 scan_region 映射一次。
+            # 此前多映射了一次，把底部分区（y 0.55 起）的框压扁：
+            # 实际 y=0.905/高=0.033 被写成 y=0.957/高=0.015，
+            # 结果是去字幕区域过窄、位置偏下，文字盖不干净。
+            # scan_region 只用于决定**抽帧时裁哪些区域**，不参与坐标换算。
+            observations.append((frame_times[page_index], *normalized, word.confidence))
 
         segments = cluster_observations(observations, total_duration=float(duration))
         report(100.0, f"检测完成：{len(segments)} 个区域")
-        return segments
+        return [_pad_segment(segment) for segment in segments]
     finally:
         shutil.rmtree(session_dir, ignore_errors=True)

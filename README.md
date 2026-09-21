@@ -90,14 +90,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Resolve-Runtimes.ps1
 已与 .NET 版对齐的能力：GPU 硬解与 `scale_qsv`/`scale_cuda` 缩放（含三级回退）、
 蒙版形状与 PNG 遮罩、贴纸独立画幅与宽高比锁定、音频库音量语义（−100..+100）。
 
-Windows x64 便携包打包：
+> **当前交付只保留 MSI。** 便携 ZIP 已从交付目录移除（内容与 MSI 重叠，约 466 MB）。
+> `Build-Portable-Py.ps1` 会先生成未压缩的便携目录 `artifacts/py-build/`——
+> MSI 就是对该目录打包，因此这一步是必需的前置。
+> 该脚本**默认仍会额外产出便携 ZIP**；只想构建 MSI 时加 `-SkipArchive` 跳过打包。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps1
+# 1) 生成未压缩便携目录（MSI 的输入）；-SkipArchive 表示不额外产出 ZIP
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps1 -SkipArchive
+# 2) 对其打包为 MSI
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.ps1
 ```
 
-产物为 `artifacts/release/炳恒快速混剪-Py-Portable-win-x64.zip`（含随包 `runtime/`），
-MSI 安装包为 `artifacts/release/炳恒快速混剪-Py-win-x64.msi`，
+产物为 `artifacts/release/炳恒快速混剪-Py-win-x64.msi`，
 详见 [docs/release-python.md](docs/release-python.md)。
 
 ## 输出与目录

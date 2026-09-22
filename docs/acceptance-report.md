@@ -1,5 +1,65 @@
 # 镜序工作台验收报告
 
+## 封版验收（2026-09，当前交付：Python 版）
+
+**交付物**：`artifacts/release/炳恒快速混剪-Py-win-x64.msi`
+（464.4 MB，SHA-256 `1e5a657bd81dcee7617a9aa33eff97c3c345b15ab6d02cccd79e5e6936188e7e`，
+与 `SHA256SUMS-Py.txt` 一致）
+
+### 测试矩阵（全部本机实跑）
+
+| 层次 | 项数 | 结果 | 命令 |
+|------|-----:|------|------|
+| 工作台单元测试 | 1094 | **通过** | `python -m pytest` |
+| 工作台集成测试（真机 FFmpeg） | 15 | **通过** | `python -m pytest -m integration` |
+| 爬虫项目测试 | 71 | **通过** | `cd src/JingXu.Spider && python -m pytest` |
+| 打包产物 `--self-test` | 1 | `exit=0` / `success=true` | 见下 |
+| 打包产物 `--import-check` | 1 | `exit=0` / `success=true` | 见下 |
+| 打包产物 `--ui-probe` | 1 | `exit=0` / `success=true` | 见下 |
+
+集成测试覆盖的真机链路：
+
+* 混合素材拼接与画幅适配、BGM + 封面 + 自动编码器；
+* 四屏羽化 + 贴纸 + 蒙版合成、双屏 + 主素材增强、自叠影；
+* 字幕烧录与硬字幕去除、形状遮罩像素级验收；
+* **队列端到端**：四种配置（顺序 / 随机批量 / 自定义序号 / 四屏+蒙版）并行入队，
+  逐个走到 `COMPLETED`，并用 ffprobe 复核分辨率与时长；失败任务生成
+  `.jingxu-logs/<任务ID>/` 归档；并发 1 与 2 都能跑完；
+* 混剪页「效果预览」真实叠层渲染；
+* 选品爬虫运行环境（内置解释器启动、依赖真正 import、浏览器可用、探测不写字节码）；
+* 真实浏览器占用档案时的占用探测。
+
+### 打包产物验证命令
+
+```powershell
+$app = 'artifacts\py-build\炳恒快速混剪\炳恒快速混剪.exe'
+& $app --self-test    --report-file selftest.json   # success=true
+& $app --import-check --report-file import.json     # success=true（扫码登录组件真的在包里）
+& $app --ui-probe     --report-file ui.json         # success=true（预览画布 216×384，占控件 87%）
+```
+
+> 这三条是**发布前必跑**的门禁：`--import-check` 与 `--ui-probe` 分别覆盖
+> "运行期动态导入有没有打进包"与"UI 在真实布局里是否可用"，
+> 都是源码测试覆盖不到、只在冻结后才暴露的问题。
+
+### 已知限制（未因封版而改变）
+
+* **未做代码签名**：首次运行可能触发 SmartScreen，属预期行为。
+* **爬虫真实抓取未验证**：抖音/快手有反爬且需登录态与真实对标账号，
+  本机只能验证环境与失败可定位，详见 [spider-rewrite-status.md](spider-rewrite-status.md) §6。
+* **NVIDIA / AMD 硬件编码未实机测量**：本机只有 Intel QSV 可实测；
+  CUDA/AMF 有代码路径与探测，装到对应设备通过探测后才会启用。
+* **125%/150% 真机缩放未人工确认**：自动化检查覆盖了固定高度 vs 字体行高、
+  滚动兜底与数字输入框不截断，但未在真实高缩放显示器上逐项目视。
+* **MSI 升级（覆盖安装）与卸载不删用户数据未实测**。
+
+---
+
+## 历史内容（.NET 版时期，仅作迁移参照）
+
+> 以下为 .NET(WPF) 版阶段的验收记录。当前交付为 **Python 版**，验收以本节之前的
+> 「封版验收」为准；.NET 源码保留在 `src/JingXu.Workbench*` 仅作功能对照。
+
 **日期：** 2026-07-10（总控收口验证：2026-07-11）  
 **规格：** [2026-07-10-video-workbench-design.md](superpowers/specs/2026-07-10-video-workbench-design.md)  
 **工作树：** `feature/jingxu-implementation`（未提交）  

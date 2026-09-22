@@ -139,6 +139,56 @@ spider 模块有**两处**启动随包解释器，都必须带 `-B`：
 | 失败留档 | 实测生成 `logs/spider-*.log`，含退出码与输出尾部 |
 | 字节码抑制 | 对照实测 0 vs 1，已确认生效 |
 
+## 6.1 用户实测反馈后的两处修复（档案占用 / 扫码登录）
+
+用户截图反馈两个现象，排查后确认是**两个独立缺陷**，都已修复：
+
+### 缺陷 A：档案占用判定在 Windows 上恒为 False，报错又恒为 True
+
+**现象**：日志反复出现 `✗ [profile_locked] 浏览器档案正被另一个浏览器占用`；
+而界面上从不提前警告，用户点下去才失败。
+
+**根因**：两处判定（工作台 `spider.profile_in_use`、爬虫
+`diagnostics._profile_locked`）都靠"打开 `Default/LOCK` 看会不会失败"，
+而 Windows 上它是 **0 字节普通文件，可反复打开**，判定恒为 False；反过来，
+崩溃残留的 `SingletonLock` 又让判定恒为 True，把用户永久挡住。
+
+**修复**：新增 `core/profile_lock.py`（工作台有逐字副本，由
+`tests/test_spider_profile_lock.py` 断言一致），改为**按进程判定**：
+
+- 只有「命令行里带该档案目录的活浏览器进程」才算被占用；
+- 有锁文件但没有活进程 = 崩溃残留，**自动清理**并给出提示，不再阻断用户；
+- 探测链短路：psutil → wmic → PowerShell CIM，任一条给出结论即采信。
+
+> **实现过程中发现并修掉的第二个坑**：Chromium 只把档案目录写成
+> `--user-data-dir=<路径>`，早期实现拿**整个参数**去做路径规范化，于是它变成
+> `<当前目录>\--user-data-dir=c:\...`，**永远匹配不上**，探测实际恒为
+> 「未占用」。已改为识别带前缀形态，并有真实浏览器占用的端到端验证
+> （`tools/verify_profile_lock_e2e.py`、集成用例
+> `test_detects_real_browser_holding_profile`）。
+
+### 缺陷 B：打包版的扫码登录按钮是坏的
+
+**现象**：点「抖音登录」提示
+`爬虫组件加载失败：No module named 'DrissionPage'。请安装爬虫依赖（DrissionPage 等）。`
+
+**根因**：扫码登录在**应用进程内**执行
+`from core.browser_manager import BrowserManager`，而它 `import DrissionPage`；
+PyInstaller 的静态分析看不到这种运行期动态导入，`jingxu.spec` 既没有
+`hiddenimports` 也没有 `collect_all`，**DrissionPage 根本没被打进包**。
+源码运行正常，只有装机版失败——而提示语又把"打包漏收集"误导成"请安装依赖"，
+用户在已安装的 MSI 里照做无从下手。
+
+**修复**：
+
+1. `jingxu.spec` 用 `collect_all` 显式收集 DrissionPage 及其运行时依赖
+   （lxml / websocket / cssselect / tldextract / filelock / psutil）；
+2. 报错文案区分「缺组件（并说明怎么装）」与「浏览器启动失败（附类型、浏览器
+   路径、档案路径）」；
+3. 新增 `tests/test_packaging_login_deps.py` 把「登录所需模块」与「spec 收集
+   范围」绑成断言——以后新增登录依赖却忘了写进 spec 会直接失败；
+4. 档案被占用时，登录/抓取**在启动浏览器之前**就拦住并说明是哪个进程。
+
 ### 未验证部分（重要）
 
 **真实抖音/快手抓取无法在本机验证**，原因：

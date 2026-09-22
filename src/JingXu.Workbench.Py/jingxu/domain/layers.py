@@ -9,6 +9,19 @@ from uuid import uuid4
 
 SELF_SOURCE = ":self:"
 
+# ── 导入蒙版的默认落点与画法（逐值对齐 .NET ``OverlayLayer``）─────────────────
+# .NET 的导入默认不是"不透明铺满"，而是「红框区内半透明叠影 + 中间→上渐变」：
+#   ImportedMaskBounds = (0.05, 0.05, 0.90, 0.42)   # 上半屏略收，减轻盖住下半商品
+#   GhostOverlayOpacity = 0.28
+#   GhostOverlayTopFade = 1.0
+#   GhostOverlayFeather = 0.28
+# Python 的矩形用「中心点 + 宽高百分比」，与 .NET 的「左上角 + 宽高」表达等价，
+# 因此下面给的是换算后的中心值（y 中心 = 0.05 + 0.42/2 = 0.26）。
+IMPORTED_MASK_BOUNDS: tuple[float, float, float, float] = (0.05, 0.05, 0.90, 0.42)
+GHOST_OVERLAY_OPACITY = 0.28
+GHOST_OVERLAY_TOP_FADE = 1.0
+GHOST_OVERLAY_FEATHER = 0.28
+
 # 形状遮罩常量（对齐 .NET OverlayLayer 的硬编码取值）
 DEFAULT_MASK_CORNER_RADIUS_PX = 8.0
 MIN_MASK_CORNER_RADIUS_PX = 1.0
@@ -140,6 +153,15 @@ class LayerSpec:
     rotation_degrees: float = 0.0
     feather: float = 0.0
     top_fade: float = 0.0
+    # ── 输出叠层框的额外位移（对齐 .NET OverlayLayer.OffsetX / OffsetY）────────
+    # .NET 把定位拆成两套参数：``Bounds`` 决定框的位置与大小，``OffsetX/OffsetY``
+    # 再对框做整体平移（归一化 -1~1，1 表示平移一个画面宽/高）。
+    # Python 的 ``x_percent``/``y_percent`` 是「框中心占画面的百分比」，
+    # 与 .NET 的 ``Bounds`` 落点等价；这两个字段补上 .NET 那一层"整体挪框"，
+    # 因此既能保持老项目的观感（默认 0 不改变任何落点），又能在预览里
+    # 拖框之后再整体微调。
+    offset_x: float = 0.0
+    offset_y: float = 0.0
     source_crop_canvas: bool = False
     source_crop_y: float = 0.0
     source_crop_bounds: tuple[float, float, float, float] | None = None
@@ -288,3 +310,35 @@ class LayerSpec:
         if float(self.height_percent) <= 0:
             return "PNG 遮罩需要显式高度（当前高度为 0，将无法与图层画面逐像素对齐）。"
         return None
+
+
+def imported_mask_layer(source: Path) -> LayerSpec:
+    """新建蒙版的默认配置（对齐 .NET ``CreateGhostOverlayPreset``）。
+
+    .NET 导入蒙版不是"不透明铺满整屏"，而是**上半红框区内的半透明叠影**：
+
+    * 落点 ``ImportedMaskBounds(0.05, 0.05, 0.90, 0.42)``——上半屏略收，
+      减轻盖住下半的商品主体；
+    * 透明度 0.28、中间→上渐变 1.0、底边羽化 0.28。
+
+    这里把「左上角 + 宽高」换算成 Python 的「中心点 + 宽高百分比」：
+    ``x 中心 = 0.05 + 0.90/2 = 0.50``、``y 中心 = 0.05 + 0.42/2 = 0.26``。
+    """
+    x, y, width, height = IMPORTED_MASK_BOUNDS
+    return LayerSpec(
+        kind=LayerKind.OVERLAY,
+        source=Path(source),
+        x_percent=(x + width / 2) * 100,
+        y_percent=(y + height / 2) * 100,
+        width_percent=width * 100,
+        opacity=GHOST_OVERLAY_OPACITY,
+        top_fade=GHOST_OVERLAY_TOP_FADE,
+        feather=GHOST_OVERLAY_FEATHER,
+        fit="fill_crop",
+    )
+
+
+def self_ghost_layer() -> LayerSpec:
+    """主片自叠影的默认配置（对齐 .NET ``CreateSelfGhostPreset``）。"""
+    layer = imported_mask_layer(Path(SELF_SOURCE))
+    return replace(layer, kind=LayerKind.OVERLAY)

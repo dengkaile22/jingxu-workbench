@@ -12,15 +12,34 @@ from jingxu.domain.layers import (
     LayerKind,
     LayerShapeMask,
     LayerSpec,
+    imported_mask_layer,
 )
 from jingxu.infrastructure.paths import data_directory
 
 OVERLAY_FILE_NAME = "overlay-layers.json"
 STICKER_FILE_NAME = "sticker-layers.json"
+# 蒙版素材库（对齐 .NET ``OverlayLibraryDocument``）：与「蒙版轨道」分开存放，
+# 轨道是"画法"，素材库是"有哪些蒙版可用"。
+OVERLAY_LIBRARY_FILE_NAME = "overlay-library.json"
 
 
 def _store_name(kind: LayerKind) -> str:
     return OVERLAY_FILE_NAME if kind is LayerKind.OVERLAY else STICKER_FILE_NAME
+
+
+def _clamp_offset(raw: object) -> float:
+    """解析并夹取归一化位移（对齐 .NET ``MinOffset``/``MaxOffset`` = -1~1）。
+
+    旧项目没有该键、或值非法/超范围时回落到 0（不位移），
+    保证迁移前后落点完全一致。
+    """
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if value != value:  # NaN
+        return 0.0
+    return max(-1.0, min(value, 1.0))
 
 
 def _parse_crop_bounds(raw: object) -> tuple[float, float, float, float] | None:
@@ -43,6 +62,8 @@ def layer_to_payload(layer: LayerSpec) -> dict:
         "end_seconds": layer.end_seconds,
         "x_percent": layer.x_percent,
         "y_percent": layer.y_percent,
+        "offset_x": layer.offset_x,
+        "offset_y": layer.offset_y,
         "width_percent": layer.width_percent,
         "height_percent": layer.height_percent,
         "opacity": layer.opacity,
@@ -137,6 +158,9 @@ def layer_from_payload(kind: LayerKind, entry: dict) -> LayerSpec | None:
             end_seconds=float(entry.get("end_seconds") or 0.0),
             x_percent=float(entry.get("x_percent", 50.0)),
             y_percent=float(entry.get("y_percent", 50.0)),
+            # 旧项目没有这两个键：默认 0，落点与迁移前完全一致。
+            offset_x=_clamp_offset(entry.get("offset_x")),
+            offset_y=_clamp_offset(entry.get("offset_y")),
             width_percent=float(entry.get("width_percent", 30.0)),
             height_percent=float(entry.get("height_percent") or 0.0),
             opacity=float(entry.get("opacity", 1.0)),
@@ -167,9 +191,13 @@ def layer_from_payload(kind: LayerKind, entry: dict) -> LayerSpec | None:
         return None
 
 
+def overlay_library_path() -> Path:
+    """蒙版素材库的落盘路径（对齐 .NET ``OverlayLibraryDocument`` 的独立文件）。"""
+    return data_directory() / OVERLAY_LIBRARY_FILE_NAME
+
+
 class LayerStore:
     """按图层种类维护一份有序列表。"""
-
     def __init__(self, kind: LayerKind, store_path: Path | None = None) -> None:
         self._kind = kind
         self._store_path = Path(store_path) if store_path else data_directory() / _store_name(kind)
@@ -194,7 +222,16 @@ class LayerStore:
         return [layer for layer in self._layers if layer.enabled]
 
     def add(self, source: Path) -> LayerSpec:
-        layer = LayerSpec(kind=self._kind, source=Path(source))
+        """新增一条图层。
+
+        蒙版走 .NET 的「叠影预设」默认值（上半红框区 + 半透明 + 中间→上渐变），
+        而不是"不透明铺满"：导入即铺满会盖住下半屏商品主体，用户第一眼就要手动
+        调小，这是 .NET 特意选的默认。贴纸保持朴素默认（贴纸没有红框区概念）。
+        """
+        if self._kind is LayerKind.OVERLAY:
+            layer = imported_mask_layer(Path(source))
+        else:
+            layer = LayerSpec(kind=self._kind, source=Path(source))
         self._layers.append(layer)
         self.save()
         return layer

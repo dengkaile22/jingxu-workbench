@@ -648,6 +648,33 @@ def _four_screen_chain(
     )
 
 
+def _relative_scale_filter(layer: LayerSpec, width: int, height_limit: int) -> str:
+    """图层内容的相对缩放（对齐 .NET ``BuildRelativeScale``）。
+
+    ``scale_percent`` 是**边界框内的均匀缩放**：100 表示不缩放，
+    >100 放大后中心裁回边界框，<100 缩小后用透明 pad 补回边界框
+    （.NET 用 ``color=0x00000000``，因此缩小是"留白"而不是"拉伸"）。
+
+    边界框高度分两种情况：
+
+    * ``height_limit > 0``（设了高度上限）→ 边界框是 ``width × height_limit``；
+    * ``height_limit == 0``（高度跟随素材自然比例）→ 边界框高度就是缩放后的
+      ``ih``，因为 ``scale=iw*s:ih*s`` 保持比例。
+
+    两者用同一套 crop/pad 表达式即可：高度取 ``min(ih,H)``，H≤0 时退化为 ``ih``。
+    """
+    scale = float(layer.scale_percent) / 100.0
+    if abs(scale - 1.0) <= 0.000001 or width <= 0:
+        return ""
+    box_height = f"min(ih\\,{height_limit})" if height_limit > 0 else "ih"
+    chain = f"scale=iw*{_decimal(scale)}:ih*{_decimal(scale)}"
+    if scale > 1.0:
+        chain += f",crop={width}:{box_height}:(iw-ow)/2:(ih-oh)/2"
+    else:
+        chain += f",pad={width}:{box_height}:(ow-iw)/2:(oh-ih)/2:color=0x00000000"
+    return chain
+
+
 def _build_layer_stages(
     chain: str,
     layer: LayerSpec,
@@ -1050,6 +1077,9 @@ def build_filter_graph(
 
             crop = _source_crop_filters(layer, settings)
             fit_chain = _layer_fit_filters(layer, settings, width, height_limit)
+            # 内容相对缩放紧跟在适配链之后、写 alpha 之前（.NET 同序）：
+            # 适配先把画面填进边界框，缩放再在框内均匀放大/缩小。
+            scale_chain = _relative_scale_filter(layer, width, height_limit)
 
             def _build_source(label: str) -> str:
                 chain = f"{label}trim=duration={_seconds(duration)},setpts=PTS-STARTPTS+{window_start:.3f}/TB"
@@ -1057,7 +1087,10 @@ def build_filter_graph(
                     chain += ",colorkey=black:0.10:0.06"
                 if crop:
                     chain += f",{crop}"
-                chain += f",{fit_chain},format=rgba,colorchannelmixer=aa={max(0.0, min(layer.opacity, 1.0)):.3f}"
+                chain += f",{fit_chain}"
+                if scale_chain:
+                    chain += f",{scale_chain}"
+                chain += f",format=rgba,colorchannelmixer=aa={max(0.0, min(layer.opacity, 1.0)):.3f}"
                 return chain
 
             rotate = ""
@@ -1093,8 +1126,11 @@ def build_filter_graph(
             )
             source = f"lay{order}"
 
-            x = f"main_w*{max(layer.x_percent, 0) / 100:.4f}-overlay_w/2"
-            y = f"main_h*{max(layer.y_percent, 0) / 100:.4f}-overlay_h/2"
+            # 框中心 + .NET 的 OffsetX/OffsetY 整体位移（1 表示平移一个画面宽/高）。
+            center_x = max(layer.x_percent, 0) / 100.0 + max(-1.0, min(layer.offset_x, 1.0))
+            center_y = max(layer.y_percent, 0) / 100.0 + max(-1.0, min(layer.offset_y, 1.0))
+            x = f"main_w*{center_x:.4f}-overlay_w/2"
+            y = f"main_h*{center_y:.4f}-overlay_h/2"
             target = f"vlay{order}"
             lines.append(f"[{previous}][{source}]overlay=x={x}:y={y}:eof_action=pass[{target}]")
             previous = target

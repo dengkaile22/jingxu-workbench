@@ -6,10 +6,12 @@
       "displayName": "FFmpeg",
       "relativePath": "ffmpeg/ffmpeg.exe",
       "required": true,
-      "versionArguments": ["-version"],
-      "sha256": "09948d4cdd0650da6ff5a87577469f2a218dc2615ae379f8f734d24c49de0f73",
+      "versionArguments": [
+        "-version"
+      ],
+      "sha256": "1326dde4c84ff1f96fe6b8916c5bed29e163e9b5dccf995f6f3db069d143ec5e",
       "licenseId": "GPL-3.0-or-later",
-      "sourceUrl": "https://ffmpeg.org/download.html",
+      "sourceUrl": "https://www.gyan.dev/ffmpeg/builds/",
       "sourceCodeUrl": "https://github.com/FFmpeg/FFmpeg"
     },
     {
@@ -17,10 +19,12 @@
       "displayName": "FFprobe",
       "relativePath": "ffmpeg/ffprobe.exe",
       "required": true,
-      "versionArguments": ["-version"],
-      "sha256": "a6618e99bb58869ded3c6f37b53aa1a8d701c3591dbb7b5b317d47369c112be2",
+      "versionArguments": [
+        "-version"
+      ],
+      "sha256": "b49ccc7c6547b141ad5a2f6ec69cc04323d7133d7704d70b331b904c63eecb07",
       "licenseId": "GPL-3.0-or-later",
-      "sourceUrl": "https://ffmpeg.org/download.html",
+      "sourceUrl": "https://www.gyan.dev/ffmpeg/builds/",
       "sourceCodeUrl": "https://github.com/FFmpeg/FFmpeg"
     },
     {
@@ -28,7 +32,9 @@
       "displayName": "Whisper.cpp",
       "relativePath": "whisper/whisper-cli.exe",
       "required": false,
-      "versionArguments": ["--help"],
+      "versionArguments": [
+        "--help"
+      ],
       "sha256": "95e3c0b0e778ad9499eb0125f97c1dcf437dd9eb4ea77050b043574f93c2631d",
       "licenseId": "MIT",
       "sourceUrl": "https://github.com/ggerganov/whisper.cpp/releases",
@@ -49,7 +55,9 @@
       "displayName": "Tesseract OCR",
       "relativePath": "tesseract/tesseract.exe",
       "required": false,
-      "versionArguments": ["--version"],
+      "versionArguments": [
+        "--version"
+      ],
       "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
       "licenseId": "Apache-2.0",
       "sourceUrl": "https://github.com/tesseract-ocr/tesseract",

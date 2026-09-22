@@ -102,8 +102,92 @@ analysis = Analysis(  # noqa: F821
         "pytest",
         "setuptools",
         "pip",
+        # OpenCV 是**构建机装了、产品不用**的包：产品代码与爬虫都没有 import cv2，
+        # 但它被传递依赖拖进产物（cv2.pyd 85 MB + opencv_videoio_ffmpeg 27 MB）。
+        # 唯一引用者是 DrissionPage 的 screencast.py（浏览器录屏），本应用不使用录屏。
+        "cv2",
+        "opencv",
+        "opencv_python",
     ],
     noarchive=False,
+)
+
+# ── 分析后的体积裁剪 ────────────────────────────────────────────────────────
+# PySide6 的 hook 会按「装了哪些子模块」而不是「代码 import 了什么」来收集，
+# 于是把 Qml/Quick/Pdf/Network 等整套带进来。产品只用 QtCore/QtGui/QtWidgets/
+# QtSvg（见各 ui/*.py 的 import），下面按文件名精确剔除，并同步剔除对应的
+# 顶层 Python 包，避免出现「有 .pyd 没 DLL」的半截状态。
+_DROP_BINARY_PREFIXES = (
+    "PySide6/Qt6Qml",
+    "PySide6/Qt6Quick",
+    "PySide6/Qt6Pdf",
+    "PySide6/Qt6Network",
+    "PySide6/Qt6OpenGL",
+    "PySide6/Qt6Sql",
+    "PySide6/Qt6Test",
+    "PySide6/Qt6Designer",
+    "PySide6/Qt6Help",
+    "PySide6/Qt6SerialPort",
+    "PySide6/Qt6Multimedia",
+    "PySide6/Qt6WebSockets",
+    "PySide6/Qt6WebEngine",
+    "PySide6/plugins/sqldrivers",
+    "PySide6/plugins/multimedia",
+    "PySide6/plugins/networkinformation",
+    "PySide6/plugins/tls",
+)
+_DROP_DATA_PREFIXES = ("PySide6/translations",)
+
+_DROP_PURE_MODULES = (
+    "PySide6.QtQml",
+    "PySide6.QtQuick",
+    "PySide6.QtPdf",
+    "PySide6.QtNetwork",
+    "PySide6.QtOpenGL",
+    "PySide6.QtSql",
+    "PySide6.QtTest",
+    "PySide6.QtDesigner",
+    "PySide6.QtHelp",
+    "PySide6.QtSerialPort",
+    "PySide6.QtMultimedia",
+    "PySide6.QtWebSockets",
+    "PySide6.QtWebEngineWidgets",
+)
+
+
+def _normalize(entry_name: str) -> str:
+    return entry_name.replace("\\", "/")
+
+
+def _keep_binary(entry) -> bool:
+    name = _normalize(entry[0])
+    return not any(name.startswith(prefix) for prefix in _DROP_BINARY_PREFIXES)
+
+
+def _keep_data(entry) -> bool:
+    name = _normalize(entry[0])
+    return not any(name.startswith(prefix) for prefix in _DROP_DATA_PREFIXES)
+
+
+def _keep_pure(entry) -> bool:
+    return entry[0] not in _DROP_PURE_MODULES
+
+
+_before = (
+    len(analysis.binaries),  # noqa: F821
+    len(analysis.datas),  # noqa: F821
+    len(analysis.pure),  # noqa: F821
+)
+analysis.binaries = [item for item in analysis.binaries if _keep_binary(item)]  # noqa: F821
+analysis.datas = [item for item in analysis.datas if _keep_data(item)]  # noqa: F821
+analysis.pure = [item for item in analysis.pure if _keep_pure(item)]  # noqa: F821
+print(
+    "[spec] 体积裁剪：binaries %d->%d，datas %d->%d，pure %d->%d"
+    % (
+        _before[0], len(analysis.binaries),  # noqa: F821
+        _before[1], len(analysis.datas),  # noqa: F821
+        _before[2], len(analysis.pure),  # noqa: F821
+    )
 )
 
 pyz = PYZ(analysis.pure)  # noqa: F821

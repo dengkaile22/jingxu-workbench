@@ -106,6 +106,31 @@ python -m pytest -m integration      # 真机渲染（需要 FFmpeg）
 | 音频库 | ✅ | 导入/移除/清空/持久化 |
 | 批量下载 | ✅ | yt-dlp 引擎、进度/取消/发送到素材、文件名行内编辑、续传与分片并发 |
 | 选品爬虫 | 🟡 | 内嵌爬虫组件可用；结果表对齐 .NET 八列（含「对标账号明细」与「示例视频链接」），并支持勾选后一键送入下载 |
+
+## 随包 FFmpeg 的选择（体积相关）
+
+随包使用 gyan.dev 的 **essentials** 构建而非 full：
+
+| | 二进制合计 | 说明 |
+|---|---|---|
+| full_build | 433.6 MB | 额外含 bluray / libsrt / libzmq / avisynth / libcaca / frei0r / vmaf / libplacebo / opencl / libjxl 等 |
+| **essentials_build** | **194.2 MB** | 本产品用到的全部滤镜、编码器与解复用器都在 |
+
+切换前逐项核验过 essentials 不缺口：
+
+* 滤镜 51 个全在（`ass`/`subtitles`/`delogo`/`boxblur`/`gblur`/`cropdetect`/`xstack`/
+  `xfade`/`acrossfade`/`colorkey`/`blend`/`loudnorm` 等，含字幕烧录依赖的
+  libass + freetype + fribidi + harfbuzz）；
+* 编码器全在（`libx264`、`aac`、`nvenc`/`qsv`/`amf` 的 h264 与 hevc）；
+* 解复用器全在（mp4/mov、matroska、avi、flv、mpegts、hls、image2、mp3、wav）；
+* 旧构建含而 essentials 不含的 `libdvdread`/`libdvdnav`/`libzvbi` 本产品不使用。
+
+切换后 15 项真机集成测试全部通过（同一批断言，含字幕烧录、硬字幕去除、
+四屏羽化、蒙版合成）。
+
+维护工具：`tools/verify_runtime_manifest.py` 核对清单哈希与实际文件是否一致，
+`tools/update_runtime_manifest.py` 在替换二进制后同步哈希与来源地址。
+
 | 设置 | ✅ | 运行时清单逐组件诊断表、编码器状态、并发、维护清理（保护运行中任务与字幕/缩略图）、关于 |
 | 启动维护 | ✅ | 后台孤儿清理（临时目录、过期半成品、下载残片）；崩溃日志写入 `<数据目录>/logs/crash-YYYYMMDD.log` |
 

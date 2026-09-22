@@ -85,11 +85,53 @@ def test_login_requirement_matches_spec_coverage() -> None:
 
 
 def test_spec_does_not_exclude_login_modules() -> None:
-    """别忘了 excludes 会覆盖 hiddenimports：被排除的模块仍然打不进包。"""
-    text = _spec_text()
-    start = text.find("excludes=")
-    assert start != -1, "spec 应显式声明 excludes"
-    end = text.find("]", start)
-    block = text[start:end]
+    """别忘了 excludes 会覆盖 hiddenimports：被排除的模块仍然打不进包。
+
+    用 AST **解析出 excludes 列表里的实际字符串**再比对，而不是在源码文本里
+    找关键字：后者会把注释里提到模块名误判成"被排除"，并且一旦列表换行或
+    出现嵌套结构就会静默截断。
+    """
+    excluded = _spec_excludes()
+    assert excluded, "spec 应显式声明 excludes"
+
     for module in ("DrissionPage", "lxml", "websocket", "psutil", "tldextract"):
-        assert module not in block, f"{module} 被 excludes 排除了，扫码登录会在打包版失效"
+        assert module not in excluded, (
+            f"{module} 被 excludes 排除了，扫码登录会在打包版失效"
+        )
+
+
+def _spec_excludes() -> set[str]:
+    """从 jingxu.spec 里取出 Analysis(excludes=[...]) 的字符串项。
+
+    spec 是 Python 源码（虽然由 PyInstaller 执行），可以直接 parse；
+    用 ``ast.literal_eval`` 取值，避免手工处理引号与注释。
+    """
+    import ast  # noqa: PLC0415
+
+    tree = ast.parse(_spec_text())
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "excludes":
+                continue
+            try:
+                value = ast.literal_eval(keyword.value)
+            except ValueError:  # pragma: no cover - 列表里出现非字面量时跳过
+                continue
+            found.update(str(item) for item in value)
+    return found
+
+
+def test_spec_excludes_trims_unused_heavy_payload() -> None:
+    """体积裁剪：产品不用的重量级包必须显式排除。
+
+    cv2 是构建机装了、产品代码与爬虫都没 import 的包，却会被传递依赖拖进产物
+    （cv2.pyd 85 MB + opencv_videoio_ffmpeg 27 MB）。排除它不影响任何功能：
+    DrissionPage 只在 screencast.py（浏览器录屏）里用 cv2，本应用不使用录屏。
+    """
+    excluded = _spec_excludes()
+
+    for module in ("cv2", "opencv", "numpy", "matplotlib", "scipy", "pandas"):
+        assert module in excluded, f"{module} 未排除，打包产物会白白变大"

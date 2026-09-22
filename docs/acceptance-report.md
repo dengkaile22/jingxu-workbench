@@ -3,14 +3,38 @@
 ## 封版验收（2026-09，当前交付：Python 版）
 
 **交付物**：`artifacts/release/炳恒快速混剪-Py-win-x64.msi`
-（464.4 MB，SHA-256 `1e5a657bd81dcee7617a9aa33eff97c3c345b15ab6d02cccd79e5e6936188e7e`，
+（**350.2 MB**，SHA-256 `92686907049635f964a45669fe6101f66e0b6c2c04fc93e9bc790bae9c77f9cb`，
 与 `SHA256SUMS-Py.txt` 一致）
+
+### 体积（本轮优化：464.4 MB → 350.2 MB，−24.6%）
+
+| 项 | 优化前 | 优化后 | 手段 |
+|---|---:|---:|---|
+| 便携目录 | 1143.2 MB | 764.0 MB | 见下 |
+| MSI | 464.4 MB | **350.2 MB** | CAB 压缩后同比例下降 |
+
+两处改动，都不牺牲功能：
+
+1. **FFmpeg 换成 essentials 构建**（433.6 MB → 194.2 MB）
+   原 full_build 把几乎所有可选库都编了进去（bluray / libsrt / libzmq /
+   avisynth / libcaca / frei0r / vmaf / libplacebo / opencl / libjxl …），
+   而本产品只用到 libx264 + aac + 硬件编码器 + 一批基础滤镜。
+   切换前逐项核验 51 个滤镜、全部编码器与解复用器均不缺失，
+   切换后 15 项真机集成测试全通过。
+2. **剔除产品不用的打包负载**（379 MB）
+   `cv2`（cv2.pyd 85 MB + opencv_videoio_ffmpeg 27 MB）是构建机装了、产品代码与
+   爬虫都没 import 的包，被传递依赖拖进产物；另有 PySide6 的 Qml/Quick/Pdf/
+   Network 与 translations（产品只用 QtCore/QtGui/QtWidgets/QtSvg）。
+
+> 未动的项：Whisper `base` 模型（141 MB）是识别质量的直接来源，本版没有更小
+> 的备份模型可回落，因此不替换、不降级。
+
 
 ### 测试矩阵（全部本机实跑）
 
 | 层次 | 项数 | 结果 | 命令 |
 |------|-----:|------|------|
-| 工作台单元测试 | 1094 | **通过** | `python -m pytest` |
+| 工作台单元测试 | 1095 | **通过** | `python -m pytest` |
 | 工作台集成测试（真机 FFmpeg） | 15 | **通过** | `python -m pytest -m integration` |
 | 爬虫项目测试 | 71 | **通过** | `cd src/JingXu.Spider && python -m pytest` |
 | 打包产物 `--self-test` | 1 | `exit=0` / `success=true` | 见下 |

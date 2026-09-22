@@ -60,6 +60,7 @@ from jingxu.domain.splitscreen import SplitMode, SplitScreenSpec
 from jingxu.infrastructure.effect_templates import EffectTemplateStore
 from jingxu.infrastructure.paths import default_output_directory
 from jingxu.infrastructure.sequence_templates import SequenceTemplateStore
+from jingxu.ui import theme
 from jingxu.ui.widgets import (
     Caption,
     PrimaryButton,
@@ -175,6 +176,14 @@ class CompositionPage(QWidget):
     enqueue_requested = Signal()
     workspace_changed = Signal(int)
     overlay_module_requested = Signal()
+    # 成片画幅（含真实尺寸）变化。蒙版/贴纸页的「跟随混剪画幅」预览要跟着变，
+    # 否则用户改了画幅，预览还停在旧尺寸上——对齐 .NET SyncCompositionCanvas 的调用时机。
+    canvas_changed = Signal()
+    # 「每条成片随机替换 1 个素材库蒙版」变化：蒙版页有同名开关（.NET 两处绑同一属性）。
+    overlay_random_changed = Signal(bool)
+    # 「效果预览」：真实滤镜链渲染一张叠层静帧（对齐 .NET CompositionView 的该区块）。
+    # 素材与图层由壳层注入，避免本页反向依赖图层页。
+    overlay_preview_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -322,6 +331,9 @@ class CompositionPage(QWidget):
         overlay_column.addWidget(self._overlay_label)
         self._overlay_random = QCheckBox("每条成片随机替换 1 个素材库蒙版")
         self._overlay_random.setEnabled(False)
+        self._overlay_random.stateChanged.connect(
+            lambda _: self.overlay_random_changed.emit(self._overlay_random.isChecked())
+        )
         overlay_column.addWidget(self._overlay_random)
         self._overlay_hint = Caption("蒙版图层在「蒙版」模块编辑；勾选随机替换时按任务种子从蒙版库抽取。")
         overlay_column.addWidget(self._overlay_hint)
@@ -329,6 +341,13 @@ class CompositionPage(QWidget):
         open_overlay.clicked.connect(self.overlay_module_requested.emit)
         overlay_column.addWidget(open_overlay, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addLayout(overlay_column)
+
+        # 「效果预览」：对齐 .NET CompositionView 的独立区块——真实滤镜链渲染一张
+        # 叠层静帧，而不是用缩略图冒充合成结果。
+        layout.addSpacing(16)
+        layout.addWidget(SectionHeader("效果预览"))
+        layout.addSpacing(8)
+        layout.addLayout(self._build_overlay_preview_section())
 
         layout.addSpacing(16)
         layout.addWidget(SectionHeader("效果模板"))
@@ -560,6 +579,10 @@ class CompositionPage(QWidget):
         self._custom_height = QSpinBox()
         self._custom_height.setRange(64, 7680)
         self._custom_height.setValue(1920)
+        # 自定义宽高此前没有接任何槽：改了尺寸描述文字与预览都不刷新。
+        # 对齐 .NET：画幅相关的每个输入都要触发一次画幅状态刷新。
+        self._custom_width.valueChanged.connect(lambda _: self._refresh_aspect_state())
+        self._custom_height.valueChanged.connect(lambda _: self._refresh_aspect_state())
         self._custom_width.setEnabled(False)
         self._custom_height.setEnabled(False)
         aspect_row.addWidget(self._custom_width)
@@ -988,6 +1011,20 @@ class CompositionPage(QWidget):
         """成片是否包含蒙版图层（受「启用蒙版覆盖到成片」控制）。"""
         return self._overlay_enable.isChecked()
 
+    def set_overlay_random(self, enabled: bool) -> None:
+        """由蒙版页同步「随机替换蒙版」开关（两处是同一语义）。
+
+        两边都做了"值相同就提前返回"的守卫，因此即使信号互连也只会走一个来回，
+        不会形成循环。
+        """
+        if self._overlay_random.isChecked() == bool(enabled):
+            return
+        self._overlay_random.blockSignals(True)
+        self._overlay_random.setChecked(bool(enabled))
+        self._overlay_random.blockSignals(False)
+        # 主动广播：blockSignals 抑制了 stateChanged，而蒙版页要靠这个信号回填。
+        self.overlay_random_changed.emit(bool(enabled))
+
     def overlay_random_replace(self) -> bool:
         """是否在每条成片随机替换 1 个素材库蒙版。"""
         return self._overlay_enable.isChecked() and self._overlay_random.isChecked()
@@ -1022,6 +1059,73 @@ class CompositionPage(QWidget):
     def canvas_size(self) -> tuple[int, int]:
         """当前成片画幅（供取景井/预览等复用）。"""
         return self._canvas_size()
+
+    def preview_render_size(self) -> tuple[int, int, float]:
+        """效果预览用的 (宽, 高, 帧率)，与成片设置保持一致。
+
+        帧率按「输出帧率」档位解析；选「原帧率」时跟随首段素材（无素材则 30）。
+        """
+        width, height = self._canvas_size()
+        preset = OutputFrameRatePreset(str(self._fps.currentData() or "original"))
+        first_fps = float(self._assets[0].fps) if self._assets and self._assets[0].fps > 0 else 30.0
+        fps = preset.value_fps or first_fps
+        return width, height, float(fps)
+
+    def _build_overlay_preview_section(self) -> QVBoxLayout:
+        """「效果预览」：点一下用真实滤镜链渲染一张叠层静帧。
+
+        .NET 在这里还要用户先选一个「预览主片」；本版直接用当前商品组的首段素材
+        （取景井与蒙版页的合成预览也是这个口径），少一步选择。
+        """
+        column = QVBoxLayout()
+        column.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._overlay_preview_button = SecondaryButton("刷新效果预览")
+        self._overlay_preview_button.setToolTip(
+            "按当前画幅与已启用的蒙版/贴纸，用真实滤镜链渲染一张静帧；"
+            "不会用缩略图冒充合成结果。"
+        )
+        self._overlay_preview_button.clicked.connect(self.overlay_preview_requested.emit)
+        row.addWidget(self._overlay_preview_button)
+        self._overlay_preview_status = Caption("")
+        row.addWidget(self._overlay_preview_status, stretch=1)
+        column.addLayout(row)
+
+        self._overlay_preview_image = QLabel("生成中或暂无预览")
+        self._overlay_preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._overlay_preview_image.setFixedSize(216, 384)
+        self._overlay_preview_image.setStyleSheet(
+            f"background: {theme.GATE_WELL}; color: {theme.ON_GATE_MUTED};"
+            f" border: 1px solid {theme.LINE_DEFAULT}; border-radius: 6px;"
+        )
+        column.addWidget(self._overlay_preview_image, alignment=Qt.AlignmentFlag.AlignLeft)
+        return column
+
+    def set_overlay_preview(self, pixmap, status: str = "", *, warn: bool = False) -> None:  # noqa: ANN001
+        """壳层渲染完成后回填预览图与状态（跨线程由信号投递到主线程）。"""
+        if pixmap is not None:
+            self._overlay_preview_image.setText("")
+            self._overlay_preview_image.setPixmap(
+                pixmap.scaled(
+                    self._overlay_preview_image.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        self._overlay_preview_button.setEnabled(True)
+        self._overlay_preview_status.setObjectName("CaptionWarn" if warn else "Caption")
+        self._overlay_preview_status.setText(status)
+        self._overlay_preview_status.style().unpolish(self._overlay_preview_status)
+        self._overlay_preview_status.style().polish(self._overlay_preview_status)
+
+    def set_overlay_preview_busy(self, busy: bool) -> None:
+        self._overlay_preview_button.setEnabled(not busy)
+        if busy:
+            self._overlay_preview_status.setObjectName("Caption")
+            self._overlay_preview_status.setText("正在合成预览…")
+            self._overlay_preview_status.style().unpolish(self._overlay_preview_status)
+            self._overlay_preview_status.style().polish(self._overlay_preview_status)
 
     # ────────────────────────────── 草稿 ──────────────────────────────
 
@@ -1361,6 +1465,8 @@ class CompositionPage(QWidget):
         first_width = self._assets[0].width if self._assets else None
         first_height = self._assets[0].height if self._assets else None
         self._aspect_preview.setText(policy.build_preview_description(first_width, first_height))
+        # 只有启用统一比例时画幅才生效；未启用时跟随首段素材，尺寸同样会变。
+        self.canvas_changed.emit()
 
     def _aspect_policy(self) -> UnifiedAspectPolicy:
         preset_map = {

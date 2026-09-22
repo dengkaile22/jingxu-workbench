@@ -71,12 +71,20 @@ def test_all_fixed_heights_fit_their_fonts(qapp) -> None:  # noqa: ANN001
 
     只检查**会渲染文字**的控件：细进度条（高 5–6px、``setTextVisible(False)``）
     这类纯装饰条没有文字可截断，按字体度量判它会得出假阳性。
+
+    必须先按 ``__main__`` 的启动顺序（注册随包字体 → 应用主题）把环境备好：
+    行高由字体决定，控件高度由主题样式表决定，两者少一个测的就不是真实观感。
+    此前只依赖"恰好没别的用例碰过字体/主题"，因此本用例的结果会随执行顺序变化。
     """
     from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel, QLineEdit, QProgressBar
 
     from jingxu.infrastructure.queue import RenderQueue
+    from jingxu.ui.assets_loader import register_bundled_fonts
     from jingxu.ui.shell_window import ShellWindow
+    from jingxu.ui.theme import apply_application_theme
 
+    register_bundled_fonts()
+    apply_application_theme(qapp)
     window = ShellWindow(Path("ffmpeg"), Path("ffprobe"), RenderQueue(Path("ffmpeg")))
     window.resize(1600, 900)
     window.show()
@@ -92,6 +100,13 @@ def test_all_fixed_heights_fit_their_fonts(qapp) -> None:  # noqa: ANN001
             # 只有显示百分比文字时才可能截断
             if not widget.isTextVisible():
                 continue
+        elif isinstance(widget, QLabel):
+            # 纯图标 QLabel（展开箭头、状态点等）只放位图，没有文字可截断；
+            # 按字体度量它们会全部误报。
+            if not (widget.text() or "").strip() and widget.pixmap() is not None:
+                continue
+            if not isinstance(widget, text_widgets):
+                continue
         elif not isinstance(widget, text_widgets):
             continue
         line = QFontMetrics(widget.font()).height()
@@ -102,6 +117,37 @@ def test_all_fixed_heights_fit_their_fonts(qapp) -> None:  # noqa: ANN001
 
     window.close()
     assert offenders == [], f"文字被容器高度截断：{offenders[:6]}"
+
+
+def test_spinbox_inner_edit_fits_its_font(qapp) -> None:  # noqa: ANN001
+    """数字输入框的内部行编辑不得被自身行高截断。
+
+    真实缺陷：把字号压到 12px 后，Qt 在整份主题下把 ``QSpinBox`` 定为 20px 高，
+    其内部 ``QLineEdit`` 只剩 14px，而行高是 15px——混剪页的时长/旋转/强度
+    数字被切掉一像素。修法是主题里给 ``QAbstractSpinBox`` 显式最小高度。
+
+    这条断言必须独立于 ``ShellWindow``，否则整窗测量出问题时不好定位。
+    """
+    from PySide6.QtWidgets import QDoubleSpinBox, QLineEdit
+
+    from jingxu.ui.assets_loader import register_bundled_fonts
+    from jingxu.ui.theme import apply_application_theme
+
+    register_bundled_fonts()
+    apply_application_theme(qapp)
+
+    spin = QDoubleSpinBox()
+    spin.setSuffix(" s")
+    spin.show()
+    qapp.processEvents()
+    inner = spin.findChild(QLineEdit)
+    assert inner is not None
+
+    line = QFontMetrics(inner.font()).height()
+    assert line <= inner.height(), (
+        f"数字输入框文字被截断：内部行编辑高 {inner.height()}px < 行高 {line}px"
+    )
+    spin.close()
 
 
 # ── 2) 参数很长的页面必须有滚动兜底 ─────────────────────────────────────────

@@ -19,7 +19,30 @@ SUBPROCESS_FUNCTIONS = {"run", "Popen", "call", "check_output"}
 
 # 等价于「交给 subprocess 的创建标志」的写法
 SUPPRESS_KEYWORDS = {"creationflags", "start_new_session"}
-SUPPRESS_HELPERS = {"no_window_kwargs", "_hidden_process_kwargs", "spawn_kwargs"}
+# 允许的抑制助手函数名。新增助手时同步加进来即可，判定标准不变：
+# 该助手必须真的返回平台对应的抑制参数（见下方 test_helper_* 用例）。
+SUPPRESS_HELPERS = {
+    "no_window_kwargs",
+    "_hidden_process_kwargs",
+    "spawn_kwargs",
+    "_hidden_kwargs",
+}
+
+
+def test_known_suppression_helpers_actually_suppress() -> None:
+    """allowlist 里的助手必须真的抑制窗口，否则扫描会被"起个对的名字"绕过。"""
+    import os
+
+    from jingxu.infrastructure.profile_lock import _hidden_kwargs
+
+    for helper in (no_window_kwargs, _hidden_kwargs):
+        kwargs = helper()
+        if os.name == "nt":
+            assert kwargs.get("creationflags"), f"{helper.__name__} 未设置 creationflags"
+        else:
+            assert kwargs.get("start_new_session") is True, (
+                f"{helper.__name__} 未设置 start_new_session"
+            )
 
 
 def _helper_suppresses(value: ast.AST) -> bool:

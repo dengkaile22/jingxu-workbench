@@ -214,8 +214,10 @@ class SettingsPage(QWidget):
         layout.setSpacing(6)
 
         layout.addWidget(Caption("数据目录（配置、音频库、结果快照）"))
-        self._data_label = self._mono_label("")
-        layout.addWidget(self._data_label)
+        # 注意：**不能**也叫 ``_data_label``——「应用」区块已经有一个同名标签，
+        # 覆盖它会让那一处的数据目录永远停在初始值（运行期信息只刷新后者）。
+        self._maintenance_data_label = self._mono_label("")
+        layout.addWidget(self._maintenance_data_label)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
@@ -301,6 +303,7 @@ class SettingsPage(QWidget):
         self._encoder_resolved.setText("\n".join(lines))
         self._processing_status.setText(info.gpu_processing_status or "未探测（解码与缩放使用 CPU）")
         self._data_label.setText(info.data_directory)
+        self._maintenance_data_label.setText(info.data_directory)
         self._platform_label.setText(f"Python {info.python_version} · {info.platform_text}")
         self._component_label.setText(self._component_summary())
 

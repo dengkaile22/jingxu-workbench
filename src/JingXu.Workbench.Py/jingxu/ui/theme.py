@@ -203,12 +203,17 @@ def stylesheet() -> str:
     QFrame#Segmented QRadioButton:disabled {{ color: {LINE_STRONG}; }}
 
     /* ── 输入 ───────────────────────────────────────────── */
+    /* min-height 是必需的，不是装饰：上面把字号压到 12px 后，Qt 会把控件按字体
+       行高定尺寸（实测 QDoubleSpinBox 的 sizeHint 只有 20px），而 padding 上下
+       各 6px 无处安放，于是内部 QLineEdit 只剩 14px、文字行高 15px 被切掉一像素。
+       1.2em ≈ 14px + 12px padding + 2px 边框落成 28px，与其它输入控件一致。 */
     QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit {{
         background: {SURFACE_PANEL};
         border: 1px solid {LINE_DEFAULT};
         border-radius: {RADIUS_SMALL}px;
         padding: 6px 8px;
         font-size: 12px;
+        min-height: 1.2em;
         selection-background-color: {BRAND_BLOOM};
         selection-color: {INK_PRIMARY};
     }}
@@ -219,6 +224,13 @@ def stylesheet() -> str:
         background: {SURFACE_SUNK};
         color: {INK_MUTED};
     }}
+    /* 数字输入框必须有显式最小高度。
+       原因：把字号压到 12px 后，Qt 会按「内容 + 内建边距」给 spinbox 定高，
+       在整份主题下实测只有 20px，而它内部的 QLineEdit 被压到 14px、
+       而行高是 15px —— 数字被切掉一像素（实测混剪页的时长/旋转/强度输入框）。
+       写成 QAbstractSpinBox 而不是 QSpinBox，是为了同时覆盖 QDoubleSpinBox
+       与 QDateTimeEdit 等同类控件。 */
+    QAbstractSpinBox {{ min-height: 24px; }}
     QComboBox::drop-down {{ border: none; width: 18px; }}
     QComboBox QAbstractItemView {{
         background: {SURFACE_PANEL};

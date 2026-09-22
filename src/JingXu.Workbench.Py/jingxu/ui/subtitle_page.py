@@ -170,30 +170,12 @@ class SubtitlePage(QWidget):
         layout.addSpacing(6)
         layout.addLayout(self._build_region_actions())
 
-        layout.addSpacing(12)
-        self._table = QTableWidget(0, len(COLUMNS))
-        self._table.setHorizontalHeaderLabels(list(COLUMNS))
-        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self._table.setColumnWidth(0, 130)
-        self._table.setColumnWidth(1, 130)
-        self._table.itemChanged.connect(self._on_cue_edited)
-        # 滚动区里 stretch 不再分配高度，必须给下限，否则字幕表会被压成一条。
-        self._table.setMinimumHeight(200)
-        layout.addWidget(self._table)
-
-        layout.addSpacing(12)
-        layout.addWidget(SectionHeader("烧录样式"))
+        # 「检测与识别」：对齐 .NET——OCR 与 Whisper 放在同一区块，且「确认全部区域」
+        # 也在这里（检测完就地确认），而不是散落在页面底部。
+        layout.addSpacing(14)
+        layout.addWidget(SectionHeader("检测与识别"))
         layout.addSpacing(8)
-        layout.addLayout(self._build_style_row())
-
-        layout.addSpacing(12)
-        layout.addWidget(SectionHeader("硬字幕去除"))
-        layout.addSpacing(8)
-        layout.addLayout(self._build_removal_row())
-
-        layout.addSpacing(12)
-        layout.addWidget(SectionHeader("OCR 自动定位"))
-        layout.addSpacing(8)
+        layout.addLayout(self._build_recognition_row())
         layout.addLayout(self._build_ocr_row())
         self._ocr_progress = QProgressBar()
         self._ocr_progress.setRange(0, 100)
@@ -212,15 +194,36 @@ class SubtitlePage(QWidget):
         self._apply_detected.clicked.connect(self._apply_selected_segment)
         layout.addWidget(self._apply_detected)
 
-        self._confirm_all = SecondaryButton("确认全部区域")
-        self._confirm_all.setVisible(False)
-        self._confirm_all.clicked.connect(self.confirm_all_segments)
-        layout.addWidget(self._confirm_all)
-
         self._review_hint = Caption("")
         self._review_hint.setObjectName("CaptionWarn")
         self._review_hint.setVisible(False)
         layout.addWidget(self._review_hint)
+
+        # 「去字幕方式」：对齐 .NET 的区块名。
+        layout.addSpacing(14)
+        layout.addWidget(SectionHeader("去字幕方式"))
+        layout.addSpacing(8)
+        layout.addLayout(self._build_removal_row())
+
+        # 「烧录样式」是 Python 版增强（.NET 字幕页没有样式设置）。
+        layout.addSpacing(14)
+        layout.addWidget(SectionHeader("烧录样式"))
+        layout.addSpacing(8)
+        layout.addLayout(self._build_style_row())
+
+        # 「字幕列表」：新增/导入/导出/清空 + 表格。
+        layout.addSpacing(14)
+        layout.addWidget(SectionHeader("字幕列表"))
+        layout.addSpacing(8)
+        self._table = QTableWidget(0, len(COLUMNS))
+        self._table.setHorizontalHeaderLabels(list(COLUMNS))
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._table.setColumnWidth(0, 130)
+        self._table.setColumnWidth(1, 130)
+        self._table.itemChanged.connect(self._on_cue_edited)
+        # 滚动区里 stretch 不再分配高度，必须给下限，否则字幕表会被压成一条。
+        self._table.setMinimumHeight(200)
+        layout.addWidget(self._table)
 
         self._refresh_table()
         self._load_style_controls()
@@ -275,6 +278,12 @@ class SubtitlePage(QWidget):
         self._cancel_button.setEnabled(False)
         self._cancel_button.clicked.connect(self.cancel_transcription)
         row.addWidget(self._cancel_button)
+
+        # 「确认全部区域」放在检测区（对齐 .NET：检测完就地确认，不用滚到页面底部）。
+        self._confirm_all = SecondaryButton("确认全部区域")
+        self._confirm_all.setVisible(False)
+        self._confirm_all.clicked.connect(self.confirm_all_segments)
+        row.addWidget(self._confirm_all)
 
         self._whisper_label = Caption("")
         row.addWidget(self._whisper_label, stretch=1)
@@ -484,12 +493,18 @@ class SubtitlePage(QWidget):
     def _build_ocr_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(8)
-        self._ocr_button = SecondaryButton("OCR 自动定位")
+        self._ocr_button = SecondaryButton("OCR 检测硬字幕")
         self._ocr_button.clicked.connect(self.start_ocr_detection)
         row.addWidget(self._ocr_button)
 
         self._ocr_full_frame = QCheckBox("全画面扫描")
+        self._ocr_full_frame.stateChanged.connect(lambda _: self._refresh_scan_region_hint())
         row.addWidget(self._ocr_full_frame)
+
+        # 对齐 .NET ``ScanRegionDescription``：明确当前扫的是全画面还是下方 45%，
+        # 否则用户不知道「全画面扫描」没勾时到底扫哪儿。
+        self._scan_region_hint = Caption("")
+        row.addWidget(self._scan_region_hint)
 
         self._ocr_cancel = SecondaryButton("取消 OCR")
         self._ocr_cancel.setEnabled(False)
@@ -498,7 +513,15 @@ class SubtitlePage(QWidget):
 
         self._ocr_status = Caption("")
         row.addWidget(self._ocr_status, stretch=1)
+        self._refresh_scan_region_hint()
         return row
+
+    def _refresh_scan_region_hint(self) -> None:
+        """显示当前 OCR 扫描范围（对齐 .NET ``ScanRegionDescription``）。"""
+        hint = getattr(self, "_scan_region_hint", None)
+        if hint is None:
+            return
+        hint.setText("全画面扫描" if self._ocr_full_frame.isChecked() else "下方 45% 扫描")
 
     # ────────────────────────────── 字幕表 ──────────────────────────────
 
@@ -630,7 +653,12 @@ class SubtitlePage(QWidget):
         self._set_status(f"已确认 {len(self._detected_segments)} 个区域。")
 
     def set_canvas_size(self, width: int, height: int) -> None:
-        """由壳层同步成片画幅（导出 ASS 时用作 PlayRes）。"""
+        """由壳层同步成片画幅（导出 ASS 时用作 PlayRes）。
+
+        为什么要传真实像素尺寸而不是只传比例：``build_ass`` 直接把它写进
+        ``PlayResX/Y``，字幕字号与边距都以此为基准。画幅是 720×1280 或自定义时
+        若仍按 1080×1920 导出，用户把 ASS 导入别的工具就会出现字号与位置偏差。
+        """
         if width > 0 and height > 0:
             self._canvas_width = int(width)
             self._canvas_height = int(height)

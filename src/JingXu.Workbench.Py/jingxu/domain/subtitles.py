@@ -29,9 +29,9 @@ class RemovalMode(str, Enum):
     @property
     def display_text(self) -> str:
         return {
-            "blur": "模糊",
+            "blur": "区域模糊",
             "cover": "遮盖",
-            "delogo": "去标（插值）",
+            "delogo": "Delogo 修补",
             "crop_and_reframe": "裁切重构",
         }[self.value]
 

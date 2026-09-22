@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import random
 import threading
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QEvent, QObject, Qt, QUrl, Signal
 from PySide6.QtGui import (
@@ -40,7 +42,7 @@ from jingxu.infrastructure.audio_library import AudioLibrary
 from jingxu.infrastructure.downloader import DownloadQueue, default_download_directory
 from jingxu.infrastructure.encoders import default_registry
 from jingxu.infrastructure.ffprobe import ProbeError, probe_media
-from jingxu.infrastructure.layer_store import LayerStore
+from jingxu.infrastructure.layer_store import LayerStore, overlay_library_path
 from jingxu.infrastructure.paths import data_directory
 from jingxu.infrastructure.project_store import (
     CURRENT_SCHEMA_VERSION,
@@ -273,6 +275,9 @@ class ShellWindow(QMainWindow):
         self._inspector_expanded = True
         self._gate_generation = 0
         self._gate_preview_path: str | None = None
+        # 「效果预览」（混剪页）的代际守卫与临时文件；与取景井各自独立。
+        self._overlay_preview_generation = 0
+        self._overlay_preview_path: str | None = None
         self._resize_margin = 6
         self._project_path: Path | None = None
         self._project_name = ""
@@ -287,6 +292,13 @@ class ShellWindow(QMainWindow):
         self._sticker_store = LayerStore(LayerKind.STICKER)
         # 贴纸素材库与轨道分离（对齐 .NET 贴纸页）：库里放素材，轨道从库中添加。
         self._sticker_library = StickerLibrary()
+        # 蒙版素材库：与「蒙版轨道」分开存放（对齐 .NET ``OverlayLibraryDocument``）。
+        self._overlay_library = StickerLibrary(store_path=overlay_library_path())
+        # 库随机替换的**固定种子 + 累加序号**（对齐 .NET ``_randomLibrarySelectionSeed`` /
+        # ``_nextRandomMaskSelectionOrdinal``）。每次启动换一个种子，因此跨会话不重复；
+        # 同一次会话内序号跨批次累加，保证"一轮内每条素材只出现一次"。
+        self._library_selection_seed = random.randrange(1, 2**31 - 1)
+        self._library_selection_ordinal = 0
         self._subtitle_store = SubtitleStore()
 
         bridge = QueueBridge(self)
@@ -309,9 +321,21 @@ class ShellWindow(QMainWindow):
     def _sync_overlay_summary(self) -> None:
         enabled = len(self._overlay_page.enabled_layers())
         self._composition_page.set_overlay_summary(enabled)
+        self._sync_layer_canvas_aspect()
+
+    def _sync_layer_canvas_aspect(self) -> None:
+        """把混剪页的**真实成片尺寸**同步给蒙版/贴纸/字幕页。
+
+        只传比例是不够的：混剪页可以选 720×1280 或自定义宽高，而
+        * 蒙版/贴纸页的「跟随混剪画幅」预览与「合成预览」按真实尺寸渲染；
+        * 字幕页导出 ASS 时用它写 ``PlayResX/Y``（字号与边距的基准）。
+        对齐 .NET ``StickerEditorViewModel.SyncCompositionCanvas(width, height)``。
+        """
         aspect = str(self._composition_page._aspect.currentData())
-        self._overlay_page.set_canvas_aspect(aspect)
-        self._sticker_page.set_canvas_aspect(aspect)
+        width, height = self._composition_page.canvas_size()
+        for page in (self._overlay_page, self._sticker_page):
+            page.set_canvas_aspect(aspect, width=width, height=height)
+        self._subtitle_page.set_canvas_size(width, height)
 
     def _select_module(self, module_id: str) -> None:
         self._module_rail.select(module_id)
@@ -507,9 +531,18 @@ class ShellWindow(QMainWindow):
         self._overlay_page.layers_changed.connect(self._refresh_layer_summary)
         self._overlay_page.layers_changed.connect(self._sync_overlay_summary)
         self._overlay_page.layers_changed.connect(self._mark_dirty)
+        # 混剪页改画幅（含自定义宽高）时同步预览画布，否则「跟随混剪画幅」会停在旧尺寸。
+        self._composition_page.canvas_changed.connect(self._sync_layer_canvas_aspect)
+        # 「随机替换 1 个素材库蒙版」在混剪页与蒙版页各有一个开关（.NET 两处绑同一属性），
+        # 必须双向同步，否则两处显示会互相矛盾。两侧 setter 都有"值相同即返回"的守卫，
+        # 因此一个来回后必然收敛，不会形成信号循环。
+        self._composition_page.overlay_random_changed.connect(self._overlay_page.set_overlay_random)
+        self._overlay_page.overlay_random_changed.connect(self._composition_page.set_overlay_random)
         self._composition_page.overlay_module_requested.connect(
             lambda: self._select_module(MODULE_OVERLAYS)
         )
+        # 「效果预览」：混剪页点刷新 → 壳层用真实滤镜链渲染一张叠层静帧。
+        self._composition_page.overlay_preview_requested.connect(self._start_overlay_effect_preview)
         self._sticker_page = LayerPage(
             self._sticker_store,
             title="贴纸轨道",
@@ -896,6 +929,76 @@ class ShellWindow(QMainWindow):
             return
         self._gate_well.set_idle("预览不可用", message[:80])
 
+    # ────────────────────── 效果预览（混剪页，.NET 同区块） ──────────────────────
+
+    def _start_overlay_effect_preview(self) -> None:
+        """用真实滤镜链渲染一张叠层静帧，回填到混剪页「效果预览」。
+
+        .NET 在这个区块要求用户先选「预览主片」；本版直接用当前商品组首段素材，
+        与取景井、蒙版页的合成预览同一口径。
+        """
+        asset = self._base_material()
+        if asset is None:
+            self._composition_page.set_overlay_preview(
+                None, "请先在混剪页导入素材", warn=True
+            )
+            return
+
+        width, height, fps = self._composition_page.preview_render_size()
+        layers = tuple(self._enabled_layers())
+        self._overlay_preview_generation += 1
+        generation = self._overlay_preview_generation
+        self._composition_page.set_overlay_preview_busy(True)
+
+        def work() -> None:
+            import tempfile
+
+            from jingxu.infrastructure.frame_preview import FramePreviewError, render_composite_frame
+
+            directory = Path(tempfile.gettempdir()) / "jingxu-effect-preview"
+            directory.mkdir(parents=True, exist_ok=True)
+            target = directory / f"effect-{generation}-{uuid4().hex[:8]}.jpg"
+            try:
+                render_composite_frame(
+                    self._ffmpeg,
+                    asset,
+                    layers,
+                    RenderSettings(width=width, height=height, fps=fps),
+                    target,
+                )
+            except (FramePreviewError, OSError, ValueError) as error:
+                self._bridge.event.emit("effect-preview-failed", (generation, str(error)))
+                return
+            self._bridge.event.emit("effect-preview", (generation, str(target)))
+
+        threading.Thread(target=work, name="jingxu-effect-preview", daemon=True).start()
+
+    def _on_effect_preview(self, generation: int, path: str) -> None:
+        if generation != self._overlay_preview_generation:
+            self._discard_file(path)
+            return
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            self._composition_page.set_overlay_preview(None, "预览文件无法读取。", warn=True)
+            return
+        previous = self._overlay_preview_path
+        self._overlay_preview_path = path
+        if previous and previous != path:
+            self._discard_file(previous)
+        self._composition_page.set_overlay_preview(pixmap, "已刷新效果预览。")
+
+    def _on_effect_preview_failed(self, generation: int, message: str) -> None:
+        if generation != self._overlay_preview_generation:
+            return
+        self._composition_page.set_overlay_preview(None, message, warn=True)
+
+    @staticmethod
+    def _discard_file(path: str) -> None:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def _sync_subtitle_source(self) -> None:
         """把当前选中的素材同步给字幕实验室（识别对象）。"""
         source = None
@@ -1106,6 +1209,10 @@ class ShellWindow(QMainWindow):
                 # （对齐 .NET StickerEditorViewModel.TryBuildEnabledTracksForPlan）。
                 randomize_sticker_library=self._sticker_page.random_library_enabled,
                 sticker_library=tuple(self._sticker_library.sources),
+                # 「蒙版随机替换」：开启后每条成片只用 1 个库蒙版，套用当前蒙版轨道画法
+                # （对齐 .NET OverlayEditorViewModel.BuildLayersForPlan）。
+                randomize_overlay_library=self._composition_page.overlay_random_replace(),
+                overlay_library=tuple(self._overlay_library.sources),
             )
             subtitle_issues = self._subtitle_page.timeline_issues()
             if subtitle_issues:
@@ -1117,6 +1224,13 @@ class ShellWindow(QMainWindow):
                 output_directory=self._composition_page.output_directory(),
                 start_index=self._request_counter + 1,
                 pool=self._materials[self._group],
+                # 库选择序号跨批次累加（对齐 .NET ``_nextRandomMaskSelectionOrdinal``）：
+                # 一次入队 20 条与分两次各 10 条，得到的素材序列一致。
+                library_ordinal=self._library_selection_ordinal,
+                library_selection_seed=self._library_selection_seed,
+                # 队列里尚未结束的任务还没落盘，必须把它们的输出路径一并预留，
+                # 否则本次请求会算到同名文件并覆盖它们。
+                reserved_paths=self._queue.reserved_output_paths,
             )
         except ValueError as error:
             self._composition_page.set_status(str(error), warn=True)
@@ -1125,6 +1239,7 @@ class ShellWindow(QMainWindow):
         for request in requests:
             self._queue.enqueue(request)
         self._request_counter += len(requests)
+        self._library_selection_ordinal += len(requests)
 
         if len(requests) == 1:
             message = f"已加入队列：{requests[0].output_path.name}"
@@ -1148,6 +1263,14 @@ class ShellWindow(QMainWindow):
         if event == "gate-preview-failed":
             generation, message = job
             self._on_gate_preview_failed(int(generation), str(message))
+            return
+        if event == "effect-preview":
+            generation, path = job
+            self._on_effect_preview(int(generation), str(path))
+            return
+        if event == "effect-preview-failed":
+            generation, message = job
+            self._on_effect_preview_failed(int(generation), str(message))
             return
         self._queue_page.refresh()
         self._refresh_queue_summary()

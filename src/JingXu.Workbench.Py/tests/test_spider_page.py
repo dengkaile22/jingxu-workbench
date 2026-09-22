@@ -324,12 +324,13 @@ def test_log_box_hidden_until_toggled(qapp, tmp_path: Path) -> None:  # noqa: AN
     """
     page = _page(tmp_path)
     assert page._log.isHidden() is True
+    assert page._log_toggle.text() == "📋 运行日志"  # 收起态用 .NET 的区块名
     page._toggle_log()
     assert page._log.isHidden() is False
     assert page._log_toggle.text() == "隐藏运行日志"
     page._toggle_log()
     assert page._log.isHidden() is True
-    assert page._log_toggle.text() == "显示运行日志"
+    assert page._log_toggle.text() == "📋 运行日志"
 
 
 # ── 结果落盘与恢复 ──────────────────────────────────────────────────────────

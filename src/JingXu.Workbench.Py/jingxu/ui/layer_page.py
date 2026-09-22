@@ -37,7 +37,7 @@ from jingxu.domain.layers import (
 from jingxu.domain.media import MediaAsset
 from jingxu.domain.render import OverlayFitMode, RenderSettings
 from jingxu.infrastructure.frame_preview import FramePreviewError, render_composite_frame
-from jingxu.infrastructure.layer_store import LayerStore
+from jingxu.infrastructure.layer_store import LayerStore, overlay_library_path
 from jingxu.infrastructure.sticker_library import StickerLibrary
 from jingxu.ui import theme
 from jingxu.ui.layer_preview import LayerPreviewCanvas
@@ -74,6 +74,10 @@ class LayerPage(QWidget):
     """图层列表 + 参数表单；修改即保存到数据目录。"""
 
     layers_changed = Signal()
+    # 「随机替换素材库」开关变化。蒙版页的该开关与混剪页里的同名开关是同一语义，
+    # 两者必须双向同步（.NET 两处绑同一属性）；用独立信号而不是复用
+    # ``layers_changed``，避免"勾一下开关"被当成"轨道变了"而触发全量刷新。
+    overlay_random_changed = Signal(bool)
 
     def __init__(
         self,
@@ -94,7 +98,11 @@ class LayerPage(QWidget):
         # 贴纸模式：素材库 + 轨道两段式，参数只保留贴纸画法（对齐 .NET 贴纸页）。
         # 蒙版模式下这些属性不参与，蒙版页保持原有参数集不变。
         self._is_sticker = store.kind is LayerKind.STICKER
-        self._library = sticker_library or (StickerLibrary() if self._is_sticker else None)
+        # 两种图层都有素材库（对齐 .NET：蒙版页有「蒙版素材库」，贴纸页有「贴纸素材库」）。
+        # 库只负责"有哪些素材"，轨道负责"画法"；蒙版库落在独立文件里。
+        self._library = sticker_library or StickerLibrary(
+            store_path=None if self._is_sticker else overlay_library_path()
+        )
         self._use_random_library = False
         self._layers: list[LayerSpec] = []
         self._updating = False
@@ -102,6 +110,9 @@ class LayerPage(QWidget):
         # 混剪页画幅（供「跟随混剪画幅」模式使用）；与 _aspect 分开保存，
         # 以便用户选择独立画幅后仍能在切回跟随模式时恢复。
         self._composition_aspect = "9:16"
+        # 混剪页真实成片尺寸（供「跟随混剪画幅」与合成预览使用）；
+        # 与 _composition_aspect 分开保存：画幅被用户改成独立模式后仍能恢复。
+        self._composition_size: tuple[int, int] = PREVIEW_ASPECT_SIZES["9:16"]
         self._preview_running = False
         self._preview_thread: threading.Thread | None = None
 
@@ -138,26 +149,81 @@ class LayerPage(QWidget):
             layout.addSpacing(14)
             layout.addWidget(SectionHeader("贴纸轨道"))
             layout.addSpacing(6)
+        else:
+            # .NET 蒙版页同样是两段式：先「蒙版素材库」，再轨道列表。
+            # 素材库是「蒙版随机替换」的抽取来源，与轨道（画法）分开。
+            layout.addWidget(SectionHeader("蒙版素材库"))
+            layout.addSpacing(6)
+            layout.addLayout(self._build_mask_library_bar())
+            layout.addSpacing(6)
+            layout.addWidget(self._build_sticker_library_list())
+            layout.addSpacing(14)
+            layout.addWidget(SectionHeader("蒙版轨道"))
+            layout.addSpacing(6)
 
-        preview_row = QHBoxLayout()
-        preview_row.setSpacing(12)
+        # 图层列表在上、预览独占一整行在下。
+        # 为什么不是左右并排：预览画布是固定宽高比（9:16 等），并排时它只拿到半宽，
+        # 画布被压到极小（实测 950×240 里只画出 117×208，占 11%），看起来就是一个
+        # 孤零零的小黑框、四周全是空白。通栏后画布能铺满可用高度，素材看得清。
         self._list = QListWidget()
         self._list.setObjectName("CompositionMaterials")
         self._list.currentRowChanged.connect(self._on_selection_changed)
         self._list.itemChanged.connect(self._on_item_changed)
         # 滚动区里 stretch 不再分配高度，必须给下限，否则列表会被压成一条。
-        self._list.setMinimumHeight(240)
-        preview_row.addWidget(self._list, stretch=1)
+        self._list.setMinimumHeight(160)
+        layout.addWidget(self._list)
 
-        self._canvas = LayerPreviewCanvas()
-        self._canvas.setMinimumHeight(240)
+        layout.addSpacing(10)
+        # 蒙版页两张画布并排，对齐 .NET「蒙版区域预览」：
+        # 左＝成片画面示意（暗红参考区 + 蓝框输出位置 + 蒙版素材本体），
+        # 右＝源素材取景（独立白框）。
+        # 白框**只画在右边的取景画布上**：.NET 把它放在独立 Canvas 里，
+        # 因为它是"源素材坐标系"，与成片坐标系的输出框叠在一起会互相干扰、
+        # 让人误以为白框也是输出位置。
+        # 贴纸页只有一张（.NET 贴纸页也只有「成片画面示意」）。
+        self._canvas = LayerPreviewCanvas(show_reference=not self._is_sticker)
         self._canvas.layer_moved.connect(self._on_layer_moved)
         self._canvas.layer_scaled.connect(self._on_layer_scaled)
-        preview_row.addWidget(self._canvas, stretch=1)
-        layout.addLayout(preview_row)
+        self._canvas.layer_resized.connect(self._on_layer_resized)
+
+        canvas_row = QHBoxLayout()
+        canvas_row.setContentsMargins(0, 0, 0, 0)
+        canvas_row.setSpacing(16)
+        canvas_row.addStretch(1)
+        canvas_row.addWidget(self._canvas, alignment=Qt.AlignmentFlag.AlignTop)
+        # 注意：变量名不能叫 _source_crop_canvas —— 蒙版参数表单里已有同名复选框
+        # （「按画幅比例自动取景」），重名会把画布覆盖成复选框，启动即报错。
+        self._source_crop_preview: LayerPreviewCanvas | None = None
+        if not self._is_sticker:
+            column = QWidget()
+            column_layout = QVBoxLayout(column)
+            column_layout.setContentsMargins(0, 0, 0, 0)
+            column_layout.setSpacing(4)
+            column_layout.addWidget(Caption("源素材取景"))
+            # 第二张画布只画白框，不画图层本体：它是"源素材坐标系"，与成片画布不同源。
+            self._source_crop_preview = LayerPreviewCanvas(show_source_crop=True)
+            self._source_crop_preview.setToolTip(
+                "白框为源素材取景范围（源素材坐标系）。可直接拖拽：拖框内平移、拖边或角改大小；"
+                "下方「源素材取景」数值会同步。"
+            )
+            self._source_crop_preview.source_crop_moved.connect(self._on_canvas_source_crop_moved)
+            column_layout.addWidget(self._source_crop_preview)
+            canvas_row.addWidget(column, alignment=Qt.AlignmentFlag.AlignTop)
+        canvas_row.addStretch(1)
+        layout.addLayout(canvas_row)
 
         layout.addSpacing(6)
-        layout.addWidget(Caption("拖拽预览中的图层可调整位置，滚轮调整宽度。"))
+        # 对齐 .NET 的两行提示：交互方式 + 视觉参数当前值。
+        if self._is_sticker:
+            self._preview_hint = Caption("拖拽预览中的贴纸可调整位置，滚轮调整宽度。")
+        else:
+            self._preview_hint = Caption(
+                "接近成片的静帧示意：暗红框为默认上半叠区；蓝框控制成片中的输出位置与尺寸，"
+                "拖拽中心平移、拖边或角改大小。旁边的白框独立控制源素材取景。"
+            )
+        layout.addWidget(self._preview_hint)
+        self._preview_effect_hint = Caption("")
+        layout.addWidget(self._preview_effect_hint)
         # .NET 贴纸页在预览下方给出一行参数摘要（位置/尺寸/透明度/旋转），
         # 便于不看控件也能确认当前画法。
         if self._is_sticker:
@@ -180,11 +246,13 @@ class LayerPage(QWidget):
         layout.addWidget(self._build_sticker_form() if self._is_sticker else self._build_form())
         layout.addStretch(0)
 
+        # 两种图层的素材库都要初始化列表（蒙版页也有「蒙版素材库」）。
+        self._refresh_library()
+
         # 合成预览（真实滤镜静帧）是蒙版专属：贴纸页没有该区块，
         # 因此贴纸模式下把按钮置空，其余代码统一以 None 判断跳过。
         if self._is_sticker:
             self._preview_button = None
-            self._refresh_library()
         else:
             bridge = FramePreviewBridge(self)
             bridge.done.connect(self._on_preview_done)
@@ -243,16 +311,24 @@ class LayerPage(QWidget):
         return row
 
     def _build_sticker_library_bar(self) -> QHBoxLayout:
-        """素材库工具条：导入贴纸 / 添加到轨道 / 清空素材库。"""
+        """素材库工具条：导入素材 / 添加到轨道 / 清空素材库。
+
+        蒙版与贴纸共用（对齐 .NET：两页都有「素材库 + 轨道」两段式），
+        只是文案不同——贴纸叫「导入贴纸」，蒙版叫「导入蒙版素材」。
+        """
+        noun = "贴纸" if self._is_sticker else "蒙版素材"
         row = QHBoxLayout()
         row.setSpacing(8)
-        import_button = SecondaryButton("导入贴纸…")
-        import_button.setToolTip("把 PNG/GIF/WebP 或视频贴纸导入素材库（不会直接生成轨道）。")
+        import_button = SecondaryButton(f"导入{noun}…")
+        import_button.setToolTip(
+            f"把素材导入{noun}库（不会直接生成轨道）。" if self._is_sticker
+            else "把蒙版素材导入素材库（不会直接生成轨道）。"
+        )
         import_button.clicked.connect(self._import_to_library)
         row.addWidget(import_button)
 
         self._add_from_library = PrimaryButton("添加到轨道")
-        self._add_from_library.setToolTip("用素材库里选中的贴纸生成一条贴纸轨道。")
+        self._add_from_library.setToolTip(f"用素材库里选中的{noun}生成一条轨道。")
         self._add_from_library.clicked.connect(self._add_track_from_library)
         self._add_from_library.setEnabled(False)
         row.addWidget(self._add_from_library)
@@ -264,6 +340,73 @@ class LayerPage(QWidget):
         self._library_caption = Caption("")
         row.addWidget(self._library_caption, stretch=1)
         return row
+
+    def _build_mask_library_bar(self) -> QHBoxLayout:
+        """蒙版素材库工具条（对齐 .NET 蒙版页的库工具条）。
+
+        .NET 在这里放的是：随机替换开关 + 清理失效 + 清空库 + 导入蒙版素材。
+        其中「生成时随机替换 1 个素材库蒙版」与混剪页「蒙版覆盖」里的同名开关
+        绑定的是**同一个属性**，因此两处必须同步（见 ``set_overlay_random``）。
+        """
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        self._random_library = QCheckBox("生成时随机替换 1 个素材库蒙版")
+        self._random_library.setToolTip(
+            "每条成片从素材库选择 1 个蒙版，沿用当前选中轨道的位置、尺寸、透明度、羽化与起始片段。"
+        )
+        self._random_library.stateChanged.connect(self._on_random_library_changed)
+        row.addWidget(self._random_library)
+
+        import_button = PrimaryButton("导入蒙版素材")
+        import_button.setToolTip("把蒙版素材导入素材库（不会直接生成轨道）。")
+        import_button.clicked.connect(self._import_to_library)
+        row.addWidget(import_button)
+
+        prune_button = SecondaryButton("清理失效")
+        prune_button.setToolTip("移除素材库里文件已丢失的条目（不删除磁盘文件）。")
+        prune_button.clicked.connect(self._prune_library)
+        row.addWidget(prune_button)
+
+        clear_button = SecondaryButton("清空库")
+        clear_button.setToolTip("清空蒙版素材库（不删除磁盘文件）。")
+        clear_button.clicked.connect(self._clear_library)
+        row.addWidget(clear_button)
+
+        self._library_caption = Caption("")
+        row.addWidget(self._library_caption, stretch=1)
+        # 蒙版库工具条没有「添加到轨道」（.NET 蒙版页同样没有：蒙版轨道由「导入素材」
+        # 或库条目双击生成）；保持属性存在以兼容共用的库刷新逻辑。
+        self._add_from_library = None
+        return row
+
+    def set_overlay_random(self, enabled: bool) -> None:
+        """由混剪页同步「随机替换蒙版」开关（两处绑同一语义）。
+
+        "值相同就返回"的守卫避免与混剪页形成信号循环。
+        """
+        check = getattr(self, "_random_library", None)
+        if check is None or check.isChecked() == bool(enabled):
+            return
+        check.blockSignals(True)
+        check.setChecked(bool(enabled))
+        self._use_random_library = bool(enabled)
+        check.blockSignals(False)
+
+    @property
+    def overlay_random_enabled(self) -> bool:
+        check = getattr(self, "_random_library", None)
+        return bool(check is not None and check.isChecked())
+
+    def _prune_library(self) -> None:
+        """移除素材库里文件已丢失的条目。"""
+        assert self._library is not None
+        removed = self._library.prune_missing()
+        self._refresh_library()
+        self._set_status(
+            f"已清理 {removed} 条失效素材。" if removed else "没有失效条目。",
+            warn=False,
+        )
 
     def _build_sticker_library_list(self) -> QWidget:
         self._library_list = QListWidget()
@@ -309,6 +452,7 @@ class LayerPage(QWidget):
         self._opacity.setRange(0, 100)
         self._opacity.setValue(100)
         self._opacity.setSuffix("%")
+        self._opacity.setSuffix("%")
         self._rotation = QSpinBox()
         self._rotation.setRange(-180, 180)
         self._rotation.setSuffix("°")
@@ -316,6 +460,20 @@ class LayerPage(QWidget):
         grid.addWidget(self._opacity, 3, 1)
         grid.addWidget(Caption("旋转 °"), 3, 2)
         grid.addWidget(self._rotation, 3, 3)
+
+        # 「尺寸」＝内容在边界框内的均匀缩放（对齐 .NET OverlayEditorView「尺寸」滑杆 0.01–4）。
+        # 超过 100 放大后中心裁回框内，低于 100 缩小后在框内留透明白边。
+        self._scale = QDoubleSpinBox()
+        self._scale.setRange(1.0, 400.0)
+        self._scale.setSingleStep(5.0)
+        self._scale.setDecimals(0)
+        self._scale.setValue(100.0)
+        self._scale.setSuffix("%")
+        self._scale.setToolTip(
+            "内容在边框内的均匀缩放：>100% 放大后中心裁回框内，<100% 缩小后在框内留透明边。"
+        )
+        grid.addWidget(Caption("尺寸 %"), 4, 0)
+        grid.addWidget(self._scale, 4, 1)
 
         # 比例行：预览画幅（只影响本页画布）与宽高比锁定
         ratio_row = QHBoxLayout()
@@ -356,7 +514,7 @@ class LayerPage(QWidget):
         options.addStretch(1)
         grid.addLayout(options, 5, 0, 1, 4)
 
-        for spin in (self._start, self._end, self._x, self._y, self._opacity, self._rotation):
+        for spin in (self._start, self._end, self._x, self._y, self._opacity, self._rotation, self._scale):
             spin.valueChanged.connect(self._on_form_changed)
         self._width.valueChanged.connect(self._on_width_changed)
         self._height.valueChanged.connect(self._on_height_changed)
@@ -367,6 +525,9 @@ class LayerPage(QWidget):
         self._feather = None
         self._source_crop_y = None
         self._fit = None
+        # 「位置 X/Y」＝输出叠层框整体位移，与源取景一样是蒙版专属控件。
+        self._offset_x = None
+        self._offset_y = None
         self._remove_black = None
         self._mix_audio = None
         self._source_crop_canvas = None
@@ -400,11 +561,15 @@ class LayerPage(QWidget):
             self._library_list.blockSignals(False)
         if 0 <= previous < len(entries):
             self._library_list.setCurrentRow(previous)
+        noun = "贴纸" if self._is_sticker else "蒙版素材"
         self._library_caption.setText(
-            f"素材库 {len(entries)} 项" if entries else "素材库为空，点「导入贴纸…」添加"
+            f"{noun}库 {len(entries)} 项" if entries else f"{noun}库为空，点「导入{noun}…」添加"
         )
-        self._add_from_library.setEnabled(bool(entries))
-        if self._random_library.isChecked() and not entries:
+        if getattr(self, "_add_from_library", None) is not None:
+            self._add_from_library.setEnabled(bool(entries))
+        # 「随机贴纸库」开关只存在于贴纸表单；蒙版页的随机替换开关在混剪页。
+        random_toggle = getattr(self, "_random_library", None)
+        if random_toggle is not None and random_toggle.isChecked() and not entries:
             self._set_status(
                 "已开启随机贴纸库，但素材库为空；渲染时不会替换贴纸。请先导入贴纸。",
                 warn=True,
@@ -468,17 +633,21 @@ class LayerPage(QWidget):
 
     def _on_random_library_changed(self, *_args: object) -> None:
         self._use_random_library = bool(self._random_library.isChecked())
+        noun = "贴纸" if self._is_sticker else "蒙版"
         if self._use_random_library and self._library is not None and not self._library.entries:
             self._set_status(
-                "已开启随机贴纸库，但素材库为空。请先导入贴纸，否则渲染时不会替换。",
+                f"已开启随机{noun}库，但素材库为空。请先导入素材，否则渲染时不会替换。",
                 warn=True,
             )
+            self.overlay_random_changed.emit(self._use_random_library)
             return
         self._set_status(
-            "已开启随机贴纸库：每次成片会按种子从素材库替换贴纸。"
+            f"已开启随机{noun}库：每次成片会按种子从素材库替换素材。"
             if self._use_random_library
-            else "已关闭随机贴纸库：轨道使用各自绑定的素材。"
+            else f"已关闭随机{noun}库：轨道使用各自绑定的素材。"
         )
+        # 蒙版页的开关与混剪页「蒙版覆盖」里的同名开关是同一语义，改动要通知壳层。
+        self.overlay_random_changed.emit(self._use_random_library)
 
     @property
     def random_library_enabled(self) -> bool:
@@ -509,12 +678,44 @@ class LayerPage(QWidget):
         self._width = self._make_percent_spin(30)
         self._opacity = QSpinBox()
         self._opacity.setRange(0, 100)
-        self._opacity.setValue(28)
+        # 默认值取 .NET 蒙版默认的不透明度 0.28 换算成「透明度」刻度 = 72%。
+        # 写成 28 会与标签自相矛盾（标签说 0=不透明，却默认给了 28% 透明）。
+        self._opacity.setValue(72)
         self._opacity.setSuffix("%")
         grid.addWidget(Caption("宽度 (%)"), 2, 0)
         grid.addWidget(self._width, 2, 1)
-        grid.addWidget(Caption("透明度（0=不透明）"), 2, 2)
+        grid.addWidget(Caption("透明度（0–100%）"), 2, 2)
         grid.addWidget(self._opacity, 2, 3)
+        # 「尺寸」＝内容在边界框内的均匀缩放（对齐 .NET OverlayEditorView「尺寸」滑杆 0.01–4）
+        self._scale = QDoubleSpinBox()
+        self._scale.setRange(1.0, 400.0)
+        self._scale.setSingleStep(5.0)
+        self._scale.setDecimals(0)
+        self._scale.setValue(100.0)
+        self._scale.setSuffix("%")
+        self._scale.setToolTip(
+            "内容在边框内的均匀缩放：>100% 放大后中心裁回框内，<100% 缩小后在框内留透明边。"
+        )
+        # 「位置 X / 位置 Y」＝对输出叠层框的整体位移（对齐 .NET OffsetX/OffsetY，
+        # 归一化 -1~1，1 表示平移一个画面宽/高）。与上面「中心 X/Y」是两套参数：
+        # 中心决定框先落在哪，位移再整体挪框，互不干扰。
+        offset_row = QHBoxLayout()
+        offset_row.setSpacing(6)
+        self._offset_x = self._make_offset_spin()
+        self._offset_y = self._make_offset_spin()
+        offset_row.addWidget(Caption("位置 X"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        offset_row.addWidget(self._offset_x)
+        offset_row.addWidget(Caption("位置 Y"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        offset_row.addWidget(self._offset_y)
+        offset_row.addStretch(1)
+        grid.addLayout(offset_row, 3, 0, 1, 4)
+
+        scale_row = QHBoxLayout()
+        scale_row.setSpacing(6)
+        scale_row.addWidget(Caption("尺寸"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        scale_row.addWidget(self._scale)
+        scale_row.addStretch(1)
+        grid.addLayout(scale_row, 4, 0, 1, 2)
 
         self._height = QSpinBox()
         self._height.setRange(0, 100)
@@ -523,21 +724,21 @@ class LayerPage(QWidget):
         self._split_position = QSpinBox()
         self._split_position.setRange(0, 100)
         self._split_position.setSuffix("%")
-        grid.addWidget(Caption("高度上限（0=自然）"), 3, 0)
-        grid.addWidget(self._height, 3, 1)
-        grid.addWidget(Caption("分割位置"), 3, 2)
-        grid.addWidget(self._split_position, 3, 3)
+        grid.addWidget(Caption("高度上限（0=自然）"), 5, 0)
+        grid.addWidget(self._height, 5, 1)
+        grid.addWidget(Caption("分割位置"), 5, 2)
+        grid.addWidget(self._split_position, 5, 3)
 
         self._rotation = QSpinBox()
         self._rotation.setRange(-180, 180)
         self._rotation.setSuffix("°")
-        grid.addWidget(Caption("旋转 (±180°)"), 4, 0)
-        grid.addWidget(self._rotation, 4, 1)
+        grid.addWidget(Caption("旋转 (±180°)"), 6, 0)
+        grid.addWidget(self._rotation, 6, 1)
         self._start_clip = QSpinBox()
         self._start_clip.setRange(1, 999)
         self._start_clip.setSuffix(" 起生效")
-        grid.addWidget(Caption("起始片段"), 4, 2)
-        grid.addWidget(self._start_clip, 4, 3)
+        grid.addWidget(Caption("起始片段"), 6, 2)
+        grid.addWidget(self._start_clip, 6, 3)
 
         # 上向淡入 / 底边羽化（.NET 分割线两条滑杆的等价控件）
         fade_row = QHBoxLayout()
@@ -560,14 +761,20 @@ class LayerPage(QWidget):
         for mode in OverlayFitMode:
             self._fit.addItem(mode.display_text, mode.value)
         fade_row.addWidget(self._fit)
-        fade_row.addWidget(Caption("源上下偏移"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        fade_row.addWidget(Caption("自动上下偏移"), alignment=Qt.AlignmentFlag.AlignVCenter)
         self._source_crop_y = QDoubleSpinBox()
         self._source_crop_y.setRange(-1.0, 1.0)
         self._source_crop_y.setSingleStep(0.1)
         self._source_crop_y.setDecimals(2)
+        # 与 .NET 同名同义（``SourceCropY``，-1 偏上 / 0 居中 / 1 偏下）：
+        # 未手动取景时，蒙版源裁成画幅比例后的上下选取；手动取景优先于它。
+        self._source_crop_y.setToolTip(
+            "未设置手动源素材取景时，蒙版源裁成画幅比例的上下选取"
+            "（-1 偏上 / 0 居中 / 1 偏下）。混剪页选「裁成画幅再覆盖」时生效。"
+        )
         fade_row.addWidget(self._source_crop_y)
         fade_row.addStretch(1)
-        grid.addLayout(fade_row, 5, 0, 1, 4)
+        grid.addLayout(fade_row, 7, 0, 1, 4)
 
         options = QHBoxLayout()
         options.setSpacing(14)
@@ -580,7 +787,7 @@ class LayerPage(QWidget):
         options.addWidget(self._mix_audio)
         options.addWidget(self._source_crop_canvas)
         options.addStretch(1)
-        grid.addLayout(options, 6, 0, 1, 4)
+        grid.addLayout(options, 8, 0, 1, 4)
 
         preset_row = QHBoxLayout()
         preset_row.setSpacing(8)
@@ -594,13 +801,20 @@ class LayerPage(QWidget):
             button.clicked.connect(handler)
             preset_row.addWidget(button)
         preset_row.addStretch(1)
-        grid.addLayout(preset_row, 7, 0, 1, 4)
+        grid.addLayout(preset_row, 9, 0, 1, 4)
 
-        # 源素材取景（独立于输出叠层框）：对齐 .NET 同名的四个数值 + 「重置为自动」。
-        # 未手动取景时由「蒙版适配」与「源上下偏移」自动决定；一旦设置即优先生效
+        # 源素材取景（独立于输出叠层框）：对齐 .NET 同名的四个数值 + 「重置为自动取景」。
+        # 未手动取景时由「蒙版适配」与「自动上下偏移」自动决定；一旦设置即优先生效
         # （见 filter_graph._source_crop_filters）。
-        layout_index = 8
+        layout_index = 10
         grid.addWidget(SectionHeader("源素材取景（独立于输出叠层框）"), layout_index, 0, 1, 4)
+        grid.addWidget(
+            Caption("手动填写或拖动白框；手动取景优先于「自动上下偏移」。重置后恢复自动选取。"),
+            layout_index + 1,
+            0,
+            1,
+            4,
+        )
         crop_row = QHBoxLayout()
         crop_row.setSpacing(6)
         crop_row.addWidget(Caption("X"), alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -609,20 +823,20 @@ class LayerPage(QWidget):
         crop_row.addWidget(Caption("Y"), alignment=Qt.AlignmentFlag.AlignVCenter)
         self._crop_y = self._make_percent_spin(0, minimum=0)
         crop_row.addWidget(self._crop_y)
-        crop_row.addWidget(Caption("宽"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        crop_row.addWidget(Caption("宽度"), alignment=Qt.AlignmentFlag.AlignVCenter)
         self._crop_width = self._make_percent_spin(100, minimum=0)
         crop_row.addWidget(self._crop_width)
-        crop_row.addWidget(Caption("高"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        crop_row.addWidget(Caption("高度"), alignment=Qt.AlignmentFlag.AlignVCenter)
         self._crop_height = self._make_percent_spin(100, minimum=0)
         crop_row.addWidget(self._crop_height)
-        self._crop_reset = SecondaryButton("重置为自动")
-        self._crop_reset.setToolTip("清除手动取景，改由「蒙版适配」与「源上下偏移」自动决定。")
+        self._crop_reset = SecondaryButton("重置为自动取景")
+        self._crop_reset.setToolTip("清除手动取景，改由「蒙版适配」与「自动上下偏移」自动决定。")
         self._crop_reset.clicked.connect(self._reset_source_crop)
         crop_row.addWidget(self._crop_reset)
         crop_row.addStretch(1)
-        grid.addLayout(crop_row, layout_index + 1, 0, 1, 4)
+        grid.addLayout(crop_row, layout_index + 2, 0, 1, 4)
         self._crop_hint = Caption("")
-        grid.addWidget(self._crop_hint, layout_index + 2, 0, 1, 4)
+        grid.addWidget(self._crop_hint, layout_index + 3, 0, 1, 4)
 
         # 比例行：预览画幅模式（不改成片）与宽高比锁定（对齐 .NET FixedAspectRatio）。
         ratio_row = QHBoxLayout()
@@ -657,6 +871,9 @@ class LayerPage(QWidget):
             self._top_fade,
             self._feather,
             self._source_crop_y,
+            self._scale,
+            self._offset_x,
+            self._offset_y,
         ):
             spin.valueChanged.connect(self._on_form_changed)
         # 宽高走专用处理：锁定比例时需要联动另一个方向。
@@ -712,8 +929,7 @@ class LayerPage(QWidget):
             self._list.setCurrentRow(0)
         self._updating = False
 
-        self._canvas.set_layers(self._layers)
-        self._canvas.set_selected(self._selected().id if self._selected() else None)
+        self._sync_canvases()
         self._populate_form()
 
     def _selected(self) -> LayerSpec | None:
@@ -746,6 +962,9 @@ class LayerPage(QWidget):
             self._enabled,
             self._fixed_ratio,
             self._aspect_mode,
+            self._scale,
+            self._offset_x,
+            self._offset_y,
             self._crop_x,
             self._crop_y,
             self._crop_width,
@@ -763,9 +982,13 @@ class LayerPage(QWidget):
             self._y.setValue(int(layer.y_percent))
             self._width.setValue(int(layer.width_percent))
             self._height.setValue(int(round(layer.height_percent)))
-            # 透明度语义（对齐 .NET）：0 = 完全不透明，100 = 完全透明。
-            self._opacity.setValue(int(round((1.0 - max(0.0, min(layer.opacity, 1.0))) * 100)))
+            self._opacity.setValue(self._opacity_percent_from_layer(layer))
             self._rotation.setValue(int(round(layer.rotation_degrees)))
+            self._scale.setValue(max(1.0, min(float(layer.scale_percent), 400.0)))
+            if self._offset_x is not None:
+                # 对齐 .NET OffsetX/OffsetY：归一化 -1~1 的整体位移。
+                self._offset_x.setValue(max(-1.0, min(float(layer.offset_x), 1.0)))
+                self._offset_y.setValue(max(-1.0, min(float(layer.offset_y), 1.0)))
             if self._start_clip is not None:
                 self._start_clip.setValue(max(1, int(layer.start_clip_index)))
             if self._top_fade is not None:
@@ -788,7 +1011,7 @@ class LayerPage(QWidget):
                     self._crop_width.setValue(100)
                     self._crop_height.setValue(100)
                     if self._crop_hint is not None:
-                        self._crop_hint.setText("当前为自动取景（由「蒙版适配」与「源上下偏移」决定）。")
+                        self._crop_hint.setText("当前为自动取景（由「蒙版适配」与「自动上下偏移」决定）。")
                 else:
                     self._crop_x.setValue(int(round(bounds[0] * 100)))
                     self._crop_y.setValue(int(round(bounds[1] * 100)))
@@ -807,14 +1030,45 @@ class LayerPage(QWidget):
         self._updating = False
         self._refresh_ratio_hint()
         self._refresh_sticker_summary(layer)
-        self._canvas.set_selected(layer.id if layer else None)
+        self._sync_canvases()
+
+    # ── 透明度语义（两个表单方向相反，对齐 .NET）────────────────────────────
+    #
+    # .NET 两处的界面刻度是**反的**，移植时必须分开处理：
+    #   * 蒙版页 ``OpacityPercent = (1 - Opacity) * 100``：0 = 不透明、100 = 全透明；
+    #   * 贴纸页 ``StickerOpacity = Opacity * 100``（``StickerEditorViewModel.cs:590``）：
+    #     0 = 全透明、100 = 不透明。
+    # 曾把贴纸页也套上蒙版页的换算，于是「透明度 100%」把贴纸整个变没了。
+
+    def _make_offset_spin(self) -> QDoubleSpinBox:
+        """归一化位移输入（-1~1，对齐 .NET ``OffsetX``/``OffsetY`` 滑杆）。"""
+        spin = QDoubleSpinBox()
+        spin.setRange(-1.0, 1.0)
+        spin.setSingleStep(0.05)
+        spin.setDecimals(2)
+        spin.setValue(0.0)
+        spin.setToolTip("对输出叠层框的整体位移（-1~1）；1 表示平移一个画面宽/高。")
+        return spin
+
+    def _opacity_percent_from_layer(self, layer: LayerSpec) -> int:
+        """图层不透明度 → 本表单控件的百分比刻度。"""
+        opacity = max(0.0, min(layer.opacity, 1.0))
+        if self._is_sticker:
+            return int(round(opacity * 100))
+        return int(round((1.0 - opacity) * 100))
+
+    def _opacity_from_percent(self) -> float:
+        """本表单控件的百分比刻度 → 图层不透明度。"""
+        percent = self._opacity.value() / 100.0
+        if self._is_sticker:
+            return max(0.0, min(percent, 1.0))
+        return max(0.0, min(1.0 - percent, 1.0))
 
     def _refresh_sticker_summary(self, layer: LayerSpec | None) -> None:
         """刷新贴纸参数摘要（对齐 .NET「成片画面示意」的位置/尺寸/透明度/旋转）。
 
-        这里显示图层**实际生效的可见度**（100% = 完全不透明），而不是编辑控件
-        的「透明度」值（该控件 0 = 不透明）。摘要用来看效果，用控件值会让人
-        以为贴纸是透明的。
+        贴纸页的「透明度」刻度与 .NET ``StickerOpacity`` 一致（100 = 不透明），
+        因此摘要直接显示同一个值，不再另造「可见度」这种第二套说法。
         """
         if not self._is_sticker or not hasattr(self, "_sticker_summary"):
             return
@@ -822,11 +1076,11 @@ class LayerPage(QWidget):
             self._sticker_summary.setText("")
             return
         height_text = f"{int(round(layer.height_percent))}%" if layer.height_percent > 0 else "自然"
-        visible_percent = int(round(max(0.0, min(layer.opacity, 1.0)) * 100))
+        opacity_percent = int(round(max(0.0, min(layer.opacity, 1.0)) * 100))
         self._sticker_summary.setText(
             f"位置：({int(round(layer.x_percent))}%, {int(round(layer.y_percent))}%)　"
             f"尺寸：{int(round(layer.width_percent))}% × {height_text}　"
-            f"可见度：{visible_percent}%　"
+            f"透明度：{opacity_percent}%　"
             f"旋转：{int(round(layer.rotation_degrees))}°"
         )
 
@@ -845,7 +1099,7 @@ class LayerPage(QWidget):
         self._layers = self._store.layers
         self._populate_form()
         self._refresh_row_text(layer.id)
-        self._canvas.set_layers(self._layers)
+        self._sync_canvases()
         self._set_status(status)
         self.layers_changed.emit()
 
@@ -866,7 +1120,7 @@ class LayerPage(QWidget):
                 )
             )
         self._layers = self._store.layers
-        self._canvas.set_layers(self._layers)
+        self._sync_canvases()
         self._set_status(f"已把 {layer.display_name} 的尺寸与适配统一到 {len(self._layers) - 1} 个图层。")
         self.layers_changed.emit()
 
@@ -883,18 +1137,49 @@ class LayerPage(QWidget):
         self._set_status(f"已把起始片段统一为第 {layer.start_clip_index} 个视频。")
         self.layers_changed.emit()
 
-    def set_canvas_aspect(self, aspect: str) -> None:
-        """由壳层同步成片画幅（9:16 / 16:9 / 1:1 / 3:4）。
+    def effective_canvas_size(self) -> tuple[int, int]:
+        """本页预览实际使用的画布像素尺寸。
 
-        在「跟随混剪画幅」模式下沿用同画幅；用户选了独立画幅则保持不动，
-        避免混剪页一改设置就把用户的编辑视角拽走（对齐 .NET 的
-        ``SyncCompositionCanvas`` 只在 FollowComposition 时刷新尺寸）。
+        逐条对齐 .NET ``StickerEditorViewModel.GetEffectiveCanvasSize`` 的优先级：
+
+        1. 选中轨道的**固定比例**（``FixedAspectRatio``）——它优先于画幅模式；
+        2. 「跟随混剪画幅」→ 用混剪页的**真实成片尺寸**（不是只取比例，
+           混剪页选 720×1280 时预览与合成预览都必须按 720×1280 走）；
+        3. 其余画幅模式 → 该模式的参考尺寸。
+
+        导出合成预览与「跟随混剪」的尺寸都以本函数为准，避免两处各算一套。
+        """
+        layer = self._selected()
+        if layer is not None:
+            fixed = layer.fixed_ratio.canvas_size
+            if fixed[0] > 0 and fixed[1] > 0:
+                return fixed
+        if self._selected_aspect_mode() is LayerAspectMode.FOLLOW_COMPOSITION:
+            return self._composition_size
+        return PREVIEW_ASPECT_SIZES.get(self._aspect, PREVIEW_ASPECT_SIZES["9:16"])
+
+    def set_canvas_aspect(
+        self,
+        aspect: str,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> None:
+        """由壳层同步混剪页画幅（对齐 .NET ``SyncCompositionCanvas``）。
+
+        ``width``/``height`` 是混剪页的真实成片尺寸；给了就按它算预览画布，
+        没给则退回该比例的参考尺寸。用户选了独立画幅时保持不动，避免混剪页
+        一改设置就把编辑视角拽走（.NET 同样只在 FollowComposition 时刷新）。
         """
         if aspect in PREVIEW_ASPECT_SIZES:
             self._composition_aspect = aspect
+        if width and height and width > 0 and height > 0:
+            self._composition_size = (int(width), int(height))
+        elif aspect in PREVIEW_ASPECT_SIZES:
+            self._composition_size = PREVIEW_ASPECT_SIZES[aspect]
         if self._selected_aspect_mode() is LayerAspectMode.FOLLOW_COMPOSITION:
             self._aspect = self._composition_aspect
-        self._canvas.set_layers(self._layers, aspect=self._aspect)
+        self._sync_canvases(aspect=True)
         self._refresh_preview_availability()
 
     # ── 画幅模式与宽高比锁定 ────────────────────────────────────────────
@@ -933,7 +1218,7 @@ class LayerPage(QWidget):
             self._aspect = self._composition_aspect
         else:
             self._aspect = mode.value
-        self._canvas.set_layers(self._layers, aspect=self._aspect)
+        self._sync_canvases(aspect=True)
         self._refresh_ratio_hint()
 
     def _on_fixed_ratio_changed(self, *_args: object) -> None:
@@ -974,7 +1259,7 @@ class LayerPage(QWidget):
             self._updating = False
             self._layers = self._store.layers
             self._refresh_row_text(updated.id)
-            self._canvas.set_layers(self._layers)
+            self._sync_canvases()
             self._set_status(status)
             self.layers_changed.emit()
         self._refresh_ratio_hint()
@@ -1036,7 +1321,7 @@ class LayerPage(QWidget):
         self._y.setValue(int(round(y_percent)))
         self._sync_split_display(y_percent)
         self._updating = False
-        self._canvas.set_layers(self._layers)
+        self._sync_canvases()
         self.layers_changed.emit()
 
     def _on_layer_scaled(self, layer_id: str, width_percent: float) -> None:
@@ -1049,7 +1334,45 @@ class LayerPage(QWidget):
         self._width.setValue(int(round(width_percent)))
         self._updating = False
         self._refresh_row_text(layer_id)
-        self._canvas.set_layers(self._layers)
+        self._sync_canvases()
+        self.layers_changed.emit()
+
+    def _on_layer_resized(self, layer_id: str, width_percent: float, height_percent: float) -> None:
+        """拖边/角改尺寸（对齐 .NET ``ApplyPreviewResize``）。
+
+        ``height_percent = 0`` 表示"不限制高度"（保持素材自然比例），
+        与高度上限控件的 0 语义一致。
+        """
+        layer = self._store.find(layer_id)
+        if layer is None:
+            return
+        updated = layer.with_changes(
+            width_percent=max(2.0, min(width_percent, 200.0)),
+            height_percent=max(0.0, min(height_percent, 100.0)),
+        )
+        # 固定比例锁定仍然优先：拖角不该悄悄破坏用户锁定的比例。
+        if updated.fixed_ratio.aspect_ratio > 0:
+            constrained_width, constrained_height = updated.constrain_size(
+                width_percent=updated.width_percent,
+                height_percent=updated.height_percent or updated.width_percent * 100,
+                driven_by="width",
+            )
+            updated = updated.with_changes(
+                width_percent=constrained_width,
+                height_percent=0.0 if updated.height_percent == 0.0 else constrained_height,
+            )
+
+        self._store.replace(updated)
+        self._layers = self._store.layers
+        self._updating = True
+        self._width.setValue(int(round(updated.width_percent)))
+        self._height.setValue(int(round(updated.height_percent)))
+        if self._split_position is not None:
+            self._sync_split_display(updated.y_percent)
+        self._updating = False
+        self._refresh_row_text(layer_id)
+        self._refresh_sticker_summary(updated)
+        self._sync_canvases()
         self.layers_changed.emit()
 
     def _refresh_row_text(self, layer_id: str) -> None:
@@ -1114,8 +1437,20 @@ class LayerPage(QWidget):
             y_percent=float(self._y.value()),
             width_percent=float(self._width.value()),
             height_percent=float(self._height.value()),
-            # 透明度语义（对齐 .NET）：0 = 不透明，100 = 完全透明。
-            opacity=1.0 - self._opacity.value() / 100.0,
+            opacity=self._opacity_from_percent(),
+            # 尺寸＝边界框内的内容缩放（对齐 .NET OverlayLayer.Scale，1.0 为 100%）。
+            scale_percent=float(self._scale.value()),
+            # 位置 X/Y＝输出叠层框的整体位移（对齐 .NET OffsetX/OffsetY）；贴纸表单没有这两项。
+            offset_x=(
+                max(-1.0, min(float(self._offset_x.value()), 1.0))
+                if self._offset_x is not None
+                else layer.offset_x
+            ),
+            offset_y=(
+                max(-1.0, min(float(self._offset_y.value()), 1.0))
+                if self._offset_y is not None
+                else layer.offset_y
+            ),
             # 以下为蒙版专属项：贴纸模式没有对应控件，保留图层原值不覆盖。
             remove_black=(
                 self._remove_black.isChecked() if self._remove_black is not None else layer.remove_black
@@ -1163,15 +1498,44 @@ class LayerPage(QWidget):
                 self._sync_split_display(updated.y_percent)
             self._updating = False
             self._layers = self._store.layers
-            self._canvas.set_layers(self._layers)
+            self._sync_canvases()
             self._refresh_sticker_summary(updated)
             self.layers_changed.emit()
+
+    def _on_canvas_source_crop_moved(self, x: float, y: float, width: float, height: float) -> None:
+        """拖拽源取景白框 → 写回 ``source_crop_bounds``（对齐 .NET 拖白框）。
+
+        与「输出叠层框」互不影响：白框是源素材坐标系，拖它只改取景。
+        """
+        layer = self._selected()
+        if layer is None:
+            return
+        bounds = (
+            max(0.0, min(float(x), 1.0)),
+            max(0.0, min(float(y), 1.0)),
+            max(0.01, min(float(width), 1.0)),
+            max(0.01, min(float(height), 1.0)),
+        )
+        if not self._store.replace(layer.with_changes(source_crop_bounds=bounds)):
+            return
+        self._layers = self._store.layers
+        updated = self._store.find(layer.id)
+        if updated is not None:
+            self._updating = True
+            self._crop_x.setValue(int(round(updated.source_crop_bounds[0] * 100)))
+            self._crop_y.setValue(int(round(updated.source_crop_bounds[1] * 100)))
+            self._crop_width.setValue(int(round(updated.source_crop_bounds[2] * 100)))
+            self._crop_height.setValue(int(round(updated.source_crop_bounds[3] * 100)))
+            self._updating = False
+        self._refresh_source_crop_hint()
+        self._sync_canvases()
+        self.layers_changed.emit()
 
     def _on_source_crop_changed(self, *_args: object) -> None:
         """写入手动源素材取景（宽高为 0 视为不设置）。
 
         与 .NET「源素材取景（独立于输出叠层框）」等价：一旦设置，它就优先于
-        「蒙版适配」与「源上下偏移」生效。
+        「蒙版适配」与「自动上下偏移」生效。
         """
         if self._updating:
             return
@@ -1192,10 +1556,11 @@ class LayerPage(QWidget):
         if self._store.replace(layer.with_changes(source_crop_bounds=bounds)):
             self._layers = self._store.layers
             self._refresh_source_crop_hint()
+            self._sync_canvases()
             self.layers_changed.emit()
 
     def _reset_source_crop(self) -> None:
-        """清除手动取景，回到自动（蒙版适配 + 源上下偏移）。"""
+        """清除手动取景，回到自动（蒙版适配 + 自动上下偏移）。"""
         layer = self._selected()
         if layer is None:
             self._set_status("请先选择一条轨道。", warn=True)
@@ -1203,14 +1568,14 @@ class LayerPage(QWidget):
         self._store.replace(layer.with_changes(source_crop_bounds=None))
         self._layers = self._store.layers
         self._populate_form()
-        self._set_status("已重置源素材取景为自动（按「蒙版适配」与「源上下偏移」决定）。")
+        self._set_status("已重置源素材取景为自动（按「蒙版适配」与「自动上下偏移」决定）。")
         self.layers_changed.emit()
 
     def _refresh_source_crop_hint(self) -> None:
         if self._crop_hint is None:
             return
         self._crop_hint.setText(
-            "已手动取景：该设置优先于「蒙版适配」与「源上下偏移」。"
+            "已手动取景：该设置优先于「蒙版适配」与「自动上下偏移」。"
         )
 
     def _sync_split_display(self, y_percent: float) -> None:
@@ -1270,7 +1635,7 @@ class LayerPage(QWidget):
         self._updating = False
         self._layers = self._store.layers
         self._refresh_row_text(updated.id)
-        self._canvas.set_layers(self._layers)
+        self._sync_canvases()
         self.layers_changed.emit()
 
     def _import(self) -> None:
@@ -1358,7 +1723,7 @@ class LayerPage(QWidget):
         if base_asset is None:
             self._refresh_preview_availability()
             return
-        width, height = PREVIEW_ASPECT_SIZES.get(self._aspect, PREVIEW_ASPECT_SIZES["9:16"])
+        width, height = self.effective_canvas_size()
         settings = RenderSettings(width=width, height=height, fps=30)
         output_path = Path(tempfile.gettempdir()) / PREVIEW_TEMP_DIRECTORY / f"{uuid4().hex[:8]}.jpg"
         self._preview_running = True
@@ -1418,6 +1783,43 @@ class LayerPage(QWidget):
 
     def enabled_layers(self) -> list[LayerSpec]:
         return self._store.enabled_layers
+
+    def _sync_canvases(self, *, aspect: bool = False) -> None:
+        """把图层与选中状态同步到预览画布（两张），并刷新提示行。
+
+        统一入口：此前各处直接调 ``self._canvas.set_layers(...)``，加第二张画布后
+        很容易漏掉其中一处，导致源素材取景白框停留在旧状态。
+        """
+        selected = self._selected()
+        selected_id = selected.id if selected else None
+        for canvas in (self._canvas, self._source_crop_preview):
+            if canvas is None:
+                continue
+            if aspect:
+                canvas.set_layers(self._layers, aspect=self._aspect)
+            else:
+                canvas.set_layers(self._layers)
+            canvas.set_selected(selected_id)
+        self._refresh_preview_effect_hint(selected)
+
+    def _refresh_preview_effect_hint(self, layer: LayerSpec | None) -> None:
+        """刷新"视觉参数当前值"提示行（对齐 .NET 的 PreviewVisualEffectHint）。"""
+        if not hasattr(self, "_preview_effect_hint"):
+            return
+        if layer is None:
+            self._preview_effect_hint.setText("")
+            return
+        visible = int(round(max(0.0, min(layer.opacity, 1.0)) * 100))
+        if self._is_sticker:
+            self._preview_effect_hint.setText(
+                f"框内示意：可见度 {visible}%，旋转 {int(round(layer.rotation_degrees))}°。"
+            )
+            return
+        self._preview_effect_hint.setText(
+            f"框内示意：上向渐变 {int(round(layer.top_fade * 100))}%，"
+            f"羽化 {int(round(layer.feather * 100))}%，透明度 {visible}%；"
+            "右侧「合成预览」显示真实渲染效果。"
+        )
 
     def refresh_from_store(self) -> None:
         """外部替换 store 内容（如打开项目）后重建列表与表单。"""

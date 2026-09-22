@@ -198,7 +198,7 @@ def test_sticker_page_has_material_library(qapp, tmp_path: Path) -> None:  # noq
 
     assert page._is_sticker is True
     assert page._library_list.count() == 1
-    assert "素材库 1 项" in page._library_caption.text()
+    assert "贴纸库 1 项" in page._library_caption.text()
 
     page._library_list.setCurrentRow(0)
     page._add_track_from_library()
@@ -248,7 +248,10 @@ def test_mask_page_keeps_its_own_controls(qapp, tmp_path: Path) -> None:  # noqa
     )
 
     assert page._is_sticker is False
-    assert not hasattr(page, "_library_list")
+    # 蒙版页现在也有素材库（对齐 .NET「蒙版素材库」）：它是「蒙版随机替换」的抽取来源。
+    # 但蒙版专属参数控件必须仍在，不能被素材库改造挤掉。
+    assert page._library_list is not None
+    assert "蒙版素材库" in page._library_caption.text()
     for attribute in ("_feather", "_fit", "_split_position", "_remove_black"):
         assert getattr(page, attribute) is not None
     assert page._preview_button is not None

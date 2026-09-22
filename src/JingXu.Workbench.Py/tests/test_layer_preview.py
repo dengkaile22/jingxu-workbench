@@ -40,7 +40,12 @@ def test_layer_without_rotation_skips_rotate() -> None:
     assert "rotate=" not in graph.script
 
 
-def test_layer_box_centers_and_clamps() -> None:
+def test_layer_box_uses_center_without_clamping() -> None:
+    """框中心取自 ``x_percent``/``y_percent``，**不做画布内夹取**。
+
+    滤镜图按同一个中心公式定位、同样不夹取（框可以有一部分移出画布）。
+    预览若在这里夹回去，用户会看到"预览不动但成片动了"。
+    """
     layer = LayerSpec(kind=LayerKind.STICKER, source=Path("s.png"), x_percent=50, y_percent=50, width_percent=40)
     box = layer_box(layer, canvas_ratio=1.0)
     assert box.x == pytest.approx(0.30)
@@ -48,10 +53,12 @@ def test_layer_box_centers_and_clamps() -> None:
     assert box.width == pytest.approx(0.40)
     assert box.height == pytest.approx(0.40)
 
-    corner = LayerSpec(kind=LayerKind.STICKER, source=Path("s.png"), x_percent=100, y_percent=0, width_percent=60)
-    clamped = layer_box(corner, canvas_ratio=1.0)
-    assert clamped.x == pytest.approx(0.40)
-    assert clamped.y == pytest.approx(0.0)
+    # 中心贴到画布右缘：框有一半在画布外，与渲染一致
+    edge = LayerSpec(kind=LayerKind.STICKER, source=Path("s.png"), x_percent=100, y_percent=0, width_percent=60)
+    at_edge = layer_box(edge, canvas_ratio=1.0)
+    assert at_edge.x + at_edge.width / 2 == pytest.approx(1.0)
+    assert at_edge.x == pytest.approx(0.70)
+    assert at_edge.y + at_edge.height / 2 == pytest.approx(0.0)
 
 
 def test_percent_from_point_maps_and_clamps() -> None:

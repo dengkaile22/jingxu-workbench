@@ -34,6 +34,13 @@ def _page(tmp_path: Path, *, provider=None, name: str = "overlays.json") -> Laye
     source = tmp_path / "蒙版.png"
     source.write_bytes(b"stub")
     store.add(source)
+    # 新建蒙版现在走 .NET 的叠影预设（落点在上半红框区、半透明带渐变）。
+    # 本文件测的是分割位置与高度上限，需要一条"居中、不透明"的基准层，
+    # 否则先把参数归一到测试假设的状态。
+    layer = store.layers[0]
+    store.replace(
+        layer.with_changes(x_percent=50.0, y_percent=50.0, width_percent=60.0, opacity=1.0, top_fade=0.0, feather=0.0)
+    )
     return LayerPage(
         store,
         title="蒙版模板",

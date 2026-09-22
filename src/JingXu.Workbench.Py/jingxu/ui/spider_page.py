@@ -50,10 +50,36 @@ from jingxu.ui.widgets import (
 ACCOUNT_COLUMNS = ("启用", "平台", "备注名", "链接 / ID")
 ACCOUNT_COLUMN_WIDTHS = (52, 64, 150, 320)
 # 结果表第一列是勾选：只把选中的商品送入下载（此前是强制全发）。
-RESULT_COLUMNS = ("选", "商品", "跨账号数", "出现次数", "价格区间")
-RESULT_COLUMN_WIDTHS = (40, 320, 96, 96, 120)
+# 其余列逐项对齐 .NET 结果表的八列（商品名称 / 清洗归一名称 / 平台 / 对标账号数 /
+# 带货视频数 / 带货达人明细 / 参考售价 / 示例视频链接），漏掉的正是"哪些账号在带货"
+# 与"示例视频"，那两条恰是做选品判断时最需要的信息。
+RESULT_COLUMNS = (
+    "选",
+    "商品",
+    "清洗名称",
+    "平台",
+    "跨账号数",
+    "出现次数",
+    "对标账号明细",
+    "价格区间",
+    "示例视频链接",
+)
+RESULT_COLUMN_WIDTHS = (40, 260, 200, 70, 90, 90, 220, 120, 240)
 RESULT_CHECK_COLUMN = 0
 RESULT_NAME_COLUMN = 1
+
+# 每一列取哪个字段。键名在不同来源里不一致（爬虫 `to_summary_dict` 用中文键，
+# 中间层可能给 camelCase 或 snake_case），因此每列给一组候选键，按序兜底。
+_RESULT_FIELD_KEYS: tuple[tuple[str, ...], ...] = (
+    ("商品名称", "product_name", "productName", "name"),
+    ("清洗名称", "cleaned_name", "cleanedName"),
+    ("涉及平台", "platform"),
+    ("带货账号数", "account_count", "accountCount"),
+    ("带货视频数", "video_count", "videoCount", "total_occurrences", "totalOccurrences"),
+    ("对标账号明细", "accounts", "account_names", "influencers"),
+    ("参考价格", "price_range", "priceRange"),
+    ("示例视频链接", "sample_video_url", "sampleVideoUrl", "video_url", "videoUrl"),
+)
 
 
 class SpiderBridge(QObject):
@@ -426,7 +452,7 @@ class SpiderPage(QWidget):
 
         self._login_buttons: dict[str, QPushButton] = {}
         for platform, label in spider_service.PLATFORM_LABELS.items():
-            button = SecondaryButton(f"{label}登录")
+            button = SecondaryButton(f"🔑 扫码登录{label}")
             button.setToolTip(f"打开浏览器扫码登录{label}，登录态会被复用，无需重复登录。")
             button.clicked.connect(partial(self._open_login, platform))
             row.addWidget(button)
@@ -453,12 +479,31 @@ class SpiderPage(QWidget):
             )
             self._login_status.setObjectName("CaptionWarn")
         else:
-            self._login_status.setText(f"浏览器：{browser.name} · {profile_text}")
-            self._login_status.setObjectName("Caption")
+            # 档案被别的浏览器占用时必须在状态行就说清楚：否则用户点「开始抓取」
+            # 只会看到爬虫预检失败，而登录按钮点下去甚至会直接崩（0xc0000142）。
+            lock = self._profile_lock_note()
+            self._login_status.setText(f"浏览器：{browser.name} · {profile_text}{lock}")
+            self._login_status.setObjectName("CaptionWarn" if lock else "Caption")
         self._login_status.style().unpolish(self._login_status)
         self._login_status.style().polish(self._login_status)
         for button in self._login_buttons.values():
             button.setEnabled(browser is not None)
+
+    def _profile_lock_note(self) -> str:
+        """档案占用提示（空串表示未被占用）。
+
+        探测失败一律当作「未占用」：这是显示用的提示，绝不能因为探测不到就
+        禁用按钮、把用户挡在门外。
+        """
+        try:
+            state = spider_service.profile_lock_state()
+        except Exception:  # noqa: BLE001 - 提示失败不影响主流程
+            return ""
+        if state.busy:
+            return f" · ⚠ 档案正被占用（进程 {'、'.join(str(pid) for pid in state.holder_pids)}）"
+        if state.cleared_locks:
+            return f" · 已清理残留锁（{'、'.join(state.cleared_locks)}）"
+        return ""
 
     def _open_login(self, platform: str) -> None:
         if self._login_session is not None and self._login_session.is_running():
@@ -534,7 +579,7 @@ class SpiderPage(QWidget):
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        self._log_toggle = SecondaryButton("显示运行日志")
+        self._log_toggle = SecondaryButton("📋 运行日志")
         self._log_toggle.clicked.connect(self._toggle_log)
         layout.addWidget(self._log_toggle)
 
@@ -722,13 +767,23 @@ class SpiderPage(QWidget):
         # 关键：必须先释放登录浏览器。登录与抓取共用同一个 Chromium profile 目录，
         # 而 Chromium 对 profile 加独占锁；两个实例同时用它会导致启动失败
         # （实测表现为 python.exe 应用程序错误 0xc0000142，直接崩掉）。
+        released_login = False
         if self._login_session is not None:
-            label = self._login_session.platform_label
             self._login_session.close()
             self._login_session = None
             self._login_done.setEnabled(False)
             self._refresh_login_status()
-            self._set_result_caption(f"已关闭{label}登录浏览器以释放 profile，开始抓取…")
+            released_login = True
+
+        # 除了本程序自己的登录窗口，还可能有**其它**浏览器占着同一档案
+        # （用户手动开着、或上一个实例崩溃残留）。此时不要白启动一轮抓取：
+        # 爬虫预检会以 profile_locked 阻断，用户只会看到「环境检查未通过」。
+        # 这里提前拦住并说清是哪个进程。
+        lock_state = spider_service.profile_lock_state()
+        if lock_state.busy:
+            self._set_result_caption(lock_state.message, warn=True)
+            self._refresh_login_status()
+            return
 
         self._running = True
         self._cancel.clear()
@@ -736,7 +791,10 @@ class SpiderPage(QWidget):
         self._cancel_button.setEnabled(True)
         self._send_button.setEnabled(False)
         self._log.clear()
-        if not self._result_caption.text().startswith("已关闭"):
+        # 用显式标志而不是读回界面文案来决定提示语：文案一改，逻辑就会悄悄失效。
+        if released_login:
+            self._set_result_caption("已关闭登录浏览器以释放档案，开始抓取…")
+        else:
             self._set_result_caption("正在抓取…（首次会打开浏览器，可能需要扫码登录）")
         config = self._config
 
@@ -963,7 +1021,7 @@ class SpiderPage(QWidget):
         """
         visible = self._log.isHidden()
         self._log.setVisible(visible)
-        self._log_toggle.setText("隐藏运行日志" if visible else "显示运行日志")
+        self._log_toggle.setText("隐藏运行日志" if visible else "📋 运行日志")
 
     def _set_result_caption(self, text: str, *, warn: bool = False) -> None:
         self._result_caption.setText(text)
@@ -1010,27 +1068,27 @@ def _combo(options: list[tuple[str, str]]):  # noqa: ANN201 - QComboBox
     return combo
 
 
-def _entry_columns(entry: dict) -> tuple[str, str, str, str]:
-    """把一条结果条目映射为「商品 / 跨账号数 / 出现次数 / 价格区间」四列。
+def _entry_columns(entry: dict) -> tuple[str, ...]:
+    """把一条结果条目映射为结果表的各列文本（不含首列勾选）。
 
-    项目名的字段名在不同来源里不一致（name / product_name / cleanedName），
-    这里统一兜底；缺失值显示为破折号而不是空白，便于分辨「没有」与「取不到」。
+    字段名在不同来源里不一致（爬虫 ``to_summary_dict`` 用中文键，中间层可能给
+    camelCase 或 snake_case），因此每列给一组候选键并逐级兜底；列表型的
+    「对标账号明细」拼成顿号分隔。缺失值显示为破折号，便于分辨"没有"与"取不到"。
     """
-    name = ""
-    for key in ("name", "product_name", "productName", "cleanedName", "title"):
-        value = entry.get(key)
-        if value:
-            name = str(value).strip()
-            break
-    counts = entry.get("account_count") or entry.get("accountCount") or 0
-    occurrences = entry.get("total_occurrences") or entry.get("totalOccurrences") or 0
-    price = entry.get("price_range") or entry.get("priceRange") or ""
-    return (
-        name or "—",
-        str(counts) if counts else "—",
-        str(occurrences) if occurrences else "—",
-        str(price) or "—",
-    )
+    values: list[str] = []
+    for keys in _RESULT_FIELD_KEYS:
+        raw: object = None
+        for key in keys:
+            candidate = entry.get(key)
+            if candidate not in (None, "", [], ()):
+                raw = candidate
+                break
+        if isinstance(raw, (list, tuple)):
+            text = "、".join(str(item).strip() for item in raw if str(item).strip())
+        else:
+            text = str(raw).strip() if raw is not None else ""
+        values.append(text or "—")
+    return tuple(values)
 
 
 def _select(combo, value: str) -> None:  # noqa: ANN001 - QComboBox

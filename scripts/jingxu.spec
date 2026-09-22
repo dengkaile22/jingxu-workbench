@@ -14,9 +14,18 @@
 * **品牌资源例外**：``AppLogo.png`` 与 ``AppIcon.ico`` 是位图，无法内联为字面量，
   因此打进 ``datas``（包内路径 ``jingxu/ui/assets/``）。同时把它作为 exe 图标，
   否则任务栏与资源管理器会显示 PyInstaller 默认图标（此前即如此）。
+* **爬虫登录组件必须显式收集**：扫码登录由应用进程内 ``from core.browser_manager
+  import BrowserManager`` 完成，而它 ``import DrissionPage``。PyInstaller 的静态
+  分析看不到这种运行期动态导入，**默认不会把 DrissionPage 打进包**；实测打包版
+  点「抖音登录 / 快手登录」直接报 ``No module named 'DrissionPage'``，
+  即 MSI 版的扫码登录根本不可用。因此下面用 ``collect_all`` 显式收集。
+  构建机没装 DrissionPage 时只告警、不中断构建（源码运行仍可用，界面会给出
+  「缺哪个组件、怎么装」的准确提示）。
 """
 
 from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_all
 
 PROJECT_ROOT = Path(SPECPATH).resolve().parent          # noqa: F821 - PyInstaller 注入
 PACKAGE_DIR = PROJECT_ROOT / "src" / "JingXu.Workbench.Py"
@@ -32,16 +41,53 @@ BRAND_DATAS = [
 ]
 APP_ICON = ASSET_DIR / "AppIcon.ico"
 
+# 扫码登录（在应用进程内完成）所需的爬虫依赖。缺任何一个，登录按钮就是死的。
+LOGIN_HIDDEN_IMPORTS = [
+    "DrissionPage",
+    "DrissionPage.common",
+    "DrissionPage.errors",
+    "DrissionPage.items",
+    "DrissionPage._base",
+    "DrissionPage._configs",
+    "DrissionPage._elements",
+    "DrissionPage._functions",
+    "DrissionPage._pages",
+    "DrissionPage._units",
+    "websocket",
+    "lxml",
+    "lxml.etree",
+    "cssselect",
+    "tldextract",
+    "filelock",
+    "psutil",
+]
+
+LOGIN_DATAS: list = []
+LOGIN_BINARIES: list = []
+for _module in ("DrissionPage", "websocket", "lxml", "cssselect", "tldextract", "filelock", "psutil"):
+    try:
+        _datas, _binaries, _hidden = collect_all(_module)
+    except Exception as _error:  # noqa: BLE001 - 构建机缺该依赖时只告警
+        print(f"[spec] 警告：未能收集 {_module}（{_error}）")
+        continue
+    LOGIN_DATAS += _datas
+    LOGIN_BINARIES += _binaries
+    LOGIN_HIDDEN_IMPORTS += _hidden
+
+LOGIN_HIDDEN_IMPORTS = sorted(set(LOGIN_HIDDEN_IMPORTS))
+
 analysis = Analysis(  # noqa: F821
     [str(PACKAGE_DIR / "jingxu" / "__main__.py")],
     pathex=[str(PACKAGE_DIR)],
-    binaries=[],
-    datas=BRAND_DATAS,
-    # 爬虫/下载相关为可选依赖，缺失时功能降级而非启动失败，因此不强制收集。
+    binaries=LOGIN_BINARIES,
+    datas=BRAND_DATAS + LOGIN_DATAS,
+    # 爬虫/下载相关为可选依赖，缺失时功能降级而非启动失败，因此不强制收集；
+    # 但扫码登录是界面上的按钮，缺了就是「点了报错」，故上面显式收集。
     hiddenimports=[
         "jingxu.ui.icons",
         "jingxu.ui.theme",
         "jingxu.ui.widgets",
+        *LOGIN_HIDDEN_IMPORTS,
     ],
     hookspath=[],
     runtime_hooks=[],

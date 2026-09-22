@@ -24,8 +24,13 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from jingxu.infrastructure.app_paths import search_roots
-from jingxu.infrastructure.process_control import no_window_kwargs
 from jingxu.infrastructure.paths import data_directory
+from jingxu.infrastructure.process_control import no_window_kwargs
+from jingxu.infrastructure.profile_lock import (
+    lock_files_present,
+    probe_holder_pids,
+    remove_stale_locks,
+)
 
 SPIDER_ENV_DIR = "JINGXU_SPIDER_DIR"
 SPIDER_ENV_PYTHON = "JINGXU_SPIDER_PYTHON"
@@ -390,29 +395,82 @@ def profile_ready() -> bool:
     return profile_status()[0]
 
 
+@dataclass(frozen=True, slots=True)
+class ProfileLockState:
+    """浏览器档案占用状态。
+
+    ``busy`` 与 ``stale`` 必须分开：前者要拦住用户（真的会崩），后者要自动清理
+    （崩溃残留，不清理会永久挡住用户）。旧实现把两者混为一谈——见
+    ``profile_lock`` 模块开头的说明。
+    """
+
+    busy: bool
+    holder_pids: tuple[int, ...] = ()
+    stale_locks: tuple[str, ...] = ()
+    cleared_locks: tuple[str, ...] = ()
+
+    @property
+    def message(self) -> str:
+        if self.busy:
+            pids = "、".join(str(pid) for pid in self.holder_pids)
+            return (
+                f"浏览器档案正被占用（进程 {pids}）。"
+                "请先关闭登录窗口或另一个正在抓取的窗口，再重试。"
+            )
+        if self.cleared_locks:
+            return f"已清理上次异常退出残留的锁文件（{'、'.join(self.cleared_locks)}）。"
+        return ""
+
+
+def profile_lock_state(
+    *,
+    probe=None,
+    cleanup: bool = True,
+    directory: Path | None = None,
+) -> ProfileLockState:
+    """检测档案占用，并（默认）清理确认无主的残留锁。
+
+    ``probe`` 供测试注入；``directory`` 也供测试指定（默认取真实的登录态档案
+    目录）。实现见 :mod:`jingxu.infrastructure.profile_lock`。
+    """
+    target = Path(directory) if directory is not None else profile_directory()
+    if not target.is_dir():
+        return ProfileLockState(busy=False)
+
+    try:
+        pids = probe_holder_pids(target, probe=probe)
+    except Exception:  # noqa: BLE001 - 探测失败不得阻断流程
+        return ProfileLockState(busy=False)
+
+    if pids:
+        return ProfileLockState(busy=True, holder_pids=tuple(pids))
+
+    locks = lock_files_present(target)
+    if not locks:
+        return ProfileLockState(busy=False)
+
+    cleared: tuple[str, ...] = ()
+    if cleanup:
+        try:
+            cleared = remove_stale_locks(target)
+        except Exception:  # noqa: BLE001 - 清理失败只降级为提示
+            cleared = ()
+    return ProfileLockState(busy=False, stale_locks=locks, cleared_locks=cleared)
+
+
 def profile_in_use() -> bool:
-    """profile 目录是否正被浏览器占用。
+    """profile 目录是否正被浏览器进程占用。
 
     Chromium 对 ``user_data_dir`` 加独占锁；登录浏览器还没关就又点「开始抓取」
     时，两个实例抢同一 profile 会启动失败（实测表现为 python.exe 应用程序错误
     0xc0000142，进程直接崩掉）。抓取前检查可给出可读提示，而不是让用户面对
     系统级崩溃弹窗。
-    """
-    directory = profile_directory()
-    if not directory.is_dir():
-        return False
-    for name in ("SingletonLock", "lockfile"):
-        if (directory / name).exists():
-            return True
 
-    lock = directory / "Default" / "LOCK"
-    if not lock.is_file():
-        return False
-    try:
-        with lock.open("a+b"):
-            return False
-    except OSError:
-        return True
+    **判定依据是活着的浏览器进程**，不是锁文件是否存在：Windows 上
+    ``Default/LOCK`` 是 0 字节普通文件，靠它判断恒为 False（旧实现的缺陷）；
+    而崩溃残留的 ``SingletonLock`` 又会让判定恒为 True，把用户永久挡住。
+    """
+    return profile_lock_state().busy
 
 
 def probe_time_filter(filters: "SpiderFilters") -> str:
@@ -455,6 +513,25 @@ class SpiderLoginSession:
             pass
 
 
+def _missing_login_modules() -> tuple[str, ...]:
+    """扫码登录需要在**本进程**里真实可导入的模块。
+
+    为什么不能只查 ``find_spec``：那只看包在不在，不看它能不能导入。打包版曾出现
+    「``find_spec('DrissionPage')`` 有结果、但真正 ``import`` 时它的子依赖不在包里」
+    的情况，报错被上层拼成一句无法定位的「组件加载失败」。这里实际导入一次，
+    把缺的模块名如实列出来。
+    """
+    import importlib
+
+    missing: list[str] = []
+    for name in ("DrissionPage",):
+        try:
+            importlib.import_module(name)
+        except Exception:  # noqa: BLE001 - 缺依赖/库损坏都算不可用
+            missing.append(name)
+    return tuple(missing)
+
+
 def open_login_window(platform: str) -> SpiderLoginSession:
     """打开浏览器让用户扫码登录指定平台。
 
@@ -475,6 +552,24 @@ def open_login_window(platform: str) -> SpiderLoginSession:
             f"或设置环境变量 {BROWSER_ENV} 指向浏览器可执行文件。"
         )
 
+    # 档案被占用时先拦住：两个实例抢同一 profile 会让新进程直接崩（0xc0000142），
+    # 崩溃前不会给出任何可读原因。顺带清掉上次异常退出的残留锁。
+    state = profile_lock_state()
+    if state.busy:
+        raise SpiderError(state.message)
+
+    # 依赖缺失要在这里明确说清楚，而不是等 from core... 抛出
+    # ModuleNotFoundError 再拼一句含义模糊的「组件加载失败」——
+    # 实测该写法把「打包时没收集 DrissionPage」误报成「请安装爬虫依赖」。
+    missing = _missing_login_modules()
+    if missing:
+        raise SpiderError(
+            "扫码登录需要以下组件，当前运行环境中缺失："
+            + "、".join(missing)
+            + "。源码运行时请执行 pip install -e \".[spider]\"；"
+            "安装包版本请改用随包运行时或反馈构建问题。"
+        )
+
     # 让爬虫内部模块（core.* / ecommerce_spider.*）可被导入。应用侧没有同名
     # 顶层模块，因此不存在覆盖风险。
     if str(directory) not in sys.path:
@@ -486,7 +581,8 @@ def open_login_window(platform: str) -> SpiderLoginSession:
         from core.browser_manager import BrowserManager  # type: ignore[import-not-found]
     except Exception as error:  # noqa: BLE001 - 依赖缺失时给出可操作提示
         raise SpiderError(
-            f"爬虫组件加载失败：{error}。请安装爬虫依赖（DrissionPage 等）。"
+            f"爬虫组件加载失败：{type(error).__name__}: {error}。"
+            f"爬虫目录：{directory}。请确认该目录下的 core/ 组件完整。"
         ) from error
 
     try:
@@ -497,7 +593,11 @@ def open_login_window(platform: str) -> SpiderLoginSession:
         )
         manager.open_login_window(platform)
     except Exception as error:  # noqa: BLE001 - 浏览器启动失败原因很多，统一转可读提示
-        raise SpiderError(f"无法打开登录页面：{error}") from error
+        raise SpiderError(
+            f"无法打开登录页面：{type(error).__name__}: {error}。"
+            f"浏览器：{browser}；档案：{profile}。"
+            "若提示档案被占用，请关闭其它浏览器窗口或另一个选品登录窗口后重试。"
+        ) from error
 
     return SpiderLoginSession(
         _manager=manager,
@@ -904,7 +1004,7 @@ def archive_failure_output(lines: Sequence[str], *, exit_code: int | None) -> Pa
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         target = directory / f"spider-{stamp}.log"
         header = [
-            f"# 选品爬虫运行输出留档",
+            "# 选品爬虫运行输出留档",
             f"# 时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             f"# 退出码：{exit_code if exit_code is not None else '未知'}",
             f"# 输出行数：{len(lines)}",

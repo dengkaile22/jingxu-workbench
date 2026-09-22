@@ -43,16 +43,57 @@ def test_preflight_passes_in_healthy_environment(profile) -> None:  # noqa: ANN0
     assert report.info["missingModules"] == []
 
 
-def test_preflight_blocks_when_profile_is_locked(profile) -> None:  # noqa: ANN001
-    """实测：两个实例抢同一 Chromium 档案会直接崩（0xc0000142）。"""
-    (profile / "SingletonLock").write_text("locked", encoding="utf-8")
+def test_preflight_blocks_when_browser_holds_profile(profile) -> None:  # noqa: ANN001
+    """实测：两个实例抢同一 Chromium 档案会直接崩（0xc0000142）。
 
-    report = run_preflight(headless=False, profile_dir=str(profile))
+    判定依据是「有没有活着的浏览器进程在用这个目录」。注入一个占用者即可
+    复现，不需要真的去起浏览器。
+    """
+    report = run_preflight(
+        headless=False,
+        profile_dir=str(profile),
+        profile_holder_probe=lambda target: (12345,),
+    )
 
     assert report.ok is False
     codes = {item.code for item in report.blockers}
     assert "profile_locked" in codes
-    assert any("关闭登录窗口" in item.suggestion for item in report.blockers)
+    blocker = next(item for item in report.blockers if item.code == "profile_locked")
+    assert "关闭登录窗口" in blocker.suggestion
+    # 报出占用进程，用户才知道该关哪个
+    assert "12345" in blocker.message
+    assert report.info["profileLocked"] is True
+
+
+def test_preflight_clears_stale_lock_without_blocking(profile) -> None:  # noqa: ANN001
+    """只有锁文件、没有活进程 = 上次异常退出的残留。
+
+    旧实现只看锁文件是否存在，于是残留锁会把用户**永久**挡在门外
+    （Chromium 也的确会因此拒绝启动）。现在应自动清理并只给一条提醒。
+    """
+    (profile / "SingletonLock").write_text("locked", encoding="utf-8")
+
+    report = run_preflight(
+        headless=False,
+        profile_dir=str(profile),
+        profile_holder_probe=lambda target: (),
+    )
+
+    assert report.ok is True
+    assert not any(item.code == "profile_locked" for item in report.blockers)
+    assert (profile / "SingletonLock").exists() is False
+    assert report.info["staleLocksRemoved"] == ["SingletonLock"]
+    assert any(item.code == "stale_profile_lock" for item in report.issues)
+
+
+def test_preflight_skips_profile_probe_when_disabled(profile) -> None:  # noqa: ANN001
+    """关掉探测时不得读进程表，也不得删锁。"""
+    (profile / "SingletonLock").write_text("locked", encoding="utf-8")
+
+    report = run_preflight(headless=False, profile_dir=str(profile), probe_profile=False)
+
+    assert "profileLocked" not in report.info
+    assert (profile / "SingletonLock").exists() is True
 
 
 def test_preflight_warns_headless_cannot_scan_qr(profile) -> None:  # noqa: ANN001

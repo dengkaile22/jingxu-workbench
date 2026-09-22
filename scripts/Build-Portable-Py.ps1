@@ -186,6 +186,43 @@ if (-not $SkipSelfTest) {
     foreach ($component in $parsed.components) {
         Write-Host ("    {0,-26} {1}" -f $component.displayName, ($(if ($component.available) { '就绪' } else { '缺失' })))
     }
+
+    # 运行期动态导入的组件（扫码登录的 DrissionPage）静态分析看不到，必须实测。
+    # 曾经因为没收集 DrissionPage，装机版点「抖音登录」直接报 No module named，
+    # 而源码运行完全正常——只有这一步能提前发现。
+    Write-Host '=== 6b. 运行期依赖导入检查（扫码登录组件）==='
+    $importReportPath = Join-Path $buildRoot 'import-check.json'
+    if (Test-Path $importReportPath) { Remove-Item $importReportPath -Force }
+    $proxyBackup2 = @{}
+    foreach ($name in @('NO_PROXY', 'no_proxy', 'HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ($null -ne $value) { $proxyBackup2[$name] = $value }
+    }
+    try {
+        foreach ($name in $proxyBackup2.Keys) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+        $importProcess = Start-Process -FilePath $exePath `
+            -ArgumentList @('--import-check', '--report-file', $importReportPath) `
+            -WorkingDirectory $stagedApp -NoNewWindow -Wait -PassThru
+        $importExit = $importProcess.ExitCode
+    } finally {
+        foreach ($entry in $proxyBackup2.GetEnumerator()) {
+            [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
+        }
+    }
+    if (-not (Test-Path $importReportPath)) {
+        throw "导入检查未生成报告（进程退出码 $importExit）：$importReportPath"
+    }
+    $importReport = Get-Content $importReportPath -Raw -ErrorAction SilentlyContinue
+    $importJsonLine = ($importReport -split "`r?`n" | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -First 1)
+    if (-not $importJsonLine) { throw "导入检查报告中未找到 JSON：$importReport" }
+    $importParsed = $importJsonLine | ConvertFrom-Json
+    foreach ($check in $importParsed.checks) {
+        Write-Host ("    {0,-26} {1}" -f $check.name, ($(if ($check.available) { '就绪' } else { '不可用' })))
+        if (-not $check.available) { Write-Host ("      → " + $check.detail) }
+    }
+    if (-not $importParsed.success) {
+        throw '运行期依赖导入检查未通过：打包产物缺少扫码登录所需组件，装机版的登录按钮会不可用。'
+    }
 } else {
     Write-Warning '  已跳过启动自检（-SkipSelfTest）'
 }

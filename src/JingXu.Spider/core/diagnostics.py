@@ -26,7 +26,13 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Sequence
+
+from core.profile_lock import (
+    lock_files_present,
+    probe_holder_pids as profile_holder_pids,
+    remove_stale_locks,
+)
 
 # 各平台的登录页地址
 LOGIN_URLS = {
@@ -199,10 +205,16 @@ def run_preflight(
     profile_dir: Optional[str],
     browser_path: Optional[str] = None,
     requires_browser: bool = True,
+    probe_profile: bool = True,
+    profile_holder_probe: Optional[Callable[[str], Sequence[int]]] = None,
 ) -> PreflightReport:
     """运行前自检：解释器、浏览器、profile 占用、依赖、登录态记录。
 
     每一项都给出「问题 + 建议」，避免用户面对底层异常。
+
+    ``probe_profile``：是否做档案占用探测。它需要起一个解释器子进程读进程表，
+    因此测试可关掉；真实运行必须开着，否则用户又会撞到「两个实例抢档案」的崩溃。
+    ``profile_holder_probe``：可注入的占用探测（测试用）。
     """
     report = PreflightReport()
 
@@ -243,17 +255,43 @@ def run_preflight(
             )
 
     # 3. profile 独占锁：两个实例抢同一目录会直接崩（实测 0xc0000142）
+    #
+    # 判定依据是「有没有活着的浏览器进程在用这个目录」，而不是「锁文件在不在」：
+    # Windows 上 Default/LOCK 是个 0 字节普通文件，靠它判断恒为 False；而崩溃
+    # 残留的 SingletonLock 又会让判定恒为 True，把用户永久挡住。见 core/profile_lock.py。
     if profile_dir:
         report.info["profileDir"] = os.path.abspath(profile_dir)
-        locked = _profile_locked(profile_dir)
-        report.info["profileLocked"] = locked
-        if locked:
-            report.add(
-                "blocker",
-                "profile_locked",
-                "浏览器档案正被另一个浏览器占用",
-                "请先关闭登录窗口或另一个正在抓取的窗口后再试（同一档案不能同时被两个实例使用）",
-            )
+        if probe_profile:
+            holders = profile_holder_pids(profile_dir, probe=profile_holder_probe)
+            report.info["profileLocked"] = bool(holders)
+            report.info["profileHolderPids"] = list(holders)
+            if holders:
+                report.add(
+                    "blocker",
+                    "profile_locked",
+                    "浏览器档案正被另一个浏览器占用"
+                    f"（进程 {', '.join(str(pid) for pid in holders)}）",
+                    "请先关闭登录窗口或另一个正在抓取的窗口后再试（同一档案不能同时被两个实例使用）",
+                )
+            elif lock_files_present(profile_dir):
+                # 有锁文件、没有活进程 = 上次异常退出留下的残留。删掉它，
+                # 否则 Chromium 会误判「另一个实例在运行」而拒绝启动。
+                removed = remove_stale_locks(profile_dir)
+                report.info["staleLocksRemoved"] = list(removed)
+                if removed:
+                    report.add(
+                        "warning",
+                        "stale_profile_lock",
+                        f"已清理上次异常退出残留的锁文件：{', '.join(removed)}",
+                        "无需处理；若仍提示档案被占用，请关闭所有浏览器窗口后重试",
+                    )
+                else:
+                    report.add(
+                        "warning",
+                        "stale_profile_lock",
+                        "档案目录存在锁文件但无法删除（可能被占用或权限不足）",
+                        "请关闭所有浏览器窗口；仍失败时手动删除该档案目录下的 SingletonLock / lockfile",
+                    )
 
     # 4. 无头模式与登录态的矛盾
     if headless:
@@ -291,20 +329,16 @@ def _missing_modules() -> list[str]:
 
 
 def _profile_locked(profile_dir: str) -> bool:
-    """档案目录是否已被占用（Chromium 的独占锁）。"""
-    if not os.path.isdir(profile_dir):
-        return False
-    for name in ("SingletonLock", "lockfile"):
-        if os.path.exists(os.path.join(profile_dir, name)):
-            return True
-    lock = os.path.join(profile_dir, "Default", "LOCK")
-    if not os.path.isfile(lock):
-        return False
-    try:
-        with open(lock, "a+b"):
-            return False
-    except OSError:
-        return True
+    """档案目录是否**正被某个活着的浏览器进程**占用。
+
+    保留本函数作为轻量入口（只回答布尔值）；真实判定见
+    :func:`core.profile_lock.probe_holder_pids`，``run_preflight`` 直接用它以便
+    同时拿到 PID。
+
+    注意：**不能**用「能否打开 ``Default/LOCK``」判断——Windows 上那是 0 字节
+    普通文件，可反复打开，判定会恒为 False（本仓库曾经的缺陷）。
+    """
+    return bool(profile_holder_pids(profile_dir))
 
 
 # ── 运行后诊断 ──────────────────────────────────────────────────────────────

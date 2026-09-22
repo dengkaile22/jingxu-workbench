@@ -336,6 +336,21 @@ class RenderQueue:
         with self._lock:
             return sum(1 for job in self._jobs.values() if job.state.is_active)
 
+    @property
+    def reserved_output_paths(self) -> list[Path]:
+        """队列中**尚未结束**任务占用的输出路径。
+
+        入队时这些文件还没落盘，而 ``unique_output_path`` 只看磁盘上已存在的文件，
+        于是下一批请求会算到同样的文件名，后渲染的任务把先渲染的**直接覆盖**。
+        调用方把它们一起传给 ``build_requests(reserved_paths=...)`` 即可避免。
+        """
+        with self._lock:
+            return [
+                job.request.output_path
+                for job in self._jobs.values()
+                if not job.state.is_finished
+            ]
+
     def clear_finished(self) -> None:
         with self._lock:
             finished = [job_id for job_id, job in self._jobs.items() if not job.state.is_active]

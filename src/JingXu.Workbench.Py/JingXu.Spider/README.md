@@ -127,7 +127,7 @@ python cli.py --login kuaishou
 ## 📁 目录结构说明
 
 ```
-src/JingXu.Spider/
+src/JingXu.Workbench.Py/JingXu.Spider/
 ├── 启动软件.bat               # Windows 双击一键启动脚本（开发用 PySide6 界面）
 ├── run.py                    # 主程序入口（默认启动桌面GUI）
 ├── cli.py                    # 命令行自动化运行工具（主程序集成入口）

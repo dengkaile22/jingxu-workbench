@@ -27,7 +27,7 @@ import pytest
 # [2]=src, [3]=仓库根。
 REPO_ROOT = Path(__file__).resolve().parents[3]
 APP_ROOT = REPO_ROOT / "src" / "JingXu.Workbench.Py"
-SPIDER_ROOT = REPO_ROOT / "src" / "JingXu.Spider"
+SPIDER_ROOT = APP_ROOT / "JingXu.Spider"
 
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))

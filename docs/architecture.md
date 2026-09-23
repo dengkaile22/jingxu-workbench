@@ -38,7 +38,7 @@ src/JingXu.Workbench.Py/jingxu/ui              # 界面：shell_window、各功�
 src/JingXu.Workbench.Py/jingxu/application     # 用例编排：composition_service、渲染队列、下载
 src/JingXu.Workbench.Py/jingxu/domain          # 纯领域：layers、render、subtitles、deterministic
 src/JingXu.Workbench.Py/jingxu/infrastructure  # FFmpeg 编译/执行、探测、过滤图、持久化、诊断
-src/JingXu.Spider/                             # 选品爬虫（独立 Python 包，用户主动触发联网）
+src/JingXu.Workbench.Py/JingXu.Spider           # 选品爬虫（主程序源码树内的独立 Python 包，用户主动触发联网）
 ```
 
 ### 数据流（已实现主路径）

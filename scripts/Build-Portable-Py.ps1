@@ -119,7 +119,7 @@ if (Test-Path $tesseractExe) {
 }
 
 Write-Host '=== 4. 选品爬虫源码（runtime/spider）==='
-$spiderSource = Join-Path $repoRoot 'src\JingXu.Spider'
+$spiderSource = Join-Path $repoRoot 'src\JingXu.Workbench.Py\JingXu.Spider'
 $stagedSpider = Join-Path $stagedRuntime 'spider'
 if (Test-Path (Join-Path $spiderSource 'run.py')) {
     if (Test-Path $stagedSpider) { Remove-Item $stagedSpider -Recurse -Force }

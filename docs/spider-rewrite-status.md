@@ -1,6 +1,6 @@
 # 选品爬虫重写说明与验证状态
 
-**范围：** `src/JingXu.Spider`（抖音/快手带货商品提取）+ 工作台侧集成
+**范围：** `src/JingXu.Workbench.Py/JingXu.Spider`（抖音/快手带货商品提取）+ 工作台侧集成
 **相关提交：** `62f9bfb`、`286cca6`、`3ccb1e0`、`c8d3166`
 
 ---

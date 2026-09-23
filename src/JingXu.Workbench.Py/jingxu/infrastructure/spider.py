@@ -1,8 +1,8 @@
 """选品爬虫服务：账号配置持久化、环境检测与 CLI 调用。
 
-爬虫引擎是仓库内的独立 Python 项目（``src/JingXu.Spider``，便携包内为
-``runtime/spider``），通过其 CLI 以子进程方式驱动，结果经 ``--json-out``
-交换。这样做的原因：
+爬虫引擎随主程序源码树维护（``src/JingXu.Workbench.Py/JingXu.Spider``，
+便携包内为 ``runtime/spider``），通过其 CLI 以子进程方式驱动，结果经
+``--json-out`` 交换。这样做的原因：
 
 * 爬虫依赖 DrissionPage + Chromium，与主程序的可选依赖解耦；
 * CLI 是爬虫的稳定契约（``--days``/``--min-accounts``/``--json-out`` 等），
@@ -216,8 +216,8 @@ def spider_directory() -> Path | None:
 
     for parent in search_roots():
         candidates.append(parent / "runtime" / "spider")      # 便携包布局
-        candidates.append(parent / "src" / "JingXu.Spider")   # 源码布局
-        candidates.append(parent / "JingXu.Spider")
+        candidates.append(parent / "src" / "JingXu.Workbench.Py" / "JingXu.Spider")  # 仓库源码布局
+        candidates.append(parent / "JingXu.Spider")           # 主程序项目根内的源码布局
 
     for candidate in candidates:
         if (candidate / "cli.py").is_file():
@@ -257,7 +257,7 @@ def check_environment(*, timeout: float = 60.0) -> SpiderEnvironment:
     if directory is None:
         return SpiderEnvironment(
             available=False,
-            message="未找到选品爬虫源码（runtime/spider 或 src/JingXu.Spider）。",
+            message="未找到选品爬虫源码（runtime/spider 或 src/JingXu.Workbench.Py/JingXu.Spider）。",
         )
 
     python = str(spider_python())
@@ -543,7 +543,7 @@ def open_login_window(platform: str) -> SpiderLoginSession:
 
     directory = spider_directory()
     if directory is None:
-        raise SpiderError("未找到选品爬虫源码（runtime/spider 或 src/JingXu.Spider）。")
+        raise SpiderError("未找到选品爬虫源码（runtime/spider 或 src/JingXu.Workbench.Py/JingXu.Spider）。")
 
     browser = find_browser()
     if browser is None:

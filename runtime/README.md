@@ -24,7 +24,7 @@ runtime/
   python/
     python.exe                 # 嵌入式 CPython（scripts/Resolve-SpiderRuntime.ps1 生成）
   spider/
-    cli.py                     # 选品爬虫源码（发布时从 src/JingXu.Spider/ 暂存）
+    cli.py                     # 选品爬虫源码（发布时从 src/JingXu.Workbench.Py/JingXu.Spider/ 暂存）
     core/
     ecommerce_spider/
 ```
@@ -35,7 +35,7 @@ runtime/
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Resolve-SpiderRuntime.ps1
 ```
 
-脚本会下载嵌入式 Python 与 `src/JingXu.Spider/requirements.txt` 中的依赖，并在结束时自检导入。国内网络可用 `-PipIndexUrl https://pypi.tuna.tsinghua.edu.cn/simple` 加速。
+脚本会下载嵌入式 Python 与 `src/JingXu.Workbench.Py/JingXu.Spider/requirements.txt` 中的依赖，并在结束时自检导入。国内网络可用 `-PipIndexUrl https://pypi.tuna.tsinghua.edu.cn/simple` 加速。
 
 ## 解析顺序
 
@@ -43,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Resolve-SpiderRuntim
 2. **设置中用户指定的目录**（设置页覆盖）
 3. **系统 PATH**
 
-选品爬虫的 Python 与源码按 内置 `runtime/python`、`runtime/spider` → 开发仓目录 `src/JingXu.Spider/` → 系统 Python 的顺序解析；未随包分发内置环境时自动回退系统 Python（需自行安装 `requirements.txt` 依赖）。
+选品爬虫的 Python 与源码按 内置 `runtime/python`、`runtime/spider` → 开发仓目录 `src/JingXu.Workbench.Py/JingXu.Spider/` → 系统 Python 的顺序解析；未随包分发内置环境时自动回退系统 Python（需自行安装 `requirements.txt` 依赖）。
 
 ## 开发机快速放置
 

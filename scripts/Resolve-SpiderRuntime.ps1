@@ -64,7 +64,7 @@ print("OK" if not missing else "MISSING:" + ",".join(missing))
 
 $repoRoot = Resolve-RepoRoot
 if ([string]::IsNullOrWhiteSpace($TargetDirectory)) { $TargetDirectory = Join-Path (Join-Path $repoRoot 'runtime') 'python' }
-if ([string]::IsNullOrWhiteSpace($SpiderDirectory)) { $SpiderDirectory = Join-Path (Join-Path $repoRoot 'src') 'JingXu.Spider' }
+if ([string]::IsNullOrWhiteSpace($SpiderDirectory)) { $SpiderDirectory = Join-Path (Join-Path (Join-Path $repoRoot 'src') 'JingXu.Workbench.Py') 'JingXu.Spider' }
 if ([string]::IsNullOrWhiteSpace($CacheDirectory)) { $CacheDirectory = Join-Path (Join-Path $repoRoot 'artifacts') 'cache' }
 if (-not [IO.Path]::IsPathRooted($TargetDirectory)) { $TargetDirectory = Join-Path $repoRoot $TargetDirectory }
 if (-not [IO.Path]::IsPathRooted($CacheDirectory)) { $CacheDirectory = Join-Path $repoRoot $CacheDirectory }

@@ -35,7 +35,7 @@ from jingxu.infrastructure.process_control import no_window_kwargs  # noqa: E402
 
 
 def test_spider_source_directory_is_present() -> None:
-    """爬虫源码目录（随包 runtime/spider 或开发机 src/JingXu.Spider）必须找得到。"""
+    """爬虫源码目录（随包 runtime/spider 或源码 src/JingXu.Workbench.Py/JingXu.Spider）必须找得到。"""
     directory = spider_directory()
 
     assert directory is not None, "未找到选品爬虫源码目录"

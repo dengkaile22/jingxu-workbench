@@ -1,4 +1,4 @@
-"""浏览器档案占用检测（``src/JingXu.Spider/core/profile_lock.py`` 的逐字副本）。
+"""浏览器档案占用检测（``src/JingXu.Workbench.Py/JingXu.Spider/core/profile_lock.py`` 的逐字副本）。
 
 **请勿直接修改本文件**：唯一真源在爬虫项目的 ``core/profile_lock.py``——爬虫与
 工作台必须对同一件事给出同一答案。改完真源后运行 ``python tools/sync_profile_lock.py``

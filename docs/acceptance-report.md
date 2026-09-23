@@ -36,7 +36,7 @@
 |------|-----:|------|------|
 | 工作台单元测试 | 1095 | **通过** | `python -m pytest` |
 | 工作台集成测试（真机 FFmpeg） | 15 | **通过** | `python -m pytest -m integration` |
-| 爬虫项目测试 | 71 | **通过** | `cd src/JingXu.Spider && python -m pytest` |
+| 爬虫项目测试 | 71 | **通过** | `cd src/JingXu.Workbench.Py/JingXu.Spider && python -m pytest` |
 | 打包产物 `--self-test` | 1 | `exit=0` / `success=true` | 见下 |
 | 打包产物 `--import-check` | 1 | `exit=0` / `success=true` | 见下 |
 | 打包产物 `--ui-probe` | 1 | `exit=0` / `success=true` | 见下 |

@@ -7,7 +7,7 @@
    再按相似度合并，否则同一商品永远凑不够「跨账号」门槛；
 2. 门槛语义——「跨账号数」与「总频次」是两个独立条件，必须能区分开。
 
-分析器来自 ``src/JingXu.Spider``（选品爬虫本体）。与它自身的测试目录不同，
+分析器来自 ``src/JingXu.Workbench.Py/JingXu.Spider``（选品爬虫本体）。与它自身的测试目录不同，
 这里是从工作台视角做的端到端契约测试，因此放在本套件中。
 """
 
@@ -28,7 +28,7 @@ def _spider_root() -> Path | None:
     directory = spider_directory()
     if directory is not None:
         return directory
-    fallback = _REPO_ROOT / "src" / "JingXu.Spider"
+    fallback = _REPO_ROOT / "src" / "JingXu.Workbench.Py" / "JingXu.Spider"
     return fallback if (fallback / "cli.py").is_file() else None
 
 
@@ -37,7 +37,7 @@ if _SPIDER_ROOT is not None and str(_SPIDER_ROOT) not in sys.path:
     sys.path.insert(0, str(_SPIDER_ROOT))
 
 pytestmark = pytest.mark.skipif(
-    _SPIDER_ROOT is None, reason="未找到选品爬虫源码（src/JingXu.Spider）"
+    _SPIDER_ROOT is None, reason="未找到选品爬虫源码（src/JingXu.Workbench.Py/JingXu.Spider）"
 )
 
 

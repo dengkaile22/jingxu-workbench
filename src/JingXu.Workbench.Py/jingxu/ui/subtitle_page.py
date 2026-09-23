@@ -99,6 +99,9 @@ def _coerce(enum_type, value):  # noqa: ANN001, ANN202
 class SubtitlePage(QWidget):
     """识别 + 编辑 + 样式 + 硬字幕去除，参数即改即存。"""
 
+    # 用户取消手动导入的视频后，请求壳层重新推一次混剪页选中素材。
+    source_resume_requested = Signal()
+
     def __init__(self, store: SubtitleStore, ffmpeg: Path, ffmpeg_runner_available: bool = True) -> None:
         super().__init__()
         self._store = store
@@ -107,6 +110,10 @@ class SubtitlePage(QWidget):
         self._tesseract: Path | None = find_tesseract()
         self._cues: list[SubtitleCue] = list(store.document.cues)
         self._updating = False
+        # 用户手动「导入视频」后的固定视频；非 None 时不再跟随混剪页选中素材。
+        self._manual_source: Path | None = None
+        # 当前视频（混剪页推来或手动导入）。
+        self._source: Path | None = None
         self._worker: threading.Thread | None = None
         self._cancel_event = threading.Event()
         self._ocr_worker: threading.Thread | None = None
@@ -147,6 +154,8 @@ class SubtitlePage(QWidget):
         layout.setSpacing(0)
 
         layout.addLayout(self._build_header())
+        layout.addSpacing(8)
+        layout.addLayout(self._build_video_row())
         self._status = Caption("")
         self._status.setVisible(False)
         layout.addWidget(self._status)
@@ -229,6 +238,8 @@ class SubtitlePage(QWidget):
         self._load_style_controls()
         self._refresh_whisper_status()
         self._refresh_ocr_status()
+        self._refresh_source_controls()
+        self._refresh_source_label()
 
     # ────────────────────────────── 构建 ──────────────────────────────
 
@@ -259,6 +270,26 @@ class SubtitlePage(QWidget):
         clear_button = SecondaryButton("清空")
         clear_button.clicked.connect(self._clear_cues)
         row.addWidget(clear_button)
+        return row
+
+    def _build_video_row(self) -> QHBoxLayout:
+        """当前视频行：手动导入 / 恢复跟随混剪（对齐 .NET 的导入视频入口）。"""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        import_button = SecondaryButton("导入视频…")
+        import_button.setToolTip(
+            "导入任意视频作为字幕实验室的当前视频；导入后不再跟随混剪页选中素材。"
+        )
+        import_button.clicked.connect(self._import_video)
+        row.addWidget(import_button)
+
+        self._resume_follow = SecondaryButton("恢复跟随混剪")
+        self._resume_follow.setEnabled(False)
+        self._resume_follow.clicked.connect(self._resume_following_composition)
+        row.addWidget(self._resume_follow)
+
+        self._source_label = Caption("")
+        row.addWidget(self._source_label, stretch=1)
         return row
 
     def _build_recognition_row(self) -> QHBoxLayout:
@@ -678,10 +709,19 @@ class SubtitlePage(QWidget):
         此前需要用户手动点「加载预览帧」才出现画面；没加载时画布只有占位提示，
         区域框却仍然显示，看起来像已就绪但拖不动——实测用户会卡在这里。
         现在换素材即自动取帧（后台线程，不阻塞界面）。
+
+        **用户手动「导入视频」后不再被覆盖**（对齐 .NET ``PickVideoCommand``：
+        字幕实验室有自己的当前视频，不跟着混剪页选中项走）。
         """
+        if self._manual_source is not None:
+            return
+        self._adopt_source(path)
+
+    def _adopt_source(self, path: Path | None) -> None:
         previous = getattr(self, "_source", None)
         self._source = Path(path) if path else None
         self._refresh_whisper_status()
+        self._refresh_source_label()
         if self._source is None or self._source == previous:
             return
         if not self._source.is_file():
@@ -691,6 +731,67 @@ class SubtitlePage(QWidget):
         self._region_canvas.set_removal_region(None)
         self._region_hint.setText(f"正在读取预览帧：{self._source.name} …")
         self._load_region_frame_async(self._source)
+
+    def _import_video(self) -> None:
+        """手动导入一个视频作为字幕实验室的当前视频（对齐 .NET PickVideoCommand）。
+
+        与混剪页选中的素材**互不干扰**：导入后本页固定用它，直到点「恢复跟随混剪」。
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入视频",
+            "",
+            "视频文件 (*.mp4 *.mov *.mkv *.webm *.avi *.flv);;所有文件 (*)",
+        )
+        if not path:
+            return
+        candidate = Path(path)
+        if not candidate.is_file():
+            self._set_status(f"视频文件不存在：{candidate}", warn=True)
+            return
+        self._manual_source = candidate
+        self._adopt_source(candidate)
+        self._refresh_source_controls()
+        self._set_status(f"已导入视频：{candidate.name}（不再跟随混剪页选中素材）")
+
+    def _resume_following_composition(self) -> None:
+        """恢复跟随混剪页选中的素材。
+
+        先把自己切回"跟随"并清空当前视频，再请求壳层重推一次；
+        壳层若没有素材，这里也不会显示过期的手动导入视频。
+        """
+        self._manual_source = None
+        self._source = None
+        self._refresh_source_controls()
+        self._refresh_source_label()
+        self._region_canvas.set_frame(None)
+        self._region_canvas.set_removal_region(None)
+        self.source_resume_requested.emit()
+        self._set_status("已恢复跟随混剪页选中素材。")
+
+    def _refresh_source_label(self) -> None:
+        """显示当前视频及其来源（手动导入 / 跟随混剪），避免用户不知道在用哪个。"""
+        label = getattr(self, "_source_label", None)
+        if label is None:
+            return
+        if self._source is None:
+            label.setText("当前视频：未选择（可在混剪页选中素材，或点「导入视频」）")
+            return
+        origin = "手动导入" if self._manual_source is not None else "跟随混剪"
+        label.setText(f"当前视频：{self._source.name}（{origin}）")
+
+    def _refresh_source_controls(self) -> None:
+        """按是否手动导入视频，刷新「恢复跟随混剪」按钮的可用状态与提示。"""
+        resume = getattr(self, "_resume_follow", None)
+        if resume is None:
+            return
+        manual = self._manual_source is not None
+        resume.setEnabled(manual)
+        resume.setToolTip(
+            "当前使用手动导入的视频；点此恢复跟随混剪页选中素材。"
+            if manual
+            else "当前跟随混剪页选中素材，无需恢复。"
+        )
 
     def _load_region_frame_async(self, source: Path) -> None:
         """后台抽帧并通过信号回主线程上屏（避免大文件阻塞界面，也避免跨线程改界面）。

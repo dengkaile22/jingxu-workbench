@@ -543,6 +543,8 @@ class ShellWindow(QMainWindow):
         )
         # 「效果预览」：混剪页点刷新 → 壳层用真实滤镜链渲染一张叠层静帧。
         self._composition_page.overlay_preview_requested.connect(self._start_overlay_effect_preview)
+        # 字幕页手动导入视频后放弃时，重新跟随混剪页选中素材。
+        # 注意：连接必须放在 SubtitlePage 构造之后（见下方），否则此时属性还不存在。
         self._sticker_page = LayerPage(
             self._sticker_store,
             title="贴纸轨道",
@@ -555,6 +557,8 @@ class ShellWindow(QMainWindow):
         self._sticker_page.layers_changed.connect(self._refresh_layer_summary)
         self._sticker_page.layers_changed.connect(self._mark_dirty)
         self._subtitle_page = SubtitlePage(self._subtitle_store, self._ffmpeg)
+        # 字幕页放弃手动导入的视频后，重新推一次混剪页选中素材。
+        self._subtitle_page.source_resume_requested.connect(self._resume_subtitle_following)
 
         self._module_stack = QStackedWidget()
         for page in (
@@ -1008,6 +1012,10 @@ class ShellWindow(QMainWindow):
         elif self._assets:
             source = self._assets[0].path
         self._subtitle_page.set_source_material(source)
+
+    def _resume_subtitle_following(self) -> None:
+        """字幕页放弃手动导入的视频后，重新推一次混剪页选中素材。"""
+        self._sync_subtitle_source()
 
     def _on_page_material_selected(self, row: int) -> None:
         if row != self._material_list.currentRow():

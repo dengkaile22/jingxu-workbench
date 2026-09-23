@@ -46,6 +46,28 @@ from jingxu.ui.widgets import Caption, PrimaryButton, SecondaryButton, SectionHe
 # .NET 预设：画中画（右下角）与顶部横幅（截图类场景）。
 PIP_PRESET = {"x_percent": 73.0, "y_percent": 73.0, "width_percent": 42.0, "height_percent": 0.0, "fit": "contain"}
 SCREENSHOT_PRESET = {"x_percent": 50.0, "y_percent": 24.0, "width_percent": 100.0, "height_percent": 48.0, "fit": "stretch"}
+# 「统一应用到全部层」复制的字段集，逐条对齐 .NET ``OverlayVisualSettings.FromLayer``：
+# 边界(x/y/w/h)、透明度、适配方式、内容缩放、偏移、旋转、羽化、顶部渐隐、
+# 源取景开关与自动上下偏移、源取景框。
+# **不含** source / 时段 / z_index / enabled——那些不是"画法"；尤其 source，
+# 统一过去会让所有轨道指向同一个素材文件。
+VISUAL_SETTING_FIELDS = (
+    "x_percent",
+    "y_percent",
+    "width_percent",
+    "height_percent",
+    "opacity",
+    "fit",
+    "scale_percent",
+    "offset_x",
+    "offset_y",
+    "rotation_degrees",
+    "feather",
+    "top_fade",
+    "source_crop_canvas",
+    "source_crop_y",
+    "source_crop_bounds",
+)
 
 PREVIEW_ASPECT_SIZES: dict[str, tuple[int, int]] = {
     "9:16": (1080, 1920),
@@ -796,6 +818,7 @@ class LayerPage(QWidget):
             ("顶部横幅预设", self._apply_screenshot_preset),
             ("统一尺寸到全部层", self._apply_unified_size),
             ("统一起始片段", self._apply_start_clip_to_all),
+            ("统一应用到全部层", self._apply_visual_settings_to_all),
         ):
             button = SecondaryButton(label)
             button.clicked.connect(handler)
@@ -1122,6 +1145,39 @@ class LayerPage(QWidget):
         self._layers = self._store.layers
         self._sync_canvases()
         self._set_status(f"已把 {layer.display_name} 的尺寸与适配统一到 {len(self._layers) - 1} 个图层。")
+        self.layers_changed.emit()
+
+    def _apply_visual_settings_to_all(self) -> None:
+        """把选中图层的**视觉参数**统一到全部图层（对齐 .NET）。
+
+        对应 .NET ``ApplyCurrentVisualSettingsToAllLayersCommand``：复制
+        ``OverlayVisualSettings`` 里的全部字段（边界含 x/y、透明度、适配、
+        内容缩放、偏移、旋转、羽化、顶部渐隐、源取景与自动上下偏移），
+        **并同步起始片段**——.NET 那边也是把 ``StartClipIndex`` 一起带过去的。
+
+        逐条对齐 .NET ``OverlayVisualSettings.FromLayer`` 的字段集；
+        素材来源、时段、层级、启用状态**不动**（那不是"画法"）。
+        """
+        layer = self._selected()
+        if layer is None:
+            self._set_status("请先选择作为参数来源的图层。", warn=True)
+            return
+        if len(self._layers) < 2:
+            self._set_status("至少需要 2 个图层才能统一参数。", warn=True)
+            return
+
+        changes = {name: getattr(layer, name) for name in VISUAL_SETTING_FIELDS}
+        changes["start_clip_index"] = layer.start_clip_index
+        for candidate in list(self._layers):
+            if candidate.id == layer.id:
+                continue
+            self._store.replace(candidate.with_changes(**changes))
+        self._layers = self._store.layers
+        self._sync_canvases()
+        self._set_status(
+            f"已把「{layer.display_name}」的参数（含起始片段 {layer.start_clip_index}）"
+            f"统一到其余 {len(self._layers) - 1} 个图层。"
+        )
         self.layers_changed.emit()
 
     def _apply_start_clip_to_all(self) -> None:

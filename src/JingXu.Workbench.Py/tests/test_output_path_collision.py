@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -121,14 +122,27 @@ def test_queue_exposes_pending_output_paths(tmp_path: Path) -> None:
 
 
 def test_queue_reservation_shrinks_after_finish(tmp_path: Path) -> None:
-    """任务结束后应从预留集合里消失，避免长期占用导致文件名越滚越大。"""
+    """任务结束后应从预留集合里消失，避免长期占用导致文件名越滚越大。
+
+    ``cancel()`` 返回 True 只表示"已受理"，状态迁移不一定同步完成
+    （排队中的任务由工作线程收尾），因此这里轮询到终态再断言，
+    否则测试会偶发失败。
+    """
     queue = RenderQueue(Path("ffmpeg"))
     built = build_requests(assets=_assets(), draft=_drafts()[0], output_directory=tmp_path)
     job = queue.enqueue(built[0])
 
-    # 直接驱动状态机到终态（不跑真实渲染）
     queue.cancel(job.id)
 
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        current = next((item for item in queue.jobs if item.id == job.id), None)
+        if current is not None and current.state.is_finished:
+            break
+        time.sleep(0.05)
+
+    current = next(item for item in queue.jobs if item.id == job.id)
+    assert current.state.is_finished, f"任务未在 10s 内进入终态：{current.state.value}"
     assert queue.reserved_output_paths == []
 
 

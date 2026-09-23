@@ -18,7 +18,7 @@ from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -67,6 +68,13 @@ RESULT_COLUMNS = (
 RESULT_COLUMN_WIDTHS = (40, 260, 200, 70, 90, 90, 220, 120, 240)
 RESULT_CHECK_COLUMN = 0
 RESULT_NAME_COLUMN = 1
+RESULT_PLATFORM_COLUMN = 3
+RESULT_SAMPLE_VIDEO_COLUMN = 8
+# 可点开的链接列（对齐 .NET：商品链接与示例视频都能直接打开）。
+# 平台与示例视频链接固定列号，供双击/右键打开使用。
+LINK_COLUMNS = (RESULT_SAMPLE_VIDEO_COLUMN,)
+# 日志行数上限，对齐 .NET AppendLog 的 200000 字符保护（按平均行长折算）。
+LOG_MAX_BLOCKS = 2000
 
 # 每一列取哪个字段。键名在不同来源里不一致（爬虫 `to_summary_dict` 用中文键，
 # 中间层可能给 camelCase 或 snake_case），因此每列给一组候选键，按序兜底。
@@ -128,6 +136,8 @@ class SpiderPage(QWidget):
         self._last_result: spider_service.SpiderRunResult | None = None
         self._login_session: spider_service.SpiderLoginSession | None = None
         self._updating = False
+        # 可打开的链接单元格 (行, 列)；填充结果时重建。
+        self._openable_cells: set[tuple[int, int]] = set()
 
         self._bridge = SpiderBridge(self)
         self._bridge.finished.connect(self._on_run_finished)
@@ -550,6 +560,10 @@ class SpiderPage(QWidget):
             self._results_table.setColumnWidth(column, width)
         self._results_table.setMinimumWidth(sum(RESULT_COLUMN_WIDTHS) + 24)
         self._results_table.itemChanged.connect(self._on_result_item_changed)
+        # 链接列可直接打开（对齐 .NET 的 OpenSelectedSampleVideo/OpenSelectedVideo）。
+        self._results_table.cellDoubleClicked.connect(self._on_result_cell_double_clicked)
+        self._results_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._results_table.customContextMenuRequested.connect(self._on_result_context_menu)
         return self._results_table
 
     def _build_result_actions(self) -> QHBoxLayout:
@@ -579,17 +593,40 @@ class SpiderPage(QWidget):
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
         self._log_toggle = SecondaryButton("📋 运行日志")
         self._log_toggle.clicked.connect(self._toggle_log)
-        layout.addWidget(self._log_toggle)
+        head.addWidget(self._log_toggle)
+
+        # 「清空日志」对齐 .NET ClearLogCommand：日志很长时不必重开页面才能清掉。
+        self._log_clear = SecondaryButton("清空日志")
+        self._log_clear.setToolTip("清空当前显示与缓存的运行日志（不影响正在进行的抓取）。")
+        self._log_clear.clicked.connect(self._clear_log)
+        self._log_clear.setEnabled(False)
+        head.addWidget(self._log_clear)
+        head.addStretch(1)
+        layout.addLayout(head)
 
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         self._log.setFixedHeight(110)
         self._log.setFont(theme.mono_font(11))
         self._log.setVisible(False)
+        # 对齐 .NET AppendLog 的容量保护（超过 200000 字符就丢掉最旧的 50000），
+        # 长时间抓取时日志会很长，不设上限会一直吃内存。
+        self._log.setMaximumBlockCount(LOG_MAX_BLOCKS)
+        self._log.textChanged.connect(
+            lambda: self._log_clear.setEnabled(bool(self._log.toPlainText().strip()))
+        )
         layout.addWidget(self._log)
         return box
+
+    def _clear_log(self) -> None:
+        """清空日志（对齐 .NET ``ClearLogCommand``：连缓冲区一起清）。"""
+        self._log.clear()
+        self._log_clear.setEnabled(False)
 
     # ────────────────────────────── 环境与账号 ──────────────────────────────
 
@@ -884,6 +921,7 @@ class SpiderPage(QWidget):
         """填充结果表。条目来源见 ``effective_entries``（保留商品优先）。"""
         entries = result.effective_entries
         self._result_entries = [entry for _, entry in entries]
+        self._openable_cells.clear()
 
         previous = self._updating
         self._updating = True
@@ -903,6 +941,14 @@ class SpiderPage(QWidget):
                 for offset, value in enumerate(_entry_columns(entry), start=1):
                     item = QTableWidgetItem(str(value))
                     item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    if offset in LINK_COLUMNS and _is_openable_url(value):
+                        # 可点开的链接给出手型光标与下划线提示，否则用户不知道能双击。
+                        item.setForeground(QColor(theme.BRAND_PRIMARY))
+                        item.setToolTip(f"{value}\n双击或右键可直接打开")
+                        font = item.font()
+                        font.setUnderline(True)
+                        item.setFont(font)
+                        self._openable_cells.add((row, offset))
                     self._results_table.setItem(row, offset, item)
         finally:
             self._updating = previous
@@ -919,6 +965,48 @@ class SpiderPage(QWidget):
             return
         self._sync_select_all_state()
         self._refresh_selection_caption()
+
+    # ── 打开链接（对齐 .NET OpenSelectedSampleVideo / OpenSelectedVideo） ──────
+
+    def _on_result_cell_double_clicked(self, row: int, column: int) -> None:
+        self._open_result_link(row, column)
+
+    def _on_result_context_menu(self, position) -> None:  # noqa: ANN001 - QPoint
+        """右键菜单：打开链接 / 复制链接。"""
+        index = self._results_table.indexAt(position)
+        if not index.isValid():
+            return
+        row, column = index.row(), index.column()
+        url = self._cell_url(row, column)
+        if not url:
+            return
+
+        menu = QMenu(self._results_table)
+        open_action = menu.addAction("打开链接")
+        copy_action = menu.addAction("复制链接")
+        chosen = menu.exec(self._results_table.viewport().mapToGlobal(position))
+        if chosen is open_action:
+            self._open_result_link(row, column)
+        elif chosen is copy_action:
+            QGuiApplication.clipboard().setText(url)
+            self._set_result_caption("链接已复制到剪贴板。")
+
+    def _cell_url(self, row: int, column: int) -> str:
+        """取某单元格里可打开的 URL；不可打开时返回空串。"""
+        if column not in LINK_COLUMNS:
+            return ""
+        item = self._results_table.item(row, column)
+        if item is None:
+            return ""
+        text = item.text().strip()
+        return text if _is_openable_url(text) else ""
+
+    def _open_result_link(self, row: int, column: int) -> None:
+        url = self._cell_url(row, column)
+        if not url:
+            self._set_result_caption("该行没有可打开的链接。", warn=True)
+            return
+        QDesktopServices.openUrl(QUrl(url))
 
     def _selected_entries(self) -> list[dict]:
         """返回结果表中被勾选的原始条目。"""
@@ -1066,6 +1154,12 @@ def _combo(options: list[tuple[str, str]]):  # noqa: ANN201 - QComboBox
     for value, label in options:
         combo.addItem(label, value)
     return combo
+
+
+def _is_openable_url(value: object) -> bool:
+    """是否是可直接打开的 http(s) 链接（破折号占位、空值都不算）。"""
+    text = str(value).strip()
+    return text.startswith(("http://", "https://")) and len(text) > len("https://")
 
 
 def _entry_columns(entry: dict) -> tuple[str, ...]:

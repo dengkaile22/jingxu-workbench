@@ -31,6 +31,10 @@ KNOWN_TEMP_DIRECTORIES = (
     "jingxu-ocr",
     "jingxu-subtitle-burn",
     "jingxu-gate-preview",
+    # 混剪页「效果预览」的静帧目录。取景井（layer_page）与它共用
+    # ``jingxu-gate-preview``，但效果预览是独立目录；漏登记会让每次预览的 jpg
+    # 永久留在 %TEMP%（历史缺陷：本机已见残留）。
+    "jingxu-effect-preview",
     "jingxu-download",
 )
 MIN_OPTIONAL_TOOL_BYTES = 64 * 1024

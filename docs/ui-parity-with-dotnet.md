@@ -1,5 +1,8 @@
 # UI 与 .NET 版一致性对照
 
+> **存档（2026-09-23）：** 本文是迁移期的对照记录。.NET/WPF 参照树已从仓库移除，
+> 最后保留点见 git 标签 `last-dotnet-reference`；文中 `.cs`/`.xaml` 行号引用仅作历史证据。
+
 **目的：** 记录 Python 版（PySide6）与 .NET 版（WPF）界面的逐页对照结果。
 **基准：** `src/JingXu.Workbench/Features/*/View.xaml` 的区块标题、控件文案与顺序。
 

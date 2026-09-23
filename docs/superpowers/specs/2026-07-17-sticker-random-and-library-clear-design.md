@@ -1,5 +1,7 @@
 # 贴纸随机差异与素材库一键清空设计
 
+> **存档（2026-09-23）：** 本文以 .NET/WPF 时期的路径与类型为证据，该参照树已移除（git 标签 `last-dotnet-reference`）。现行技术栈为 Python（`src/JingXu.Workbench.Py`），文中 `.cs`/`.xaml` 路径仅作历史记录。
+
 日期：2026-07-17
 
 ## 目标

@@ -1,5 +1,7 @@
 # CPU / GPU 渲染处理器选择设计
 
+> **存档（2026-09-23）：** 本文以 .NET/WPF 时期的路径与类型为证据，该参照树已移除（git 标签 `last-dotnet-reference`）。现行技术栈为 Python（`src/JingXu.Workbench.Py`），文中 `.cs`/`.xaml` 路径仅作历史记录。
+
 ## 目标
 
 在混剪页“输出质量”附近增加每次入队生效的处理器选择：

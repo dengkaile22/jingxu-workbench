@@ -37,7 +37,9 @@ def test_source_run_is_not_frozen() -> None:
 def test_app_root_in_source_run_contains_runtime_directory() -> None:
     """源码运行时应用根为仓库根：其下应有 runtime/（运行时解析的第一候选）。"""
     root = app_paths.app_root()
-    assert root.name == "视频剪辑工具2026071001" or (root / "JingXu.Workbench.sln").is_file()
+    assert root.name == "视频剪辑工具2026071001" or (
+        root / "build" / "runtime-manifest.json"
+    ).is_file()
     assert (root / "runtime").is_dir() or (root / "runtime").exists()
 
 

@@ -1,5 +1,7 @@
 # 蒙版模板 — 模块现状
 
+> **存档（2026-09-23）：** 本文以 .NET/WPF 时期的路径与类型为证据，该参照树已移除（git 标签 `last-dotnet-reference`）。现行技术栈为 Python（`src/JingXu.Workbench.Py`），文中 `.cs`/`.xaml` 路径仅作历史记录。
+
 ## 文档目的
 
 记录 Overlay 模块实现与交互：**主流程仅为「导入蒙版素材」**（与混剪页导入主素材同构），已移除「自由覆盖 / 全屏低透明 / 形状遮罩」三类添加入口；**主片自叠影**入口已从 UI 移除（领域/渲染仍保留，勿当默认）。
@@ -46,8 +48,8 @@
 
 ## 运行注意
 
-- **Debug 输出**：`src/JingXu.Workbench/bin/Debug/net10.0-windows/炳恒快速混剪.exe`
-- **便携/dist 包**：`dist/炳恒快速混剪.exe` 若时间戳旧于 Debug，会仍显示旧三选 UI；改完后须重新复制或重新打包，并**关掉正在运行的旧进程再启动新 exe**。
+- **开发运行**：`cd src/JingXu.Workbench.Py && python -m jingxu`（原 .NET Debug 输出路径已随 .NET 树移除）
+- **便携/安装包**：exe 时间戳旧于新构建时会仍显示旧 UI；改完后须重新打包，并**关掉正在运行的旧进程再启动新 exe**。
 
 ## 待对齐项
 

@@ -24,7 +24,7 @@ $ErrorActionPreference = 'Stop'
 function Resolve-RepoRoot {
     $dir = (Resolve-Path $PSScriptRoot).Path
     while ($dir) {
-        if (Test-Path (Join-Path $dir 'JingXu.Workbench.sln')) { return $dir }
+        if (Test-Path (Join-Path $dir 'build\runtime-manifest.json')) { return $dir }
         $parent = Split-Path $dir -Parent
         if ($parent -eq $dir) { break }
         $dir = $parent

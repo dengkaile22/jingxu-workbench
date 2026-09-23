@@ -1,7 +1,8 @@
 # Python 版发布流程（Windows x64）
 
 本文对应 `src/JingXu.Workbench.Py`（PySide6 + FFmpeg）的打包与交付。
-.NET/WPF 版的发布流程见 [release.md](release.md)。
+本仓库已全面转向 Python，原 .NET/WPF 发布流水线于 2026-09-23 移除
+（git 标签 `last-dotnet-reference` 可回查）。
 
 ## 交付物
 
@@ -13,20 +14,17 @@
 | `artifacts/release/SHA256SUMS-Py.txt` | MSI 校验和 |
 | `artifacts/py-build/炳恒快速混剪/` | 未压缩的便携目录（**MSI 的打包输入**；可安全删除，脚本会重建） |
 
-命名中的 `Py` 用于与 .NET 版产物区分，避免两者混用。
+命名中的 `Py` 沿用自与原 .NET 版产物区分的时期，现为唯一交付命名。
 
 > **交付目录只保留 MSI。**
 > - 便携 ZIP（`炳恒快速混剪-Py-Portable-win-x64.zip`）与 `SHA256SUMS-PyPortable.txt`
 >   已移除：其内容与 MSI 完全重叠（同一份 `py-build` 目录的压缩形态），
 >   同时保留两者会白占约 466 MB。
 >   `Build-Portable-Py.ps1` **默认仍会产出该 ZIP**；只要 MSI 时加 `-SkipArchive`。
-> - .NET 版交付物（`炳恒快速混剪-win-x64.msi`、`炳恒快速混剪-Portable-win-x64.zip`、
->   `SHA256SUMS.txt`）已移除，以免与在用版本混淆；.NET 源码与构建脚本仍保留，
->   需要时用 `scripts/Publish-Msi.ps1` 重建。
+> - 原 .NET 版交付物与构建脚本已随 .NET 树移除（git 标签 `last-dotnet-reference`）。
 
 > 历史 `dist/` 交付目录已废弃（内容与 `artifacts/release/` 完全相同）；
-> 打包脚本不再向其同步，`Build-Installer.ps1` / `Publish-Msi.ps1` 均只写
-> `artifacts/release/`。注意 `Build-Portable-Py.ps1` 只覆盖本次产出的同名文件，
+> 打包脚本只写 `artifacts/release/`。注意 `Build-Portable-Py.ps1` 只覆盖本次产出的同名文件，
 > **不会**整目录清理，以免误删同目录下的其它交付物。
 
 ## 构建 MSI 安装包
@@ -55,8 +53,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.p
 | Scope | `perUserOrMachine`（无管理员权限时按用户安装） |
 | 语言 / 代码页 | 2052 / 936 |
 
-**与 .NET 版共存**：UpgradeCode 与安装目录都不同，两个 MSI 可并存、可分别升级与
-卸载，互不触发 MajorUpgrade。脚本内置了「UpgradeCode 不得等于 .NET 版」的断言。
+**UpgradeCode 隔离**：脚本内置「UpgradeCode 不得等于历史 .NET 版」的断言
+（常量保留，防止旧注册表残留互相触发 MajorUpgrade）。
 
 实测安装行为（本机验证）：无管理员权限时安装到
 `%LOCALAPPDATA%\Programs\炳恒快速混剪 Python 版`，2680 个文件、789.6 MB，
@@ -135,8 +133,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps
 .\炳恒快速混剪.exe
 ```
 
-自检报告字段与 .NET 版对齐（`success` / `manifestValid` / `components` /
-`missingRequired` / `window` / `ffmpeg` / `ffprobe`）。
+自检报告字段：`success` / `manifestValid` / `components` /
+`missingRequired` / `window` / `ffmpeg` / `ffprobe`。
 
 ## 已知限制
 
@@ -149,16 +147,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps
   在界面中显示为不可用。
 - **仅 Windows x64**：本流程未验证 macOS/Linux。PyInstaller spec 与构建脚本都是
   Windows 形态（`.exe`、robocopy、ZIP 命名），跨平台交付需要另立脚本。
-- **未接入 `Verify-Release.ps1`**：该脚本目前只校验 .NET 版产物。如需统一出口，
-  应扩展它同时检查 `artifacts/release/` 中的 Python 版产物。
-
-## 与 .NET 版产物的关系
-
-两套产物并存、互不覆盖：
-
-| 版本 | 产物 | 入口 |
-|------|------|------|
-| .NET/WPF | `artifacts/release/炳恒快速混剪-win-x64.msi`、`…Portable-win-x64.zip` | `炳恒快速混剪.exe` |
-| Python | `artifacts/release/炳恒快速混剪-Py-Portable-win-x64.zip` | `炳恒快速混剪.exe` |
-
-安装 MSI 与解压便携包不要放在同一目录，避免 `runtime/` 相互覆盖。
+- **无统一发布校验出口**：原 `Verify-Release.ps1` 只覆盖 .NET 产物，已随 .NET 树移除。
+  当前以打包脚本自带校验（自检、MSI 属性读取、UpgradeCode 断言）+ pytest 结果为准。

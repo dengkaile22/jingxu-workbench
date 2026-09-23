@@ -1,5 +1,7 @@
 # WPF/Presentation Layer Engineering Analysis
 
+> **存档（2026-09-23）：** 本文以 .NET/WPF 时期的路径与类型为证据，该参照树已移除（git 标签 `last-dotnet-reference`）。现行技术栈为 Python（`src/JingXu.Workbench.Py`），文中路径仅作历史记录。
+
 ## 1. Assessment — Current Presentation-Layer Health
 
 ### Test Status: 42 passed, 40 failed (of 82 total)

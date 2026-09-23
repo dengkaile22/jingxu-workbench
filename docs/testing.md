@@ -2,55 +2,51 @@
 
 ## 文档目的
 
-说明自动化测试分层与运行方式。验收结论与仍失败项以 [acceptance-report.md](acceptance-report.md) 为准；功能完成度见 [status/2026-07-11-implementation-alignment.md](status/2026-07-11-implementation-alignment.md)。
+说明自动化测试分层与运行方式。验收结论与仍失败项以 [acceptance-report.md](acceptance-report.md) 与 [python-migration-acceptance.md](python-migration-acceptance.md) 为准。
 
 ## 目标设计
 
-规格 §13：单元覆盖解析/排列/时间轴/队列；集成用 lavfi 短视频验证顺序、时长、蒙版、字幕、取消；发布验收含 DPI 与便携启动。
+规格 §13：单元覆盖解析/排列/时间轴/队列；集成用短视频验证顺序、时长、蒙版、字幕、取消；发布验收含 DPI 与便携启动。
 
-## 开发现状
+## 测试分层（Python / pytest）
 
-### 测试分层
+测试位于 `src/JingXu.Workbench.Py/tests/`：
 
-| 项目 | 范围 |
+| 层 | 范围 |
 |------|------|
-| `JingXu.Workbench.Domain.Tests` | 序号解析、排列、时间轴、队列状态机 |
-| `JingXu.Workbench.Application.Tests` | 用例与规划器 |
-| `JingXu.Workbench.Infrastructure.Tests` | FFmpeg 命令编译、FFprobe 解析、运行时清单 |
-| `JingXu.Workbench.Presentation.Tests` | ViewModel 行为 |
-| `JingXu.Workbench.IntegrationTests` | lavfi 短视频夹具、端到端媒体管线、打包验收 |
+| 默认（单元） | 序号解析、排列、时间轴、队列状态机、命令编译、过滤图、持久化、UI 页面结构与控件行为 |
+| `-m integration` | 真机 FFmpeg 端到端管线（需 `runtime/ffmpeg/` 或 PATH 中有 FFmpeg） |
+| 默认排除（10 项） | 需客户真机素材的用例；媒体文件不入库（`test-assets/`，见其 README） |
 
 ### 运行
 
 ```powershell
-# 全部
-dotnet test JingXu.Workbench.sln -c Release
+cd src/JingXu.Workbench.Py
 
-# 打包相关
-dotnet test tests/JingXu.Workbench.IntegrationTests --filter "FullyQualifiedName~Packaging"
+# 单元测试
+python -m pytest
 
-# 媒体集成（需要 FFmpeg）
-dotnet test tests/JingXu.Workbench.IntegrationTests --filter "FullyQualifiedName~Media"
+# 真机集成（需 FFmpeg）
+$env:PATH = "$PWD\..\..\runtime\ffmpeg;$env:PATH"
+python -m pytest -m integration
+
+# 单个文件
+python -m pytest tests/test_layer_shape_mask.py
 ```
 
-缺少 FFmpeg 时，部分集成测试会通过 `Assert.Skip` 跳过，**发布验收脚本要求必需测试不得跳过**。
+### 打包验收
 
-近期 Release 跑测结果与仍失败用例名见 [acceptance-report.md](acceptance-report.md)，勿假设「文档写了分层即全部绿灯」。
+```powershell
+# 便携目录 + 自检（报告写文件，窗口模式 stdout 不可靠）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps1 -SkipArchive
+.\artifacts\py-build\炳恒快速混剪\炳恒快速混剪.exe --self-test --report-file .\selftest.json
 
-### 集成夹具
+# MSI
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.ps1
+```
 
-`LavfiMediaFactory` 使用 FFmpeg lavfi 生成带颜色与音频的短视频，验证硬切时长、序号顺序、蒙版与字幕等场景。
-
-客户真机素材放在仓库根 `test-assets/`（见该目录 README）；**媒体文件不入库**。缺少目录时 `CustomerAssetAcceptanceTests` 会 Skip。
-
-### 打包测试
-
-- `RuntimePackageTests` — staging 运行时哈希与 `THIRD_PARTY_NOTICES.md` 覆盖
-- `PortableArtifactTests` — 便携目录结构与 ZIP 文件名
-- `WixSourceTests` — 安装范围不触及用户项目/文档目录
-
-发布前运行 `scripts/Verify-Release.ps1` 执行完整校验。
+打包脚本内置校验（产物非零字节、MSI 属性可读、UpgradeCode 断言等）；失败即非零退出。
 
 ## 待对齐项
 
-- 集成/打包失败项清零前，验收报告与 Verify-Release 出口码保持「未完全通过」表述。
+- 发布前尚无统一的 `Verify-Release` 出口（原脚本只覆盖 .NET 产物，已随 .NET 树移除）；当前以打包脚本自带校验 + pytest 结果为准。

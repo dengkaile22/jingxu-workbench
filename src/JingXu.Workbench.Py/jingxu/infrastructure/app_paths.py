@@ -21,7 +21,7 @@ SEARCH_DEPTH = 8
 # 实测索引（jingxu/infrastructure/app_paths.py 的 parents）：
 #   [0] infrastructure  [1] jingxu
 #   [2] JingXu.Workbench.Py（含 pyproject.toml）
-#   [3] src  [4] 仓库根（含 JingXu.Workbench.sln 与 runtime/）
+#   [3] src  [4] 仓库根（含 build/runtime-manifest.json 与 runtime/）
 _PACKAGE_TO_ROOT = 4
 _PROJECT_PARENT_INDEX = 2
 

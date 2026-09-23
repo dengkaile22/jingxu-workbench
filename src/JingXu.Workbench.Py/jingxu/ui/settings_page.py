@@ -255,7 +255,7 @@ class SettingsPage(QWidget):
         brand_row.addStretch(1)
         layout.addLayout(brand_row)
 
-        layout.addWidget(Caption("与 .NET 版共用 FFmpeg 语义与业务规则；离线运行，不上传任何素材。"))
+        layout.addWidget(Caption("本地 FFmpeg 离线渲染与业务规则；离线运行，不上传任何素材。"))
         return SectionExpander("关于", body)
 
     # ────────────────────────────── 数据 ──────────────────────────────

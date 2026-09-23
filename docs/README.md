@@ -19,16 +19,15 @@
 | 文档 | 说明 |
 |------|------|
 | [架构概览](architecture.md) | 分层边界：**设计意图 + 实现现状** |
-| [开发指南](development.md) | SDK、命令、入口、CLI 开关、目录 |
-| [测试说明](testing.md) | 测试分层与运行方式 |
-| [发布流程](release.md) | 便携包 / 安装器 / 校验 |
-| [Python 版发布流程](release-python.md) | PySide6 版的 PyInstaller 打包、随包运行时与自检 |
+| [开发指南](development.md) | 环境、命令、入口、目录 |
+| [测试说明](testing.md) | pytest 分层与运行方式 |
+| [Python 版发布流程](release-python.md) | PyInstaller 打包、随包运行时与自检（**唯一发布流程**；原 .NET 流水线见 [release.md](release.md) 的移除说明） |
 | [运行时许可](runtime-licensing.md) | FFmpeg / Whisper / Tesseract 合规 |
 | [验收报告](acceptance-report.md) | Task 矩阵与已知阻塞项 |
 | [Python 版迁移验收报告](python-migration-acceptance.md) | .NET → Python 迁移的能力对齐、测试证据与已知限制 |
 | [选品爬虫重写说明与验证状态](spider-rewrite-status.md) | 分层提取/环境自检/登录态记录的设计、实测证据与**未验证部分** |
-| [UI 与 .NET 版一致性对照](ui-parity-with-dotnet.md) | 逐页对照结果：已对齐项、已知差异与后续顺序 |
-| [与 .NET 版功能对照审计](dotnet-parity-audit.md) | **以仓库验收标准为检查表**逐条核查：虚假功能、遗漏资源与未达标项 |
+| [UI 与 .NET 版一致性对照](ui-parity-with-dotnet.md) | （存档）逐页对照结果；.NET 参照树已移除，见标签 `last-dotnet-reference` |
+| [与 .NET 版功能对照审计](dotnet-parity-audit.md) | （存档）以验收标准逐条核查：虚假功能、遗漏资源与未达标项 |
 
 ## 开发现状与对齐（2026-07-11）
 
@@ -49,4 +48,8 @@
 
 1. 新同学：根目录 [README.md](../README.md) → 本索引 → [设计规格](superpowers/specs/2026-07-10-video-workbench-design.md) §1–4  
 2. 改功能：对应 `modules/*-status.md` → 再改代码  
-3. 发布： [release.md](release.md) → [acceptance-report.md](acceptance-report.md)
+3. 发布： [release-python.md](release-python.md) → [acceptance-report.md](acceptance-report.md)
+
+> **存档提示（2026-09-23）：** `status/`、`plans/`、`superpowers/plans/` 等历史文档
+> 多以 .NET 时期的目录与命令为例，仅作过程记录；现行技术栈为 Python，
+> .NET 参照实现已移除（git 标签 `last-dotnet-reference`）。

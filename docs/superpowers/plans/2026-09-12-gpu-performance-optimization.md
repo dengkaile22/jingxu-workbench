@@ -1,5 +1,7 @@
 # 四屏人物叠加性能与 GPU 处理优化
 
+> **存档（2026-09-23）：** 本文以 .NET/WPF 时期的路径与类型为证据，该参照树已移除（git 标签 `last-dotnet-reference`）。现行技术栈为 Python（`src/JingXu.Workbench.Py`），文中 `.cs`/`.xaml` 路径仅作历史记录。
+
 > 用户已要求直接优化并增加 GPU 加速，在当前任务内使用 subagent-driven-development 与 TDD 执行，不重复询问实施许可。
 
 **目标：** 保留四屏、人物叠加、羽化与音轨语义，降低处理耗时和峰值资源占用，交付可安装更新。

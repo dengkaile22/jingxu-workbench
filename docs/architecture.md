@@ -5,62 +5,58 @@
 说明镜序工作台的分层边界与数据流。**产品与架构意图以设计规格为准**；下文同时给出实现落点，避免把目标图误认为当前目录树。
 
 完整规格：[superpowers/specs/2026-07-10-video-workbench-design.md](superpowers/specs/2026-07-10-video-workbench-design.md)  
-现状快照：[status/2026-07-11-implementation-alignment.md](status/2026-07-11-implementation-alignment.md)
+迁移验收：[python-migration-acceptance.md](python-migration-acceptance.md)
+
+> **技术栈变更（2026-09-23）：** 仓库已全面转向 Python（PySide6 + FFmpeg），
+> 原 .NET/WPF 四层实现移除，最后保留点见 git 标签 `last-dotnet-reference`。
+> 下文「目标设计」的分层意图仍然有效，实现落点改为 Python 目录。
 
 ## 目标设计
 
-四层 Clean Architecture，Domain 不引用 WPF、文件系统或外部进程：
+四层 Clean Architecture，Domain 不引用 UI 框架、文件系统或外部进程：
 
 ```text
-Presentation (WPF)     — Shell、各功能 View/ViewModel
-Application            — 用例编排、队列调度、项目/模板服务
-Domain                 — 纯业务规则与不可变模型
-Infrastructure         — FFprobe/FFmpeg、Whisper/Tesseract、JSON、Runtime、Job Object
+UI (PySide6)        — Shell、各功能 Page/Widget
+application         — 用例编排、队列调度、项目/模板服务
+domain              — 纯业务规则与不可变模型
+infrastructure      — FFprobe/FFmpeg、Whisper/Tesseract、JSON、Runtime、子进程
 ```
 
 关键意图：
 
-- 命令生成器只接受强类型计划，返回 `ArgumentList`，不接受任意 shell 字符串。
-- 统一进程运行器负责 stdout/stderr、取消与 Windows Job Object。
-- `RuntimeResolver`：bundled `runtime/` → 用户目录 → `PATH`。
-- 入队生成不可变 `RenderJob`；队列与项目版本化 JSON 原子保存。
+- 命令生成器只接受强类型计划，返回参数列表，不接受任意 shell 字符串。
+- 统一进程运行器负责 stdout/stderr 与取消。
+- 运行时解析：bundled `runtime/` → 用户目录 → `PATH`。
+- 入队生成不可变渲染任务；队列与项目版本化 JSON 原子保存。
 
 ## 开发现状
 
-### 真实项目边界（四个 csproj）
+### 真实项目边界
 
 ```text
-src/JingXu.Workbench                    # Presentation：App、ShellWindow、Features/*、Bootstrap
-src/JingXu.Workbench.Application      # Abstractions、Rendering、Projects、Subtitles、Composition、Overlays
-src/JingXu.Workbench.Domain             # Composition（含 CompositionPlanner）、Effects、Overlays、Rendering、Subtitles、Media
-src/JingXu.Workbench.Infrastructure     # Media、Rendering、Processes、Runtime、Persistence、Subtitles
+src/JingXu.Workbench.Py/jingxu/ui              # 界面：shell_window、各功能 page、预览画布
+src/JingXu.Workbench.Py/jingxu/application     # 用例编排：composition_service、渲染队列、下载
+src/JingXu.Workbench.Py/jingxu/domain          # 纯领域：layers、render、subtitles、deterministic
+src/JingXu.Workbench.Py/jingxu/infrastructure  # FFmpeg 编译/执行、探测、过滤图、持久化、诊断
+src/JingXu.Spider/                             # 选品爬虫（独立 Python 包，用户主动触发联网）
 ```
-
-> 旧版示意图曾把 Application/Domain 画在 `JingXu.Workbench` 项目内部，易误导；**层是项目边界，不是 WPF 项目内的文件夹。**
 
 ### 数据流（已实现主路径）
 
-1. 导入素材 → `FfprobeMediaProbe` → `MediaAsset`
-2. `CompositionPlanner` / `CompositionOrchestrator` → `CompositionPlan`
-3. `RenderRequestFactory` 等生成 `RenderRequest` → `RenderCoordinator` 入队 `RenderJob`
-4. `FfmpegCommandCompiler` → `ExternalProcessRunner` / `FfmpegRenderExecutor`
-5. 临时输出验证后按命名策略落到目标目录（封面见 `CoverGenerator`）
+1. 导入素材 → FFprobe 探测 → 媒体资产
+2. `composition_service`（编排/入队校验）→ 合成计划
+3. 渲染请求 → 队列入队
+4. FFmpeg 命令编译 → 外部进程执行（硬解/缩放/编码三级回退）
+5. 临时输出验证后按命名策略落到目标目录（封面生成）
 
-### 与目标的主要偏差
+### 打包与交付
 
-| 意图 | 现状 |
-|------|------|
-| 持久化队列 JSON | `InMemoryRenderQueueStore`（进程内） |
-| 完整项目文档服务 | `ProjectDocument` 存在；UI 未完整打开/保存；`ProjectService` 目前主要是中断任务恢复辅助 |
-| `CompositionPlanner` 在 Application | 实际在 **Domain** |
-| `ProcessRunner` / `TesseractRunner` | 现名 `ExternalProcessRunner` / `TesseractSubtitleOcrDetector` |
-| 硬件编码器自动选择 | Profile 有 `PreferHardwareEncoder`；编译当前固定 `libx264` |
-| 默认并发可在 UI 调 1–4 | 协调器支持；组合根默认 1；设置 UI 未暴露 |
+- PyInstaller onedir：`scripts/Build-Portable-Py.ps1` + `scripts/jingxu.spec`
+- MSI：`scripts/Build-Installer-Py.ps1` + `build/Installer-Py/*.wxs`（WiX 6）
+- 产物：`artifacts/release/炳恒快速混剪-Py-win-x64.msi`
 
-命名对照：[status/2026-07-11-design-vs-code-names.md](status/2026-07-11-design-vs-code-names.md)
+## 已知偏差
 
-## 待对齐项
+- 持久化队列：规格要求版本化 JSON；现状以进程内队列 + 任务日志为主，见 [modules/render-queue-persistence-status.md](modules/render-queue-persistence-status.md)。
+- 形状/PNG 遮罩：领域、滤镜与持久化已就位，尚无独立编辑 UI（与 .NET 二期定位一致）。
 
-1. 实现 JSON `IRenderQueueStore` 或持续在文档中标注「内存队列」。
-2. 硬件编码选择与失败回退提示对齐规格 §5.9。
-3. 合并文档时删除/更正任何 backend/API/pipeline 双轨描述（本仓库无此结构）。

@@ -1,7 +1,7 @@
 # 炳恒快速混剪 · Python 版（JingXu.Workbench.Py）
 
 Windows / macOS / Linux 桌面版：PySide6 + 系统 FFmpeg。本目录是整个应用的
-**唯一实现**（.NET 版源码保留在 `src/JingXu.Workbench.*` 仅作迁移参照）。
+**唯一实现**（原 .NET/WPF 参照树已于 2026-09-23 移除，见 git 标签 `last-dotnet-reference`）。
 
 ## 运行
 
@@ -44,7 +44,9 @@ python -m pytest                     # 单元测试（约 360 项）
 python -m pytest -m integration      # 真机渲染（需要 FFmpeg）
 ```
 
-## 与 .NET 版的功能对照
+## 功能清单（含与原 .NET 版的对照，存档口径）
+
+> .NET 参照树已移除（标签 `last-dotnet-reference`）；下表图例保留原对照语义。
 
 图例：✅ 同功能 · 🟡 已实现但交互略简化 · ➕ Python 版增强 · ⏳ 未迁移
 
@@ -134,7 +136,7 @@ python -m pytest -m integration      # 真机渲染（需要 FFmpeg）
 | 设置 | ✅ | 运行时清单逐组件诊断表、编码器状态、并发、维护清理（保护运行中任务与字幕/缩略图）、关于 |
 | 启动维护 | ✅ | 后台孤儿清理（临时目录、过期半成品、下载残片）；崩溃日志写入 `<数据目录>/logs/crash-YYYYMMDD.log` |
 
-**已知差异（相对 .NET）**
+**已知差异（相对原 .NET 版，存档说明）**
 
 - 蒙版形状/PNG 遮罩：领域、滤镜、持久化与校验已与 .NET 对齐（含椭圆/圆角矩形/PNG 三档遮罩模式）；尚无形状编辑 UI，与 .NET「二期」定位一致。
 - 圆角矩形几何未沿用 .NET 字面实现：.NET 的 `min(X,r)+min(W-X,r)-r` 写法在距边 r 的整条边带内恒为 r，会整体擦除四条边带、角部反而保留，几何上不是圆角。本版改用标准的「到圆角矩形边界距离」写法；若需与 .NET 逐像素一致需改为字面移植。

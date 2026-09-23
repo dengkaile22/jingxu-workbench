@@ -82,7 +82,7 @@ $app = 'artifacts\py-build\炳恒快速混剪\炳恒快速混剪.exe'
 ## 历史内容（.NET 版时期，仅作迁移参照）
 
 > 以下为 .NET(WPF) 版阶段的验收记录。当前交付为 **Python 版**，验收以本节之前的
-> 「封版验收」为准；.NET 源码保留在 `src/JingXu.Workbench*` 仅作功能对照。
+> 「封版验收」为准；.NET 源码已于 2026-09-23 移除（git 标签 `last-dotnet-reference`）。
 
 **日期：** 2026-07-10（总控收口验证：2026-07-11）  
 **规格：** [2026-07-10-video-workbench-design.md](superpowers/specs/2026-07-10-video-workbench-design.md)  

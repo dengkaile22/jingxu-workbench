@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 function Resolve-RepoRoot {
     $dir = (Resolve-Path $PSScriptRoot).Path
     while ($dir) {
-        if (Test-Path (Join-Path $dir 'JingXu.Workbench.sln')) { return $dir }
+        if (Test-Path (Join-Path $dir 'build\runtime-manifest.json')) { return $dir }
         $parent = Split-Path $dir -Parent
         if ($parent -eq $dir) { break }
         $dir = $parent
@@ -95,7 +95,7 @@ Write-Host "  文件数 $fileCount；体积 $sizeMb MB"
 
 Write-Host '=== 2. 构建 MSI（WiX 6）==='
 $installerDir = Join-Path $repoRoot 'build\Installer-Py'
-$licenseFile = Join-Path $repoRoot 'build\Installer\License.rtf'
+$licenseFile = Join-Path $repoRoot 'build\Installer-Py\License.rtf'
 if (-not (Test-Path $licenseFile)) { throw "缺少许可协议文件：$licenseFile" }
 
 if (-not (Test-Path $OutputDirectory)) {

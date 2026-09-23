@@ -24,14 +24,16 @@
 **平台：** Windows 10/11 x64  
 **分发：** Windows 标准 MSI 安装包（`artifacts/release/炳恒快速混剪-Py-win-x64.msi`，未签名时可能触发 SmartScreen，见下文）
 
-> **实现说明：** 当前交付的是 **Python 版**（`src/JingXu.Workbench.Py`，PySide6）。
-> 仓库仍保留 .NET 版源码（`src/JingXu.Workbench*`）作为功能参照，
-> 但**其安装包与便携包已不再产出**；如需重建，见 `scripts/Publish-Msi.ps1`。
+> **技术栈（2026-09-23 起）：** 本仓库**全面采用 Python（PySide6 + FFmpeg）**，
+> 交付实现为 `src/JingXu.Workbench.Py`。原 .NET/WPF 参照实现已移除，
+> 最后保留点见 git 标签 `last-dotnet-reference`（迁移前快照，可随时回查）。
+> 历史对照文档（`docs/ui-parity-with-dotnet.md`、`docs/dotnet-parity-audit.md`、
+> `docs/python-migration-acceptance.md`）保留作迁移记录。
 
 ## 快速开始
 
 1. 双击运行 `artifacts/release/炳恒快速混剪-Py-win-x64.msi`（或从发布页下载的 MSI 安装包）。
-2. 安装完成后从桌面或开始菜单启动「炳恒快速混剪」。本包为 **自包含** 发布（随包 Python 与 `runtime/`），目标机器 **无需** 安装 Python 或 .NET 运行时。
+2. 安装完成后从桌面或开始菜单启动「炳恒快速混剪」。本包为 **自包含** 发布（随包 Python 与 `runtime/`），目标机器 **无需** 安装任何运行时环境。
 3. 拖入 MP4/MOV/MKV 等素材，确认左侧序号与缩略图。
 4. 在中央编排区选择 **随机拼接** 或 **自定义序号**（紧凑输入 `264513` 或逗号输入 `2,6,4,5,1,3`）。
 5. 在右侧设置画幅、质量与输出目录，点击 **入队渲染**；在底部队列查看进度、日志与打开输出目录。
@@ -79,15 +81,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Resolve-Runtimes.ps1
 | 字幕实验室 | 手动框选去除、OCR 自动定位、Whisper 离线识别、SRT/ASS 烧录 |
 | 任务队列 | 可暂停调度、单任务取消（进程树终止）、失败隔离与重试 |
 
-## Python 跨平台版（开发中）
+## 主实现：Python（PySide6 + FFmpeg）
 
-`src/JingXu.Workbench.Py/` 为 PySide6 + FFmpeg 的跨平台重写版（Windows/macOS/Linux），
+`src/JingXu.Workbench.Py/` 为 PySide6 + FFmpeg 实现（Windows 为主，兼容 macOS/Linux 的跨平台结构），
 已打通素材导入 → 顺序/随机/自定义序号编排 → 画幅适配 → 渲染队列的完整链路；
 蒙版羽化/上淡入/来源裁剪与合成预览、随机旋转、上下双屏、无损直拷、OCR 自动定位、
-交叉转场与项目保存/打开（`.jxproj`）也已迁移，
+交叉转场与项目保存/打开（`.jxproj`）均已实现，
 详见 [src/JingXu.Workbench.Py/README.md](src/JingXu.Workbench.Py/README.md)。
 
-已与 .NET 版对齐的能力：GPU 硬解与 `scale_qsv`/`scale_cuda` 缩放（含三级回退）、
+硬件加速能力：GPU 硬解与 `scale_qsv`/`scale_cuda` 缩放（含三级回退）、
 蒙版形状与 PNG 遮罩、贴纸独立画幅与宽高比锁定、音频库音量语义（−100..+100）。
 
 > **当前交付只保留 MSI。** 便携 ZIP 已从交付目录移除（内容与 MSI 重叠，约 466 MB）。
@@ -113,8 +115,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.p
 
 ## 构建发布 MSI（开发者）
 
-当前交付的 Python 版：
-
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.ps1
@@ -123,14 +123,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.p
 先跑便携包（生成 `artifacts/py-build/`），再跑安装包（对其打包），输出至
 `artifacts/release/炳恒快速混剪-Py-win-x64.msi`，详见 [docs/release-python.md](docs/release-python.md)。
 
-.NET 参考版仍可重建（需要 .NET 10 SDK 与 WiX 6）：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-Msi.ps1 -AllowPlaceholderHash -BootstrapFromPath
-```
-
-> 注意：该命令会重新生成 `artifacts/release/炳恒快速混剪-win-x64.msi` 与 `SHA256SUMS.txt`，
-> 即把已清理的 .NET 交付物再放回交付目录。
+> 历史备注：原 .NET/WPF 参照实现与 `scripts/Publish-Msi.ps1` 等构建脚本
+> 已于 2026-09-23 移除；如需查阅，检出 git 标签 `last-dotnet-reference`。
 
 ## SmartScreen 与代码签名
 

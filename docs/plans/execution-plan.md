@@ -1,5 +1,7 @@
 # Execution Plan: JingXu.Workbench Completion and Stabilization
 
+> **存档（2026-09-23）：** 本文以 .NET/WPF 时期的路径与类型为证据，该参照树已移除（git 标签 `last-dotnet-reference`）。现行技术栈为 Python（`src/JingXu.Workbench.Py`），文中 `.cs`/`.xaml` 路径仅作历史记录。
+
 ## Overview
 This plan completes and stabilizes the JingXu.Workbench offline Windows video workbench by first repairing the broken WPF presentation test harness, then committing the accumulated implementation work in recoverable slices, and finally finishing the remaining milestones in dependency order. The approach prioritizes robustness, clean architecture boundaries, deterministic test behavior, and production readiness over short-term workarounds.
 

@@ -1,5 +1,9 @@
 # Python 版迁移验收报告
 
+> **存档（2026-09-23）：** 本报告完成后的 2026-09-23，.NET/WPF 参照树已从仓库移除
+> （全面 Python 化，git 标签 `last-dotnet-reference`）。
+> 报告中的「逐行对齐 .NET」类证据自此只能通过该标签回查。
+
 **日期：** 2026-09-19
 **目标：** 把「炳恒快速混剪」从 .NET(WPF) 迁移到 Python(PySide6)，仅 Windows x64，达到可交付状态
 **范围：** `src/JingXu.Workbench.Py`（.NET 树保留作参照，不删除）

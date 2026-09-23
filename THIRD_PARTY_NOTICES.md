@@ -71,10 +71,6 @@
 - **IBM Plex Mono**（等宽数字/时间码）：SIL Open Font License 1.1
 - 中文正文字体随发布包分发时，将在此节补充具体字体名称、许可证与来源 URL。
 
-## 其他 .NET 依赖
-
-- **CommunityToolkit.Mvvm** — MIT License（通过 NuGet 编译进应用，运行时自包含）
-
 ## 专利与编码器提示
 
 H.264/H.265 等编码器可能涉及专利许可。硬件编码（NVENC/QSV/AMF）取决于显卡驱动与 FFmpeg 构建选项。用户在生产环境启用前须自行评估专利与合规风险。

@@ -350,6 +350,49 @@ def test_set_filename_missing_job_returns_false(queue_factory) -> None:
     assert queue.set_filename("missing-id", "名字") is False
 
 
+def test_clear_finished_leaves_no_dangling_pending_ids(tmp_path: Path, queue_factory) -> None:
+    """**真实缺陷回归**：清理已结束任务不得在待办队列里留下悬空 ID。
+
+    工作线程按「先 pop ID、再查 ``_jobs``」取任务，只从 ``_jobs`` 删记录会让
+    线程随后抛 ``KeyError`` 并整体退出——用户看到的是"点了清空之后下载不再开始"。
+    """
+    downloader = GatedDownloader()
+    queue = queue_factory(downloader)
+
+    queue.enqueue(["https://example.com/first"])
+    assert downloader.started.wait(timeout=5), "首个任务未开始，闸门失效"
+
+    # 第二个任务排在待办里尚未开始；把它置为终态后清理，模拟"取消/失败后清空"
+    pending = queue.enqueue(["https://example.com/second"])[0]
+    try:
+        with queue._lock:
+            queue._jobs[pending.id].state = DownloadState.CANCELLED
+        queue.clear_finished()
+        with queue._lock:
+            dangling = [job_id for job_id in queue._pending if job_id not in queue._jobs]
+    finally:
+        downloader.release.set()
+
+    assert dangling == [], f"待办里残留悬空 ID：{dangling}"
+
+
+def test_worker_survives_a_dangling_pending_id(tmp_path: Path, queue_factory) -> None:
+    """即便待办里被外部塞入悬空 ID，工作线程也必须跳过并继续调度后续任务。
+
+    用 ``RecordingDownloader`` 在**同一个 ``enqueue`` 调用**里带上一个真实任务：
+    ``enqueue`` 先填 ``_pending`` 再 ``start()``，所以插入的悬空 ID 一定排在它前面。
+    """
+    downloader = RecordingDownloader()
+    queue = queue_factory(downloader)
+
+    with queue._lock:
+        queue._pending.append("never-existed")
+    job = queue.enqueue(["https://example.com/real"])[0]
+
+    wait_until(lambda: job.state is DownloadState.COMPLETED)
+    assert [call["url"] for call in downloader.calls] == ["https://example.com/real"]
+
+
 # ────────────────────────────── 下载页 ──────────────────────────────
 
 

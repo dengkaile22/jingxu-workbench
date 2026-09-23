@@ -318,3 +318,96 @@ def test_subtitle_resume_restores_following(qapp, tmp_path: Path) -> None:  # no
     assert page._source is None, "恢复跟随时应先清空，避免显示过期的手动视频"
     assert page._resume_follow.isEnabled() is False
     assert "已恢复跟随" in page._status.text()
+
+
+# ── 5. 下载页「清空列表」与「清空已完成」 ────────────────────────────────────
+
+
+def _stub_downloader(url, output_directory, on_progress, cancel_event, *, filename=""):  # noqa: ANN001, ANN202
+    """**绝不联网**的下载替身。
+
+    这些用例只关心表格行与队列状态的联动。用真实下载器会把请求交给 yt-dlp，
+    在测试进程里起分片线程池并发解析链接，既慢又不确定。
+    """
+    cancel_event.wait(timeout=2.0)
+    if cancel_event.is_set():
+        from jingxu.infrastructure.downloader import DownloadCancelled  # noqa: PLC0415
+
+        raise DownloadCancelled("已取消")
+    raise AssertionError(f"该用例不应真正下载：{url}")
+
+
+def _download_page(tmp_path: Path):  # noqa: ANN202
+    from jingxu.infrastructure.downloader import DownloadQueue  # noqa: PLC0415
+    from jingxu.ui.download_page import DownloadPage  # noqa: PLC0415
+
+    queue = DownloadQueue(tmp_path / "downloads", downloader=_stub_downloader)
+    return queue, DownloadPage(queue)
+
+
+def test_download_page_has_clear_list_button(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """「清空列表」对齐 .NET ClearListCommand（取消全部并清空）。"""
+    apply_application_theme(qapp)
+
+    from jingxu.ui.widgets import SecondaryButton  # noqa: PLC0415
+
+    queue, page = _download_page(tmp_path)
+    try:
+        labels = {button.text() for button in page.findChildren(SecondaryButton)}
+        assert "清空列表" in labels
+        assert "清空已完成" in labels
+    finally:
+        queue.stop(timeout=3.0)
+
+
+def test_clear_finished_keeps_active_jobs_visible(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """**真实缺陷回归**：清空已完成不得把进行中的任务从界面上抹掉。
+
+    此前直接 ``setRowCount(0)`` 再清空行映射，而 ``_on_queue_event`` 靠
+    ``self._rows`` 找行——映射一丢，后续进度就再也不更新，
+    表现为"任务凭空消失"。
+    """
+    from jingxu.infrastructure.downloader import DownloadState  # noqa: PLC0415
+
+    apply_application_theme(qapp)
+    queue, page = _download_page(tmp_path)
+    try:
+        first, second = queue.enqueue(["https://example.com/a", "https://example.com/b"])
+        qapp.processEvents()
+
+        # 把第二个置为完成态
+        queue._jobs[second.id].state = DownloadState.COMPLETED
+        qapp.processEvents()
+
+        page._clear_finished()
+        qapp.processEvents()
+
+        assert page._table.rowCount() == 1, "未完成的任务被一起清掉了"
+        assert first.id in page._rows, "未完成任务的行映射丢了"
+
+        # 关键：后续进度必须还能更新到界面
+        queue._jobs[first.id].percent = 42.0
+        queue._notify("progress", queue._jobs[first.id])
+        qapp.processEvents()
+        assert "42" in page._table.item(page._rows[first.id], 3).text()
+    finally:
+        queue.stop(timeout=3.0)
+
+
+def test_clear_all_empties_the_table(qapp, tmp_path: Path) -> None:  # noqa: ANN001
+    """「清空列表」点完表里必须为空（取消是异步的，界面按终态过滤）。"""
+    apply_application_theme(qapp)
+    queue, page = _download_page(tmp_path)
+    try:
+        queue.enqueue(["https://example.com/a", "https://example.com/b"])
+        qapp.processEvents()
+        assert page._table.rowCount() == 2
+
+        page._clear_all()
+        qapp.processEvents()
+
+        assert page._table.rowCount() == 0
+        assert page._rows == {}
+        assert "列表已清空" in page._status.text()
+    finally:
+        queue.stop(timeout=3.0)

@@ -446,10 +446,19 @@ class DownloadQueue:
         return True
 
     def clear_finished(self) -> None:
+        """移除已结束（完成/失败/取消）任务的记录，未结束的任务保持不动。
+
+        **必须同时清掉 ``_pending`` 里的 ID**：工作线程是按「先 pop ID、再查
+        ``_jobs``」取任务的，只删 ``_jobs`` 会在待办队列里留下悬空 ID，
+        线程随后就 ``self._jobs[job_id]`` 抛 KeyError 并整体退出——
+        表现为"下载列表点了清空之后，新任务再也不开始"。
+        """
         with self._lock:
             for job_id in [job.id for job in self._jobs.values() if not job.is_active]:
                 self._jobs.pop(job_id, None)
                 self._cancel_events.pop(job_id, None)
+                if job_id in self._pending:
+                    self._pending.remove(job_id)
 
     @property
     def jobs(self) -> list[DownloadJob]:
@@ -484,8 +493,12 @@ class DownloadQueue:
                 if self._stop_requested:
                     return
                 job_id = self._pending.pop(0)
-                job = self._jobs[job_id]
-                cancel_event = self._cancel_events[job_id]
+                job = self._jobs.get(job_id)
+                if job is None:
+                    # 已被清理/取消：待办里不该再出现它的 ID，跳过而不是崩溃。
+                    self._cancel_events.pop(job_id, None)
+                    continue
+                cancel_event = self._cancel_events.get(job_id) or threading.Event()
 
             job.state = DownloadState.RUNNING
             self._notify("updated", job)

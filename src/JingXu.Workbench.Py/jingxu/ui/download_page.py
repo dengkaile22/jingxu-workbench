@@ -42,6 +42,18 @@ STATE_COLORS = {
 }
 
 
+TERMINAL_STATES = (
+    DownloadState.COMPLETED,
+    DownloadState.FAILED,
+    DownloadState.CANCELLED,
+)
+
+
+def _is_terminal(job) -> bool:  # noqa: ANN001 - DownloadJob
+    """任务是否已结束（表里仍需显示，但「清空」时可移除）。"""
+    return job.state in TERMINAL_STATES
+
+
 def extract_urls(text: str) -> list[str]:
     """从多行文本中提取去重后的链接（保持出现顺序）。"""
     seen: set[str] = set()
@@ -166,6 +178,11 @@ class DownloadPage(QWidget):
         clear.clicked.connect(self._clear_finished)
         row.addWidget(clear)
 
+        clear_all = SecondaryButton("清空列表")
+        clear_all.setToolTip("取消所有下载并清空列表。")
+        clear_all.clicked.connect(self._clear_all)
+        row.addWidget(clear_all)
+
         send = SecondaryButton("发送已下载到混剪素材")
         send.setToolTip("把已完成的视频加入「商品组 A」素材列表，可直接编排渲染。")
         send.clicked.connect(self._send_to_materials)
@@ -215,16 +232,45 @@ class DownloadPage(QWidget):
         return len(jobs)
 
     def _clear_finished(self) -> None:
+        """清掉已完成/失败/已取消的**记录**，保留未完成任务。
+
+        注意：不能直接 ``setRowCount(0)`` 再清空行映射——那会把正在下载的任务
+        也从界面上抹掉，而 ``_on_queue_event`` 靠 ``self._rows`` 找行，
+        映射一丢，后续进度就再也不更新（实测表现为"任务凭空消失"）。
+        这里统一走 ``_rebuild_table``，从队列状态重建。
+        """
         self._queue.clear_finished()
+        self._rebuild_table()
+        self._status.setText("已清空已完成任务记录。")
+
+    def _clear_all(self) -> None:
+        """取消全部下载并清空列表（对齐 .NET ``ClearListCommand``）。"""
+        self._queue.cancel_all()
+        # 取消是异步的（工作线程收尾），队列里可能还有尚未转为终态的任务；
+        # 界面直接按终态过滤，保证「清空列表」点完表里一定清空。
+        self._queue.clear_finished()
+        self._fill_table([])
+        self._status.setText("列表已清空。")
+
+    def _rebuild_table(self) -> None:
+        """按队列当前状态重建表格（清空类操作后调用，避免行映射与界面脱钩）。"""
+        self._fill_table([job for job in self._queue.jobs if not _is_terminal(job)])
+
+    def _fill_table(self, jobs: list) -> None:
         previous = self._updating
         self._updating = True
         try:
             self._table.setRowCount(0)
+            self._rows.clear()
+            self._row_jobs.clear()
+            for job in jobs:
+                row = self._table.rowCount()
+                self._table.insertRow(row)
+                self._rows[job.id] = row
+                self._row_jobs[row] = job.id
+                self._update_row(row, job)
         finally:
             self._updating = previous
-        self._rows.clear()
-        self._row_jobs.clear()
-        self._status.setText("已清空已完成任务记录。")
 
     def _send_to_materials(self) -> None:
         finished = [

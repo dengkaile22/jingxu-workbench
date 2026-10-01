@@ -20,6 +20,7 @@
 |------|------|
 | [架构概览](architecture.md) | 分层边界：**设计意图 + 实现现状** |
 | [开发指南](development.md) | 环境、命令、入口、目录 |
+| [功能与实现概览](python-workbench-overview.md) | 详细功能矩阵、运行时与实现说明 |
 | [测试说明](testing.md) | pytest 分层与运行方式 |
 | [Python 版发布流程](release-python.md) | PyInstaller 打包、随包运行时与自检（**唯一发布流程**；原 .NET 流水线见 [release.md](release.md) 的移除说明） |
 | [运行时许可](runtime-licensing.md) | FFmpeg / Whisper / Tesseract 合规 |

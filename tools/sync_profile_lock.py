@@ -1,7 +1,7 @@
 """一次性同步脚本：把爬虫项目的 profile_lock.py 复制为工作台副本。
 
-唯一真源：src/JingXu.Workbench.Py/JingXu.Spider/core/profile_lock.py
-副本：    src/JingXu.Workbench.Py/jingxu/infrastructure/profile_lock.py（仅替换模块 docstring）
+唯一真源：extensions/spider/core/profile_lock.py
+副本：    core/jingxu/infrastructure/profile_lock.py（仅替换模块 docstring）
 
 用法：python tools/sync_profile_lock.py
 """
@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-SOURCE = Path("src/JingXu.Workbench.Py/JingXu.Spider/core/profile_lock.py")
-TARGET = Path("src/JingXu.Workbench.Py/jingxu/infrastructure/profile_lock.py")
+SOURCE = Path("extensions/spider/core/profile_lock.py")
+TARGET = Path("core/jingxu/infrastructure/profile_lock.py")
 MARKER = "from __future__ import annotations"
 
 HEADER = (
-    '"""浏览器档案占用检测（``src/JingXu.Workbench.Py/JingXu.Spider/core/profile_lock.py`` 的逐字副本）。\n'
+    '"""浏览器档案占用检测（``extensions/spider/core/profile_lock.py`` 的逐字副本）。\n'
     "\n"
     "**请勿直接修改本文件**：唯一真源在爬虫项目的 ``core/profile_lock.py``——爬虫与\n"
     "工作台必须对同一件事给出同一答案。改完真源后运行 ``python tools/sync_profile_lock.py``\n"

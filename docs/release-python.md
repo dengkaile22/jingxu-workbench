@@ -1,6 +1,6 @@
 # Python 版发布流程（Windows x64）
 
-本文对应 `src/JingXu.Workbench.Py`（PySide6 + FFmpeg）的打包与交付。
+本文对应根目录 `core/`（PySide6 + FFmpeg）与 `extensions/spider/` 的打包与交付。
 本仓库已全面转向 Python，原 .NET/WPF 发布流水线于 2026-09-23 移除
 （git 标签 `last-dotnet-reference` 可回查）。
 
@@ -40,7 +40,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.p
 |------|------|
 | `-PortableDirectory <路径>` | 指定便携目录来源 |
 | `-OutputDirectory <路径>` | 指定 MSI 输出目录（默认 `artifacts/release`） |
-| `-ProductVersion 1.0.2.0` | MSI ProductVersion（四段数字） |
+| `-ProductVersion 1.0.4.0` | MSI ProductVersion（四段数字） |
 | `-SkipPortableBuild` | 便携目录缺失时直接失败，不自动打包 |
 
 安装包关键属性（脚本会在构建后直接读 MSI 数据库校验）：
@@ -48,7 +48,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Installer-Py.p
 | 属性 | 值 |
 |------|-----|
 | ProductName | 炳恒快速混剪（Python 版） |
-| ProductVersion | 1.0.2.0 |
+| ProductVersion | 1.0.4.0 |
 | UpgradeCode | `{B8D5F3C2-A0E4-4F7B-9D6C-2E3F4A5B6C7D}` |
 | Scope | `perUserOrMachine`（无管理员权限时按用户安装） |
 | 语言 / 代码页 | 2052 / 936 |
@@ -95,6 +95,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps
 | `-OutputDirectory <路径>` | 指定产物目录（默认 `artifacts/release`） |
 | `-SkipArchive` | 只产出未压缩目录（本地快速验证） |
 | `-SkipSelfTest` | 跳过启动自检（**不可用于正式发布**） |
+| `-ReuseBuild` | 复用已编译目录并重做运行时复制与自检；若源码或打包规格较新则拒绝复用 |
 
 ## 目录形态
 
@@ -115,7 +116,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps
 
 **为什么 `runtime/` 放在 exe 同级而不是打进 exe**：FFmpeg 约 430 MB，打进 exe 会让
 每次启动都解包上百 MB；放在同级还能让用户单独替换 FFmpeg 版本而无需重新打包。
-`jingxu/infrastructure/app_paths.py` 在冻结运行时优先解析 `sys.executable` 所在目录，
+`core/jingxu/infrastructure/app_paths.py` 在冻结运行时优先解析 `sys.executable` 所在目录，
 因此该布局是必需约定。
 
 ## 验证

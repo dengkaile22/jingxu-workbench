@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-PY_ROOT = Path("src/JingXu.Workbench.Py/jingxu")
+PY_ROOT = Path("core/jingxu")
 SOURCES = {
     path: path.read_text(encoding="utf-8", errors="replace")
     for path in PY_ROOT.rglob("*.py")

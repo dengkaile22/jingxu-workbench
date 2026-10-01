@@ -12,7 +12,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "src" / "JingXu.Workbench.Py"))
+sys.path.insert(0, str(REPO / "core"))
 
 from PySide6.QtCore import QPoint, QSize  # noqa: E402
 from PySide6.QtGui import QColor, QImage, QPainter  # noqa: E402

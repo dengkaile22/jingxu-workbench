@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "src" / "JingXu.Workbench.Py"))
+sys.path.insert(0, str(REPO_ROOT / "core"))
 
 from jingxu.infrastructure.profile_lock import (  # noqa: E402
     lock_files_present,

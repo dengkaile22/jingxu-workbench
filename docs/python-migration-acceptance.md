@@ -6,7 +6,7 @@
 
 **日期：** 2026-09-19
 **目标：** 把「炳恒快速混剪」从 .NET(WPF) 迁移到 Python(PySide6)，仅 Windows x64，达到可交付状态
-**范围：** `src/JingXu.Workbench.Py`（.NET 树保留作参照，不删除）
+**范围：** 主应用位于 `core/`，扩展位于 `extensions/`（.NET 树保留作参照，不删除）
 
 ---
 
@@ -185,15 +185,14 @@ GPU 强制路径    → 1080x1920 2.00s  1.07 Mbps（与 AUTO 字节一致）
 
 ```powershell
 # 单元测试
-cd src/JingXu.Workbench.Py
+# 在仓库根目录执行
 python -m pytest
 
 # 真机集成测试（需 FFmpeg 在 PATH 或 runtime/ffmpeg/）
-$env:PATH = "$PWD\..\..\runtime\ffmpeg;$env:PATH"
+$env:PATH = "$PWD\runtime\ffmpeg;$env:PATH"
 python -m pytest -m integration
 
-# 打包便携包
-cd ../..
+# 从仓库根目录打包便携包
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Portable-Py.ps1
 
 # 打包产物自检（报告写入文件，窗口模式下 stdout 不可靠）

@@ -23,7 +23,7 @@
       DowngradeErrorMessage="已安装更新版本的炳恒快速混剪（Python 版）。"
       AllowSameVersionUpgrades="yes" />
 
-    <MediaTemplate EmbedCab="yes" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <ui:WixUI
       Id="WixUI_InstallDir"

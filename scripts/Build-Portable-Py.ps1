@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     # 运行时缓存目录（含 ffmpeg/whisper/tesseract/python）
     [string] $RuntimeDirectory = "",
@@ -6,6 +6,8 @@ param(
     [string] $OutputDirectory = "",
     # 不做 ZIP 与哈希（仅本地快速验证）
     [switch] $SkipArchive,
+    # 复用已编译目录，但拒绝复用比主程序源码更旧的可执行文件。
+    [switch] $ReuseBuild,
     # 打包后运行 --self-test 验证（默认执行）
     [switch] $SkipSelfTest
 )
@@ -51,8 +53,19 @@ function Copy-Tree([string] $Source, [string] $Target) {
     return 1
 }
 
+function Remove-StagedTree([string] $Root, [string] $Target) {
+    $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    $resolvedTarget = [IO.Path]::GetFullPath($Target)
+    if (-not $resolvedTarget.StartsWith($resolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove a path outside the staged directory: $resolvedTarget"
+    }
+    if (Test-Path -LiteralPath $resolvedTarget) {
+        Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+    }
+}
+
 $repoRoot = Resolve-RepoRoot
-$packageDir = Join-Path $repoRoot 'src\JingXu.Workbench.Py'
+$packageDir = Join-Path $repoRoot 'core'
 $specPath = Join-Path $PSScriptRoot 'jingxu.spec'
 $buildRoot = Join-Path $repoRoot 'artifacts\py-build'
 
@@ -73,7 +86,18 @@ $pyInstallerVersion = Invoke-NativeQuiet python @('-m', 'PyInstaller', '--versio
 Write-Host ("PyInstaller " + ($pyInstallerVersion -join ' ').Trim())
 
 Write-Host '=== 2. PyInstaller onedir 构建 ==='
-if (Test-Path $buildRoot) { Remove-Item $buildRoot -Recurse -Force }
+if ($ReuseBuild) {
+    $existingExe = Join-Path $buildRoot '炳恒快速混剪\炳恒快速混剪.exe'
+    if (-not (Test-Path -LiteralPath $existingExe)) { throw '没有可复用的已编译程序。' }
+    $compiledAt = (Get-Item -LiteralPath $existingExe).LastWriteTimeUtc
+    $newerInputs = @(Get-ChildItem -LiteralPath $packageDir -Recurse -File |
+        Where-Object { $_.Extension -ne '.pyc' -and $_.LastWriteTimeUtc -gt $compiledAt })
+    if ($newerInputs.Count -or (Get-Item -LiteralPath $specPath).LastWriteTimeUtc -gt $compiledAt) {
+        throw '源码或打包规格已更新，不能复用旧程序，请重新编译。'
+    }
+    Write-Host '  复用已编译程序，继续复制运行时与自检。'
+} else {
+Remove-StagedTree (Join-Path $repoRoot 'artifacts') $buildRoot
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 # PyInstaller 的 INFO 日志走 stderr；Invoke-NativeQuiet 已隔离该差异，
 # 成败只看退出码，不再出现"构建成功却以 1 退出"。
@@ -86,6 +110,7 @@ Invoke-NativeQuiet python @(
     $specPath
 ) | ForEach-Object { Write-Host $_ }
 if ($script:NativeExitCode -ne 0) { throw "PyInstaller 构建失败（$script:NativeExitCode）" }
+}
 
 $appName = '炳恒快速混剪'
 $stagedApp = Join-Path $buildRoot $appName
@@ -107,22 +132,53 @@ foreach ($component in @('ffmpeg', 'whisper', 'tesseract', 'python')) {
     }
 }
 
+# The application invokes whisper-cli.exe only. Keep its DLLs and model files,
+# but remove bundled test, server, benchmark and other standalone executables.
+$stagedWhisper = Join-Path $stagedRuntime 'whisper'
+if (Test-Path -LiteralPath $stagedWhisper) {
+    Get-ChildItem -LiteralPath $stagedWhisper -File -Recurse -Filter '*.exe' |
+        Where-Object { $_.Name -ne 'whisper-cli.exe' } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+}
+
 # tesseract 占位文件（历史上发布流水线会放 1 字节文件）不应随包，避免被误判为可用。
 $tesseractExe = Join-Path $stagedRuntime 'tesseract\tesseract.exe'
 if (Test-Path $tesseractExe) {
     $size = (Get-Item $tesseractExe).Length
     if ($size -lt 64KB) {
-        Remove-Item (Split-Path $tesseractExe -Parent) -Recurse -Force
+        Remove-StagedTree $stagedRuntime (Split-Path $tesseractExe -Parent)
         $optionalComponents += 'tesseract'
         Write-Warning ("  已移除 tesseract 占位文件（{0} 字节，非真实可执行文件）" -f $size)
     }
 }
 
+# OCR calls Tesseract with its default PSM 3 (automatic segmentation without
+# orientation/script detection), so the separate OSD model is not used. The
+# runtime command pins PSM 3 explicitly to keep this packaging decision stable.
+$osdData = Join-Path $stagedRuntime 'tesseract\tessdata\osd.traineddata'
+if (Test-Path -LiteralPath $osdData) {
+    Remove-Item -LiteralPath $osdData -Force
+}
+
+# Pip and its launchers are development-time tools; the installed application
+# only imports the spider dependencies and does not install packages at runtime.
+$embeddedPython = Join-Path $stagedRuntime 'python\python.exe'
+$embeddedPythonRoot = Join-Path $stagedRuntime 'python'
+if (Test-Path -LiteralPath $embeddedPython) {
+    Remove-StagedTree $embeddedPythonRoot (Join-Path $embeddedPythonRoot 'Scripts')
+    Remove-StagedTree $embeddedPythonRoot (Join-Path $embeddedPythonRoot 'Lib\site-packages\pip')
+    $pipMetadata = Get-ChildItem -LiteralPath (Join-Path $embeddedPythonRoot 'Lib\site-packages') `
+        -Directory -Filter 'pip-*.dist-info' -ErrorAction SilentlyContinue
+    foreach ($entry in $pipMetadata) {
+        Remove-StagedTree $embeddedPythonRoot $entry.FullName
+    }
+}
+
 Write-Host '=== 4. 选品爬虫源码（runtime/spider）==='
-$spiderSource = Join-Path $repoRoot 'src\JingXu.Workbench.Py\JingXu.Spider'
+$spiderSource = Join-Path $repoRoot 'extensions\spider'
 $stagedSpider = Join-Path $stagedRuntime 'spider'
 if (Test-Path (Join-Path $spiderSource 'run.py')) {
-    if (Test-Path $stagedSpider) { Remove-Item $stagedSpider -Recurse -Force }
+    Remove-StagedTree $stagedRuntime $stagedSpider
     New-Item -ItemType Directory -Path $stagedSpider -Force | Out-Null
     Invoke-NativeQuiet robocopy @(
         $spiderSource, $stagedSpider, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS', '/NP',
@@ -133,6 +189,17 @@ if (Test-Path (Join-Path $spiderSource 'run.py')) {
     Write-Host '  已随包：runtime/spider'
 } else {
     Write-Warning '  未找到爬虫源码（选品模块将不可用）'
+}
+
+if ((Test-Path -LiteralPath $embeddedPython) -and (Test-Path -LiteralPath $stagedSpider)) {
+    Write-Host '=== 4b. 验证裁剪后的爬虫运行时依赖 ==='
+    $dependencyProbe = 'import DrissionPage, requests, openpyxl, tabulate; print(chr(79)+chr(75))'
+    $dependencyOutput = Invoke-NativeQuiet $embeddedPython @('-B', '-c', $dependencyProbe)
+    $dependencyText = ($dependencyOutput | Out-String).Trim()
+    if ($script:NativeExitCode -ne 0 -or $dependencyText -ne 'OK') {
+        throw "裁剪后的内置 Python 依赖检查失败：$dependencyText"
+    }
+    Write-Host '  DrissionPage / requests / openpyxl / tabulate 均可导入'
 }
 
 Write-Host '=== 5. 清单与声明文件 ==='
@@ -164,7 +231,7 @@ if (-not $SkipSelfTest) {
         foreach ($name in $proxyBackup.Keys) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
         $process = Start-Process -FilePath $exePath `
             -ArgumentList @('--self-test', '--report-file', $reportPath) `
-            -WorkingDirectory $stagedApp -NoNewWindow -Wait -PassThru
+            -WorkingDirectory $stagedApp -WindowStyle Hidden -Wait -PassThru
         $selfTestExit = $process.ExitCode
     } finally {
         foreach ($entry in $proxyBackup.GetEnumerator()) {
@@ -175,7 +242,7 @@ if (-not $SkipSelfTest) {
         throw "自检未生成报告文件（进程退出码 $selfTestExit）：$reportPath"
     }
     Write-Host ("  进程退出码 = $selfTestExit")
-    $report = Get-Content $reportPath -Raw -ErrorAction SilentlyContinue
+    $report = Get-Content $reportPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
     if (-not $report) { throw '自检报告为空。' }
     $jsonLine = ($report -split "`r?`n" | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -First 1)
     if (-not $jsonLine) { throw "自检报告中未找到 JSON：$report" }
@@ -202,7 +269,7 @@ if (-not $SkipSelfTest) {
         foreach ($name in $proxyBackup2.Keys) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
         $importProcess = Start-Process -FilePath $exePath `
             -ArgumentList @('--import-check', '--report-file', $importReportPath) `
-            -WorkingDirectory $stagedApp -NoNewWindow -Wait -PassThru
+            -WorkingDirectory $stagedApp -WindowStyle Hidden -Wait -PassThru
         $importExit = $importProcess.ExitCode
     } finally {
         foreach ($entry in $proxyBackup2.GetEnumerator()) {
@@ -212,7 +279,7 @@ if (-not $SkipSelfTest) {
     if (-not (Test-Path $importReportPath)) {
         throw "导入检查未生成报告（进程退出码 $importExit）：$importReportPath"
     }
-    $importReport = Get-Content $importReportPath -Raw -ErrorAction SilentlyContinue
+    $importReport = Get-Content $importReportPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
     $importJsonLine = ($importReport -split "`r?`n" | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -First 1)
     if (-not $importJsonLine) { throw "导入检查报告中未找到 JSON：$importReport" }
     $importParsed = $importJsonLine | ConvertFrom-Json
@@ -226,6 +293,10 @@ if (-not $SkipSelfTest) {
 } else {
     Write-Warning '  已跳过启动自检（-SkipSelfTest）'
 }
+
+# PyInstaller's intermediate analysis cache is not part of the product and can
+# add tens of MiB to the build workspace after every release build.
+Remove-StagedTree $buildRoot (Join-Path $buildRoot '_work')
 
 Write-Host '=== 7. 生成交付物 ==='
 # 交付目录与 .NET 版共用 artifacts/release，因此绝不能整目录删除

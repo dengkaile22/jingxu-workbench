@@ -1,11 +1,11 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     # 便携目录（默认取 Build-Portable-Py.ps1 的产物）
     [string] $PortableDirectory = "",
     # 输出目录；默认 artifacts/release（与 .NET 版统一到同一交付目录）
     [string] $OutputDirectory = "",
     # 产品版本（写入 MSI ProductVersion，四段数字）
-    [string] $ProductVersion = "1.0.2.0",
+    [string] $ProductVersion = "1.0.6.0",
     # 便携目录缺失时自动先跑打包脚本
     [switch] $SkipPortableBuild
 )
@@ -102,35 +102,41 @@ if (-not (Test-Path $OutputDirectory)) {
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 }
 $msiPath = Join-Path $OutputDirectory "$appName-Py-win-x64.msi"
-if (Test-Path $msiPath) { Remove-Item $msiPath -Force }
+$candidateMsiPath = Join-Path $OutputDirectory "$appName-Py-win-x64.new.msi"
+if (Test-Path -LiteralPath $candidateMsiPath) { Remove-Item -LiteralPath $candidateMsiPath -Force }
 
 $resolvedPortable = (Resolve-Path $PortableDirectory).Path
 $resolvedLicense = (Resolve-Path $licenseFile).Path
+$wixUiExtension = 'WixToolset.UI.wixext'
+$cachedUiExtension = Join-Path $repoRoot 'artifacts\build-tools\wixtoolset.ui.wixext-6.0.2\wixext6\WixToolset.UI.wixext.dll'
+if (Test-Path -LiteralPath $cachedUiExtension) {
+    $wixUiExtension = (Resolve-Path -LiteralPath $cachedUiExtension).Path
+}
 $arguments = @(
     'build',
     (Join-Path $installerDir 'Product.wxs'),
     (Join-Path $installerDir 'Package.wxs'),
-    '-ext', 'WixToolset.UI.wixext',
+    '-ext', $wixUiExtension,
     '-bindpath', $installerDir,
     '-d', "PublishDir=$resolvedPortable",
     '-d', "LicenseRtf=$resolvedLicense",
     '-d', "ProductVersion=$ProductVersion",
-    '-o', $msiPath,
+    '-o', $candidateMsiPath,
     '-arch', 'x64'
 )
 Invoke-NativeQuiet $wix $arguments | ForEach-Object { Write-Host $_ }
 if ($script:NativeExitCode -ne 0) { throw "WiX 构建失败（$($script:NativeExitCode)）" }
-if (-not (Test-Path $msiPath)) { throw "未生成 MSI：$msiPath" }
+if (-not (Test-Path -LiteralPath $candidateMsiPath)) { throw "未生成 MSI：$candidateMsiPath" }
 
 Write-Host '=== 3. 校验产物 ==='
-$msi = Get-Item -LiteralPath $msiPath
+$msi = Get-Item -LiteralPath $candidateMsiPath
 if ($msi.Length -eq 0) { throw 'MSI 为零字节。' }
 
 # 用 Windows Installer 直接读数据库属性，确认版本与产品名确实写进包内。
 # 注意：必须用后期绑定调用（$installer.OpenDatabase(...)），用 InvokeMember
 # 反射传参会抛 DISP_E_TYPEMISMATCH。
 $installer = New-Object -ComObject WindowsInstaller.Installer
-$database = $installer.OpenDatabase($msiPath, 0)
+$database = $installer.OpenDatabase($candidateMsiPath, 0)
 $view = $database.OpenView('SELECT `Property`,`Value` FROM `Property`')
 $view.Execute()
 $properties = @{}
@@ -138,9 +144,18 @@ while ($true) {
     $record = $view.Fetch()
     if (-not $record) { break }
     $properties[$record.StringData(1)] = $record.StringData(2)
+    [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record)
 }
 $view.Close()
+# Read-only MSI COM objects hold the candidate file open until explicitly
+# released. Leaving the view alive prevents the atomic replacement below.
+foreach ($comObject in @($view, $database, $installer)) {
+    [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($comObject)
+}
+$record = $null
+$view = $null
 $database = $null
+$installer = $null
 $productName = [string]$properties['ProductName']
 $productVersion = [string]$properties['ProductVersion']
 $manufacturer = [string]$properties['Manufacturer']
@@ -159,8 +174,19 @@ if ($upgradeCode -like '*A7C4E2B1*') {
 }
 
 # wixpdb 是调试符号，不进交付目录
-$pdb = [System.IO.Path]::ChangeExtension($msiPath, '.wixpdb')
+$pdb = [System.IO.Path]::ChangeExtension($candidateMsiPath, '.wixpdb')
 if (Test-Path $pdb) { Remove-Item -LiteralPath $pdb -Force }
+
+# Keep the previous MSI until the new package has been built and validated.
+if (Test-Path -LiteralPath $msiPath) {
+    $replacementBackupPath = Join-Path $OutputDirectory `
+        ("{0}-Py-win-x64.backup-{1}.tmp" -f $appName, [Guid]::NewGuid().ToString('N'))
+    [IO.File]::Replace($candidateMsiPath, $msiPath, $replacementBackupPath)
+    Remove-Item -LiteralPath $replacementBackupPath -Force
+} else {
+    Move-Item -LiteralPath $candidateMsiPath -Destination $msiPath
+}
+$msi = Get-Item -LiteralPath $msiPath
 
 $hash = (Get-FileHash -LiteralPath $msiPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $sumsPath = Join-Path $OutputDirectory 'SHA256SUMS-Py.txt'

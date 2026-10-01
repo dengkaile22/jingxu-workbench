@@ -1,0 +1,578 @@
+"""下载任务文件名清理、队列改名与下载页行内编辑测试。"""
+
+from __future__ import annotations
+
+import os
+import sys
+import threading
+import types
+import urllib.request
+from pathlib import Path
+
+import pytest
+from conftest import wait_until
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from jingxu.infrastructure.downloader import (  # noqa: E402
+    DownloadError,
+    DownloadJob,
+    DownloadQueue,
+    DownloadState,
+    _unique_path,
+    download_direct,
+    download_with_yt_dlp,
+    sanitize_filename,
+)
+
+# ────────────────────────────── 纯函数 ──────────────────────────────
+
+
+def test_sanitize_filename_removes_invalid_and_control_chars() -> None:
+    assert sanitize_filename('a<b>c:d"e/f\\g|h?i*j') == "abcdefghij"
+    assert sanitize_filename("空\x00白\x1f字") == "空白字"
+
+
+def test_sanitize_filename_strips_edges_and_trailing_dots() -> None:
+    assert sanitize_filename("  视频 名...  ") == "视频 名"
+    assert sanitize_filename("name. ") == "name"
+    assert sanitize_filename("  <名称>  ") == "名称"
+
+
+def test_sanitize_filename_collapses_whitespace() -> None:
+    assert sanitize_filename("a   b") == "a b"
+    assert sanitize_filename("a\t\t b") == "a b"
+    assert sanitize_filename("  两端  空白  ") == "两端 空白"
+
+
+def test_sanitize_filename_truncates_to_120_chars() -> None:
+    assert sanitize_filename("长" * 130) == "长" * 120
+    assert sanitize_filename("a" * 119 + "." + "b" * 10) == "a" * 119
+
+
+def test_sanitize_filename_falls_back_to_default_name() -> None:
+    assert sanitize_filename("") == "未命名"
+    assert sanitize_filename("   ") == "未命名"
+    assert sanitize_filename('<>:"/\\|?*') == "未命名"
+
+
+def test_unique_path_appends_sequence_on_conflict(tmp_path: Path) -> None:
+    assert _unique_path(tmp_path, "名字", ".mp4") == tmp_path / "名字.mp4"
+    (tmp_path / "名字.mp4").write_bytes(b"x")
+    assert _unique_path(tmp_path, "名字", ".mp4") == tmp_path / "名字_001.mp4"
+    (tmp_path / "名字_001.mp4").write_bytes(b"x")
+    assert _unique_path(tmp_path, "名字", ".mp4") == tmp_path / "名字_002.mp4"
+
+
+def test_display_filename_falls_back_to_title_then_url() -> None:
+    job = DownloadJob(id="x", url="https://example.com/a")
+    assert job.display_filename == "https://example.com/a"
+    job.title = "标题"
+    assert job.display_filename == "标题"
+    job.filename = "自定义"
+    assert job.display_filename == "自定义"
+
+
+# ────────────────────────────── 下载器 ──────────────────────────────
+
+
+def test_download_with_yt_dlp_uses_safe_name_and_renames(monkeypatch, tmp_path: Path) -> None:
+    seen: list[dict] = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options: dict) -> None:
+            seen.append(options)
+            self.directory = Path(options['outtmpl']).parent
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> dict:
+            produced = self.directory / "标题_abc.mp4"
+            produced.write_bytes(b"stub")
+            return {"title": "标题", "requested_downloads": [{"filepath": str(produced)}]}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    (tmp_path / "我的 视频.mp4").write_bytes(b"occupied")
+
+    path = download_with_yt_dlp(
+        "https://example.com/a",
+        tmp_path,
+        lambda *_args: None,
+        threading.Event(),
+        filename="我的 视频.",
+    )
+
+    assert Path(seen[0]['outtmpl']).name == '我的 视频.%(ext)s'
+    assert Path(seen[0]['outtmpl']).parent.parent == tmp_path
+    assert not Path(seen[0]['outtmpl']).parent.exists()
+    assert path == tmp_path / "我的 视频_001.mp4"
+    assert path.read_bytes() == b"stub"
+    assert (tmp_path / "我的 视频.mp4").read_bytes() == b"occupied"
+    assert not (tmp_path / "标题_abc.mp4").exists()
+
+
+def test_download_with_yt_dlp_finds_merged_file_after_extension_change(monkeypatch, tmp_path: Path) -> None:
+    class FakeYoutubeDL:
+        def __init__(self, options: dict) -> None:
+            self.directory = Path(options['outtmpl']).parent
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> dict:
+            (self.directory / "成片.mp4").write_bytes(b"merged")
+            missing = self.directory / "成片.webm"
+            return {"title": "标题", "requested_downloads": [{"filepath": str(missing)}]}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    path = download_with_yt_dlp(
+        "https://example.com/a",
+        tmp_path,
+        lambda *_args: None,
+        threading.Event(),
+        filename="成片",
+    )
+
+    assert path == tmp_path / "成片.mp4"
+    assert path.read_bytes() == b"merged"
+
+
+def test_download_with_yt_dlp_keeps_default_template_without_filename(monkeypatch, tmp_path: Path) -> None:
+    seen: list[dict] = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options: dict) -> None:
+            seen.append(options)
+            self.directory = Path(options['outtmpl']).parent
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> dict:
+            produced = self.directory / "标题_abc.mp4"
+            produced.write_bytes(b"stub")
+            return {"title": "标题", "requested_downloads": [{"filepath": str(produced)}]}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    path = download_with_yt_dlp("https://example.com/a", tmp_path, lambda *_args: None, threading.Event())
+
+    assert Path(seen[0]['outtmpl']).name == '%(title).80s_%(id)s.%(ext)s'
+    assert Path(seen[0]['outtmpl']).parent.parent == tmp_path
+    assert path == tmp_path / "标题_abc.mp4"
+    assert path.is_file()
+
+
+def test_download_with_yt_dlp_explains_fresh_cookie_errors(monkeypatch, tmp_path: Path) -> None:
+    class FakeYoutubeDL:
+        def __init__(self, options: dict) -> None:
+            pass
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> dict:
+            raise RuntimeError("Fresh cookies (not necessarily logged in) are needed")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    with pytest.raises(DownloadError, match="JINGXU_YTDLP_COOKIES"):
+        download_with_yt_dlp(
+            "https://www.douyin.com/video/123",
+            tmp_path,
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+
+def test_download_direct_sanitizes_url_derived_filename_and_avoids_overwrite(monkeypatch, tmp_path: Path) -> None:
+    payload = [b"data", b""]
+
+    class FakeResponse:
+        headers = {"Content-Length": "4"}
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def read(self, _size: int = -1) -> bytes:
+            return payload.pop(0)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout=30: FakeResponse())
+    (tmp_path / "clipname.mp4").write_bytes(b"keep")
+
+    path = download_direct(
+        "https://cdn.example.com/clip%3Fname.mp4?mime_type=video_mp4",
+        tmp_path,
+        lambda *_args: None,
+        threading.Event(),
+    )
+
+    assert path == tmp_path / "clipname_001.mp4"
+    assert path.read_bytes() == b"data"
+    assert (tmp_path / "clipname.mp4").read_bytes() == b"keep"
+
+
+def test_download_direct_uses_sanitized_filename(monkeypatch, tmp_path: Path) -> None:
+    payload = [b"data", b""]
+
+    class FakeResponse:
+        headers = {"Content-Length": "4"}
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def read(self, _size: int = -1) -> bytes:
+            return payload.pop(0)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout=30: FakeResponse())
+    progress: list[tuple[float, str, str]] = []
+
+    path = download_direct(
+        "https://example.com/video.mov",
+        tmp_path,
+        lambda percent, speed, title: progress.append((percent, speed, title)),
+        threading.Event(),
+        filename="直链 视频.",
+    )
+
+    assert path == tmp_path / "直链 视频.mov"
+    assert path.read_bytes() == b"data"
+    assert progress[-1] == (100.0, "", "直链 视频.mov")
+
+
+# ────────────────────────────── 队列 ──────────────────────────────
+
+
+class RecordingDownloader:
+    """记录调用参数并写出占位文件的下载替身；filename 必须以关键字传入。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+        self._lock = threading.Lock()
+
+    def __call__(
+        self,
+        url: str,
+        output_directory: Path,
+        on_progress,
+        cancel_event,
+        *,
+        filename: str = "",
+    ) -> Path:
+        with self._lock:
+            self.calls.append({"url": url, "filename": filename})
+        on_progress(100.0, "", filename or "stub")
+        path = Path(output_directory) / f"{filename or 'stub'}.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"stub")
+        return path
+
+
+class GatedDownloader(RecordingDownloader):
+    """首个任务阻塞，便于在 worker 忙碌时修改后续任务的文件名。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(
+        self,
+        url: str,
+        output_directory: Path,
+        on_progress,
+        cancel_event,
+        *,
+        filename: str = "",
+    ) -> Path:
+        with self._lock:
+            self.calls.append({"url": url, "filename": filename})
+        if url.endswith("first"):
+            self.started.set()
+            if not self.release.wait(timeout=5):
+                raise DownloadError("测试闸门超时。")
+        on_progress(100.0, "", filename or "stub")
+        path = Path(output_directory) / f"{filename or 'stub'}.mp4"
+        path.write_bytes(b"stub")
+        return path
+
+
+@pytest.fixture()
+def queue_factory(tmp_path: Path):
+    queues: list[DownloadQueue] = []
+
+    def factory(downloader) -> DownloadQueue:
+        queue = DownloadQueue(tmp_path, downloader=downloader)
+        queues.append(queue)
+        return queue
+
+    yield factory
+    for queue in queues:
+        queue.stop()
+
+
+def test_set_filename_updates_pending_job_and_worker_receives_keyword(tmp_path: Path, queue_factory) -> None:
+    downloader = GatedDownloader()
+    queue = queue_factory(downloader)
+
+    first = queue.enqueue(["https://example.com/first"])[0]
+    assert downloader.started.wait(timeout=5)
+
+    second = queue.enqueue(["https://example.com/second"])[0]
+    try:
+        assert second.state is DownloadState.PENDING
+        assert queue.set_filename(second.id, "  第二  个.  ") is True
+        assert second.filename == "第二 个"
+    finally:
+        downloader.release.set()
+
+    wait_until(lambda: queue.active_count == 0)
+    assert first.state is DownloadState.COMPLETED
+    assert second.state is DownloadState.COMPLETED
+    assert [call["filename"] for call in downloader.calls] == ["", "第二 个"]
+    assert (tmp_path / "第二 个.mp4").is_file()
+
+
+def test_set_filename_renames_completed_output(tmp_path: Path, queue_factory) -> None:
+    queue = queue_factory(RecordingDownloader())
+    job = queue.enqueue(["https://example.com/a"])[0]
+    wait_until(lambda: job.state is DownloadState.COMPLETED)
+    original = job.output_path
+    assert original is not None and original == tmp_path / "stub.mp4"
+
+    assert queue.set_filename(job.id, "新的 名字.") is True
+
+    target = tmp_path / "新的 名字.mp4"
+    assert target.is_file()
+    assert not original.exists()
+    assert job.filename == "新的 名字"
+    assert job.output_path == target
+    assert target.name in job.message
+
+
+def test_set_filename_completed_conflict_uniqueifies(tmp_path: Path, queue_factory) -> None:
+    queue = queue_factory(RecordingDownloader())
+    job = queue.enqueue(["https://example.com/a"])[0]
+    wait_until(lambda: job.state is DownloadState.COMPLETED)
+    (tmp_path / "成片.mp4").write_bytes(b"occupied")
+
+    assert queue.set_filename(job.id, "成片") is True
+
+    assert (tmp_path / "成片.mp4").read_bytes() == b"occupied"
+    assert (tmp_path / "成片_001.mp4").read_bytes() == b"stub"
+    assert job.output_path == tmp_path / "成片_001.mp4"
+    assert not (tmp_path / "stub.mp4").exists()
+
+
+def test_set_filename_updates_failed_job_without_rename(queue_factory) -> None:
+    def failing(url, output_directory, on_progress, cancel_event, *, filename=""):
+        raise DownloadError("boom")
+
+    queue = queue_factory(failing)
+    job = queue.enqueue(["https://example.com/a"])[0]
+    wait_until(lambda: job.state is DownloadState.FAILED)
+
+    events: list[str] = []
+    queue.add_listener(lambda event, _job: events.append(event))
+    assert queue.set_filename(job.id, "新名") is True
+
+    assert job.filename == "新名"
+    assert job.message == "boom"
+    assert job.output_path is None
+    assert events[-1] == "updated"
+
+
+def test_set_filename_missing_job_returns_false(queue_factory) -> None:
+    queue = queue_factory(RecordingDownloader())
+    assert queue.set_filename("missing-id", "名字") is False
+
+
+def test_clear_finished_leaves_no_dangling_pending_ids(tmp_path: Path, queue_factory) -> None:
+    """**真实缺陷回归**：清理已结束任务不得在待办队列里留下悬空 ID。
+
+    工作线程按「先 pop ID、再查 ``_jobs``」取任务，只从 ``_jobs`` 删记录会让
+    线程随后抛 ``KeyError`` 并整体退出——用户看到的是"点了清空之后下载不再开始"。
+    """
+    downloader = GatedDownloader()
+    queue = queue_factory(downloader)
+
+    queue.enqueue(["https://example.com/first"])
+    assert downloader.started.wait(timeout=5), "首个任务未开始，闸门失效"
+
+    # 第二个任务排在待办里尚未开始；把它置为终态后清理，模拟"取消/失败后清空"
+    pending = queue.enqueue(["https://example.com/second"])[0]
+    try:
+        with queue._lock:
+            queue._jobs[pending.id].state = DownloadState.CANCELLED
+        queue.clear_finished()
+        with queue._lock:
+            dangling = [job_id for job_id in queue._pending if job_id not in queue._jobs]
+    finally:
+        downloader.release.set()
+
+    assert dangling == [], f"待办里残留悬空 ID：{dangling}"
+
+
+def test_worker_survives_a_dangling_pending_id(tmp_path: Path, queue_factory) -> None:
+    """即便待办里被外部塞入悬空 ID，工作线程也必须跳过并继续调度后续任务。
+
+    用 ``RecordingDownloader`` 在**同一个 ``enqueue`` 调用**里带上一个真实任务：
+    ``enqueue`` 先填 ``_pending`` 再 ``start()``，所以插入的悬空 ID 一定排在它前面。
+    """
+    downloader = RecordingDownloader()
+    queue = queue_factory(downloader)
+
+    with queue._lock:
+        queue._pending.append("never-existed")
+    job = queue.enqueue(["https://example.com/real"])[0]
+
+    wait_until(lambda: job.state is DownloadState.COMPLETED)
+    assert [call["url"] for call in downloader.calls] == ["https://example.com/real"]
+
+
+# ────────────────────────────── 下载页 ──────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def qapp():  # noqa: ANN201
+    return QApplication.instance() or QApplication(["jingxu-tests"])
+
+
+def test_download_page_filename_column_inline_edit(qapp, tmp_path: Path, queue_factory) -> None:  # noqa: ANN001
+    from jingxu.ui.download_page import COLUMNS, DownloadPage
+
+    queue = queue_factory(RecordingDownloader())
+    page = DownloadPage(queue)
+    queue.set_output_directory(tmp_path)
+
+    job = queue.enqueue(["https://example.com/a"])[0]
+
+    def row_ready() -> bool:
+        qapp.processEvents()
+        return job.id in page._rows and job.state is DownloadState.COMPLETED
+
+    wait_until(row_ready)
+    qapp.processEvents()
+
+    row = page._rows[job.id]
+    assert COLUMNS == ("任务", "文件名", "状态", "进度", "速度", "说明")
+    filename_item = page._table.item(row, 1)
+    assert filename_item.text() == "stub"
+    assert filename_item.flags() & Qt.ItemFlag.ItemIsEditable
+    for column in (0, 2, 3, 4, 5):
+        assert not (page._table.item(row, column).flags() & Qt.ItemFlag.ItemIsEditable)
+
+    filename_item.setText("行内 编辑.")
+    assert job.filename == "行内 编辑"
+    assert page._table.item(row, 1).text() == "行内 编辑"
+    assert (tmp_path / "行内 编辑.mp4").is_file()
+    assert not (tmp_path / "stub.mp4").exists()
+
+
+def test_download_page_clear_finished_resets_rows(qapp, tmp_path: Path, queue_factory) -> None:  # noqa: ANN001
+    from jingxu.ui.download_page import DownloadPage
+
+    queue = queue_factory(RecordingDownloader())
+    page = DownloadPage(queue)
+    queue.set_output_directory(tmp_path)
+    queue.enqueue(["https://example.com/a"])
+
+    def finished() -> bool:
+        qapp.processEvents()
+        return queue.active_count == 0 and page._table.rowCount() == 1
+
+    wait_until(finished)
+
+    page._clear_finished()
+
+    assert page._table.rowCount() == 0
+    assert page._rows == {}
+    assert page._row_jobs == {}
+
+
+def test_download_queue_concurrency(tmp_path: Path, queue_factory) -> None:
+    """支持多工作线程并发下载。"""
+    active_now = 0
+    max_active = 0
+    lock = threading.Lock()
+    started_events = [threading.Event() for _ in range(3)]
+    release_event = threading.Event()
+
+    def concurrent_downloader(url, out_dir, on_progress, cancel, filename=""):
+        nonlocal active_now, max_active
+        idx = int(url.split("/")[-1])
+        with lock:
+            active_now += 1
+            if active_now > max_active:
+                max_active = active_now
+        started_events[idx].set()
+        release_event.wait(timeout=5)
+        with lock:
+            active_now -= 1
+        target = out_dir / f"{filename or 'file'}.mp4"
+        target.touch()
+        return target
+
+    queue = queue_factory(concurrent_downloader)
+    queue.set_concurrency(3)
+    urls = [f"https://example.com/{i}" for i in range(3)]
+    jobs = queue.enqueue(urls)
+
+    for ev in started_events:
+        assert ev.wait(timeout=5)
+
+    assert max_active >= 2
+    release_event.set()
+    wait_until(lambda: queue.active_count == 0)
+    for j in jobs:
+        assert j.state is DownloadState.COMPLETED
+
+
+def test_download_queue_enqueue_filenames(tmp_path: Path, queue_factory) -> None:
+    downloader = RecordingDownloader()
+    queue = queue_factory(downloader)
+    jobs = queue.enqueue(["https://example.com/a", "https://example.com/b"], filenames=["1", "2"])
+    assert jobs[0].filename == "1"
+    assert jobs[1].filename == "2"
+    wait_until(lambda: queue.active_count == 0)
+    assert [call["filename"] for call in downloader.calls] == ["1", "2"]
+
+
+def test_download_page_auto_numbering(qapp, tmp_path: Path, queue_factory) -> None:  # noqa: ANN001
+    from jingxu.ui.download_page import DownloadPage
+
+    queue = queue_factory(RecordingDownloader())
+    page = DownloadPage(queue)
+    assert page._auto_number_check.isChecked()
+    assert page._concurrency_spin.value() == 3
+
+    page._url_input.setPlainText("https://example.com/1\nhttps://example.com/2")
+    page._start_downloads()
+
+    assert page._table.rowCount() == 2
+    assert page._table.item(0, 1).text() == "1"
+    assert page._table.item(1, 1).text() == "2"
+

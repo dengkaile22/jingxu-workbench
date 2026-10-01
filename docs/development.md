@@ -25,7 +25,8 @@ $env:PATH = "$PWD\runtime\ffmpeg;$env:PATH"
 未设置这些变量时，应用仍使用 `%LOCALAPPDATA%\JingXu` 与系统临时目录。
 
 ```powershell
-cd src/JingXu.Workbench.Py
+# 在仓库根目录执行命令
+python -m pip install -e ".[dev,download,spider]"
 
 # 单元测试（默认；真机集成用 -m integration）
 python -m pytest
@@ -42,7 +43,7 @@ python -m jingxu --overlay-smoke
 python -m ruff check .
 ```
 
-入口代码：`src/JingXu.Workbench.Py/jingxu/__main__.py`（壳层 `ui/shell_window.py`）。
+入口代码：`core/jingxu/__main__.py`（壳层 `ui/shell_window.py`）。
 
 ## 编码标准
 
@@ -56,21 +57,21 @@ python -m ruff check .
 1. 将第三方二进制放入 `runtime/`（不提交 Git，见 `runtime/README.md`）
 2. `scripts/Resolve-Runtimes.ps1 -CacheDirectory runtime -PrintHashes` 生成 SHA-256
 3. 更新 `build/runtime-manifest.json` 后随打包脚本暂存
-4. 选品爬虫内置运行时：`scripts/Resolve-SpiderRuntime.ps1`（下载嵌入式 Python + `src/JingXu.Workbench.Py/JingXu.Spider/requirements.txt` 依赖到 `runtime/python`）。国内网络可加 `-PipIndexUrl https://pypi.tuna.tsinghua.edu.cn/simple`；重建用 `-Force`。
+4. 选品爬虫内置运行时：`scripts/Resolve-SpiderRuntime.ps1`（下载嵌入式 Python + `extensions/spider/requirements.txt` 依赖到 `runtime/python`）。国内网络可加 `-PipIndexUrl https://pypi.tuna.tsinghua.edu.cn/simple`；重建用 `-Force`。
 
 ## 项目结构（实际）
 
 ```text
-src/
-  JingXu.Workbench.Py/            # 主实现（PySide6 + FFmpeg）
-    jingxu/
-      ui/                         # 各功能页面、预览画布、主题与品牌资源
-      application/                # 编排服务、渲染队列、下载
-      domain/                     # 纯领域：图层、渲染计划、字幕、确定性随机
-      infrastructure/             # FFmpeg 命令编译/执行、探测、持久化、诊断
-    JingXu.Spider/                # 选品爬虫（主程序内嵌引擎，CLI 子进程驱动）
-    tests/                        # pytest 单元 + 真机集成（-m integration）
+core/jingxu/                      # 主应用包（PySide6 + FFmpeg）
+  ui/                             # 各功能页面、预览画布、主题与品牌资源
+  application/                    # 编排服务、渲染队列、下载
+  domain/                         # 纯领域：图层、渲染计划、字幕、确定性随机
+  infrastructure/                 # FFmpeg 命令编译/执行、探测、持久化、诊断
+extensions/spider/                # 选品爬虫（独立 CLI 扩展）
+tests/                            # 主应用测试
+  spider/                         # 爬虫测试
 scripts/                          # 构建与发布（PowerShell）
+pyproject.toml                    # 根项目配置
 build/                            # runtime-manifest、WiX（Installer-Py）
 docs/                             # 设计 + 现状索引见 docs/README.md
 ```

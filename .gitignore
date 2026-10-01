@@ -21,14 +21,15 @@ runtime/*
 !/test-assets/README.md
 
 # 选品爬虫（保留源码；不提交浏览器登录态、导出报表与缓存）
-/src/JingXu.Workbench.Py/JingXu.Spider/**/__pycache__/
-/src/JingXu.Workbench.Py/JingXu.Spider/data/
-/src/JingXu.Workbench.Py/JingXu.Spider/*.xlsx
-/src/JingXu.Workbench.Py/JingXu.Spider/.venv/
+/extensions/spider/**/__pycache__/
+/extensions/spider/data/
+/extensions/spider/*.xlsx
+/extensions/spider/.venv/
 
 # Python 通用缓存
 __pycache__/
 .pytest_cache/
+.pytest_temp/
 .ruff_cache/
 .mypy_cache/
 .venv/
@@ -41,10 +42,21 @@ venv/
 # 交付目录统一为 artifacts/release（已由第 8 行的 artifacts/ 覆盖），
 # 因此这里只列 PyInstaller 自身的中间产物。
 /build-py/
-/src/JingXu.Workbench.Py/build/
-/src/JingXu.Workbench.Py/dist/
+/core/build/
+/core/dist/
 *.spec.bak
 
 # Python 运行期数据（用户数据与工作临时文件不入库）
-/src/JingXu.Workbench.Py/logs/
-/src/JingXu.Workbench.Py/分镜输出/
+/core/logs/
+/core/分镜输出/
+
+# Local credentials and environment settings
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Local attachments and unrelated installer (keep on disk)
+/v2rayN-linux-64.deb
+/微信图片_20260924191440_308_898.png
+/问题3(1).doc

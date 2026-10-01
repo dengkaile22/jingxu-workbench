@@ -28,7 +28,7 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
 PROJECT_ROOT = Path(SPECPATH).resolve().parent          # noqa: F821 - PyInstaller 注入
-PACKAGE_DIR = PROJECT_ROOT / "src" / "JingXu.Workbench.Py"
+PACKAGE_DIR = PROJECT_ROOT / "core"
 APP_NAME = "炳恒快速混剪"
 
 ASSET_DIR = PACKAGE_DIR / "jingxu" / "ui" / "assets"
@@ -135,6 +135,15 @@ _DROP_BINARY_PREFIXES = (
     "PySide6/plugins/multimedia",
     "PySide6/plugins/networkinformation",
     "PySide6/plugins/tls",
+    # Windows API-set forwarders are provided by the target OS. Newer build
+    # hosts may expose additional API-set DLLs that are not shipped by the
+    # previously validated package and should not override the system map.
+    # Qt's wheel expects the system ICU on this target; avoid accidentally
+    # collecting an unrelated ICU ABI from PATH (for example, Poppler's ICU).
+    "icu",
+    "api-ms-win-core-fibers-l1-1-1.dll",
+    "api-ms-win-core-kernel32-legacy-l1-1-1.dll",
+    "api-ms-win-core-sysinfo-l1-2-0.dll",
 )
 _DROP_DATA_PREFIXES = ("PySide6/translations",)
 
@@ -182,7 +191,7 @@ analysis.binaries = [item for item in analysis.binaries if _keep_binary(item)]  
 analysis.datas = [item for item in analysis.datas if _keep_data(item)]  # noqa: F821
 analysis.pure = [item for item in analysis.pure if _keep_pure(item)]  # noqa: F821
 print(
-    "[spec] 体积裁剪：binaries %d->%d，datas %d->%d，pure %d->%d"
+    "[spec] Trimmed binaries %d->%d, datas %d->%d, pure %d->%d"
     % (
         _before[0], len(analysis.binaries),  # noqa: F821
         _before[1], len(analysis.datas),  # noqa: F821

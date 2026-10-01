@@ -10,7 +10,7 @@
 
 ## 测试分层（Python / pytest）
 
-测试位于 `src/JingXu.Workbench.Py/tests/`：
+主应用测试位于根目录 `tests/`，爬虫测试位于 `tests/spider/`：
 
 | 层 | 范围 |
 |------|------|
@@ -21,17 +21,20 @@
 ### 运行
 
 ```powershell
-cd src/JingXu.Workbench.Py
+# 从仓库根目录运行
 
 # 单元测试
 python -m pytest
 
 # 真机集成（需 FFmpeg）
-$env:PATH = "$PWD\..\..\runtime\ffmpeg;$env:PATH"
+$env:PATH = "$PWD\runtime\ffmpeg;$env:PATH"
 python -m pytest -m integration
 
 # 单个文件
 python -m pytest tests/test_layer_shape_mask.py
+
+# 爬虫测试
+python -m pytest tests/spider
 ```
 
 ### 打包验收

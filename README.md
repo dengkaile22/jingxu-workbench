@@ -1,5 +1,15 @@
 # 炳恒快速混剪
 
+## 1.0.5 更新（2026-09-30）
+
+- 选品浏览器在打开前与关闭后自动清理 HTTP、脚本及 GPU 缓存，保留 Cookies、网站登录存储、账号配置；浏览器仍占用档案时跳过清理。
+- 浏览器使用原登录档案和独立端口，等待进程真正退出后再释放档案，避免登录/无头抓取互相抢占。
+- 修复快手分页未完整却显示完成、摘要阻止商品补全、未知日期绕过筛选、取消状态被覆盖和作品归属验证。
+- 兼容当前快手网页的 REST 作品响应；需要登录或验证时明确停止并提示，不把零结果当作完成。
+- 抓取过程中保存可恢复的阶段结果，取消或超时保留已取得记录；模糊聚类与表格导出减少重复计算。
+- 修复同名并发下载的临时文件和输出冲突，降低并发后限制后续任务；临时下载失败不会覆盖已有成品。
+
+
 ## 1.0.2 更新（2026-09-12）
 
 - 四屏羽化改为生成并复用静态灰度渐变，同源同尺寸画面只缩放一次，保留横竖接缝、四格交点及原有音轨规则。四屏可以与数字人视频叠加同时使用。
@@ -25,7 +35,7 @@
 **分发：** Windows 标准 MSI 安装包（`artifacts/release/炳恒快速混剪-Py-win-x64.msi`，未签名时可能触发 SmartScreen，见下文）
 
 > **技术栈（2026-09-23 起）：** 本仓库**全面采用 Python（PySide6 + FFmpeg）**，
-> 交付实现为 `src/JingXu.Workbench.Py`。原 .NET/WPF 参照实现已移除，
+> 主应用位于 `core/`，选品爬虫扩展位于 `extensions/spider/`。原 .NET/WPF 参照实现已移除，
 > 最后保留点见 git 标签 `last-dotnet-reference`（迁移前快照，可随时回查）。
 > 历史对照文档（`docs/ui-parity-with-dotnet.md`、`docs/dotnet-parity-audit.md`、
 > `docs/python-migration-acceptance.md`）保留作迁移记录。
@@ -83,11 +93,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Resolve-Runtimes.ps1
 
 ## 主实现：Python（PySide6 + FFmpeg）
 
-`src/JingXu.Workbench.Py/` 为 PySide6 + FFmpeg 实现（Windows 为主，兼容 macOS/Linux 的跨平台结构），
+`core/jingxu/` 为 PySide6 + FFmpeg 主应用（Windows 为主，兼容 macOS/Linux 的跨平台结构），`extensions/spider/` 为独立选品爬虫 CLI，
 已打通素材导入 → 顺序/随机/自定义序号编排 → 画幅适配 → 渲染队列的完整链路；
 蒙版羽化/上淡入/来源裁剪与合成预览、随机旋转、上下双屏、无损直拷、OCR 自动定位、
 交叉转场与项目保存/打开（`.jxproj`）均已实现，
-详见 [src/JingXu.Workbench.Py/README.md](src/JingXu.Workbench.Py/README.md)。
+运行与开发命令见 [docs/development.md](docs/development.md)。
 
 硬件加速能力：GPU 硬解与 `scale_qsv`/`scale_cuda` 缩放（含三级回退）、
 蒙版形状与 PNG 遮罩、贴纸独立画幅与宽高比锁定、音频库音量语义（−100..+100）。

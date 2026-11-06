@@ -482,7 +482,19 @@ class LayerPreviewCanvas(QWidget):
             return cached[1]
 
         pixmap = QPixmap(key)
-        loaded: QPixmap | None = pixmap if not pixmap.isNull() else None
+        loaded: QPixmap | None = None
+        if not pixmap.isNull():
+            # 大图预缩放：预览控件最大约 360x420，超过 800 像素的高清原图在首次载入时做一次平滑下采样，
+            # 彻底避免拖拽/缩放时每一次高频 paintEvent 都对 4K 大图反复做昂贵的 SmoothTransformation。
+            if pixmap.width() > 800 or pixmap.height() > 800:
+                loaded = pixmap.scaled(
+                    800,
+                    800,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            else:
+                loaded = pixmap
         if len(self._image_cache) >= IMAGE_CACHE_LIMIT:
             self._image_cache.pop(next(iter(self._image_cache)), None)
         self._image_cache[key] = (mtime, loaded)

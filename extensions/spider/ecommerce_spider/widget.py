@@ -41,6 +41,7 @@ class EcommerceCrawlerWidget(QWidget):
 
         self.config = AppConfig(config_path) if config_path else AppConfig()
         self.worker: Optional[CrawlWorker] = None
+        self._login_browser_manager = None
         self.crawled_items: List[VideoProductItem] = []
         self.retained_products: List[RetainedProduct] = []
 
@@ -423,7 +424,10 @@ class EcommerceCrawlerWidget(QWidget):
             self.refresh_accounts_table()
 
     def open_login_browser(self, platform: str):
+        if self._login_browser_manager is not None:
+            self._login_browser_manager.close()
         bm = BrowserManager(headless=False)
+        self._login_browser_manager = bm
         msg = bm.open_login_window(platform)
         self.append_log(f"[登录管理] {msg}")
 
@@ -431,6 +435,9 @@ class EcommerceCrawlerWidget(QWidget):
         self.text_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
 
     def start_crawl(self):
+        if self._login_browser_manager is not None:
+            self._login_browser_manager.close()
+            self._login_browser_manager = None
         self.sync_ui_to_config()
         enabled = [acc for acc in self.config.accounts if acc.enabled]
         if not enabled:
@@ -452,7 +459,9 @@ class EcommerceCrawlerWidget(QWidget):
             time_config=self.config.time_config,
             filter_config=self.config.filter_config,
             headless=self.config.headless,
-            max_scrolls=self.config.max_scrolls_per_account
+            max_scrolls=self.config.max_scrolls_per_account,
+            browser_rotate_seconds=self.config.browser_rotate_seconds,
+            browser_rotate_pages=self.config.browser_rotate_pages,
         )
 
         self.worker.log_signal.connect(self.append_log)

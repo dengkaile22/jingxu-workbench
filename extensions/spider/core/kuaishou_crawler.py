@@ -12,9 +12,14 @@ from urllib.parse import urlsplit, parse_qs
 
 from core.models import VideoProductItem, AccountTarget, TimeFilterConfig
 from core.text_utils import clean_product_title, parse_chinese_count_str
-from core.extraction import ExtractionDiagnostic, extract_products
-from core.browser_manager import BrowserManager
+from core.extraction import ExtractionDiagnostic, safe_extract_products as extract_products
+from core.browser_manager import BrowserManager, BROWSER_SESSION_ERRORS, BrowserSessionAbnormal, BrowserSessionStopped, BrowserEnvironmentRotated
+from core.browser_recovery import (
+    MAX_SESSION_RECOVERIES, check_browser_session, maintain_browser_cache, mark_browser_page,
+    merge_crawl_items, recover_browser_session,
+)
 from core.record_identity import deduplicate_items
+from core.profile_requests import learn_kuaishou_feed_request, fetch_kuaishou_profile_feed
 
 
 KUAISHOU_LISTEN_TARGETS = [
@@ -539,10 +544,96 @@ class KuaishouCrawler:
         self.response_issues = []
 
     def crawl_account(
+        self, target: AccountTarget, time_config: TimeFilterConfig, max_scrolls: int = 30,
+    ) -> List[VideoProductItem]:
+        """Retain checkpoints when an abnormal session has to be reset."""
+        retained = []
+        self.partial_items = []
+        self._active_video_ids = set()
+        self._resume_pcursor = ""
+        self._resume_api_pages = 0
+        self._rest_template = None
+        diagnostics_start = len(self.diagnostics)
+        checkpoint = getattr(self, "on_checkpoint", None)
+
+        def save(items):
+            nonlocal retained
+            retained = merge_crawl_items(retained, items)
+            target.scraped_videos = len(self._active_video_ids)
+            target.found_products = len(retained)
+            if callable(checkpoint):
+                checkpoint(list(retained))
+
+        self.on_checkpoint = save
+        session_recoveries = disconnect_recoveries = 0
+        force_new = False
+        try:
+            while True:
+                if self.should_stop():
+                    target.status = "已停止"
+                    break
+                try:
+                    save(self._crawl_account_once(target, time_config, max_scrolls, force_new=force_new))
+                    break
+                except BrowserEnvironmentRotated:
+                    force_new = False
+                    self.log("[快手] 浏览器已按周期更换环境，从保存的翻页位置继续抓取。")
+                    continue
+                except BrowserSessionAbnormal:
+                    if self.should_stop():
+                        target.status = "已停止"
+                        break
+                    if session_recoveries < MAX_SESSION_RECOVERIES and recover_browser_session(
+                        self.browser_manager, "kuaishou", self.log, self.should_stop
+                    ):
+                        session_recoveries += 1
+                        force_new = False
+                        continue
+                    self.response_issues.append({
+                        "level": "warning", "code": "browser_session_abnormal",
+                        "message": "快手主页访问异常，自动清理后仍未能恢复。",
+                        "suggestion": "已保留取得的数据并继续其他账号；请检查页面提示或稍后重试当前账号。",
+                    })
+                    target.status = "已停止" if self.should_stop() else ("部分完成" if retained else "抓取失败")
+                    break
+                except BROWSER_SESSION_ERRORS as error:
+                    if isinstance(error, BrowserSessionStopped) or self.should_stop():
+                        target.status = "已停止"
+                        break
+                    if disconnect_recoveries == 0:
+                        disconnect_recoveries += 1
+                        force_new = True
+                        self.log("[快手] 页面连接已断开，保留已抓数据并尝试恢复一次。")
+                        continue
+                    self.response_issues.append({
+                        "level": "warning", "code": "page_disconnected",
+                        "message": "快手页面连接断开，恢复后仍未能继续抓取。",
+                        "suggestion": "已保留取得的数据，请检查浏览器或网络后重试该账号。",
+                    })
+                    target.status = "部分完成" if retained else "抓取失败"
+                    break
+                except Exception:
+                    self.partial_items = list(retained)
+                    raise
+            merged_diagnostics = {}
+            for diagnostic in self.diagnostics[diagnostics_start:]:
+                old = merged_diagnostics.get(diagnostic.video_id)
+                if old is None or diagnostic.extracted >= old.extracted:
+                    merged_diagnostics[diagnostic.video_id] = diagnostic
+            self.diagnostics[diagnostics_start:] = merged_diagnostics.values()
+            target.scraped_videos = len(self._active_video_ids)
+            target.found_products = len(retained)
+            self.partial_items = list(retained)
+            return retained
+        finally:
+            self.on_checkpoint = checkpoint
+
+    def _crawl_account_once(
         self,
         target: AccountTarget,
         time_config: TimeFilterConfig,
         max_scrolls: int = 30,
+        *, force_new: bool = False,
     ) -> List[VideoProductItem]:
         """
         Crawl videos and e-commerce goods for a single Kuaishou account.
@@ -566,7 +657,11 @@ class KuaishouCrawler:
         start_ts, end_ts = time_config.get_timestamps()
         profile_url = f"https://www.kuaishou.com/profile/{user_id}"
 
-        page = self.browser_manager.get_page()
+        page = self.browser_manager.get_page(force_new=True) if force_new else self.browser_manager.get_page()
+        if self.should_stop():
+            target.status = "已停止"
+            return []
+        maintain_browser_cache(self.browser_manager)
 
         # Listen to GraphQL queries and candidate endpoints
         try:
@@ -582,10 +677,13 @@ class KuaishouCrawler:
             page.get(profile_url, timeout=15)
         except TypeError:
             page.get(profile_url)
+        except BROWSER_SESSION_ERRORS:
+            raise
         except Exception as nav_err:
             self.log(f"[快手] 导航至主页异常: {nav_err}")
             target.status = "导航失败"
             return []
+        check_browser_session(page)
         current_url = getattr(page, "url", profile_url)
         parsed_current = urlsplit(current_url) if isinstance(current_url, str) else None
         visible_id = (
@@ -642,6 +740,13 @@ class KuaishouCrawler:
             nonlocal all_products
             if self.should_stop():
                 status = "已停止"
+            if status == "已完成" and any(diagnostic.data_error for diagnostic in diagnostics_by_id.values()):
+                status = "部分完成：视频商品数据异常"
+                self.response_issues.append({
+                    "level": "warning", "code": "invalid_product_data",
+                    "message": "部分视频商品数据异常，已继续处理其余视频",
+                    "suggestion": "有效记录已保留，可重试当前账号补全异常视频",
+                })
             all_products = deduplicate_items(all_products)
             self.diagnostics = previous_diagnostics + list(diagnostics_by_id.values())
             target.status = status
@@ -702,6 +807,7 @@ class KuaishouCrawler:
                 photo = merged
                 already_seen = photo_id in seen_photo_ids
                 seen_photo_ids.add(photo_id)
+                self._active_video_ids.add(photo_id)
                 new_count += 1
                 create_time = _photo_timestamp(photo)
                 if (start_ts is not None or end_ts is not None) and not create_time:
@@ -808,21 +914,47 @@ class KuaishouCrawler:
         except Exception:
             modern_client = False
         direct_api_completed = False
-        api_pcursor = ""
-        api_page_idx = 0
-        while not modern_client and api_page_idx < max_scrolls:
+        api_pcursor = self._resume_pcursor
+        api_page_idx = self._resume_api_pages
+        rest_resume = False
+        if modern_client and api_pcursor and self._rest_template is not None:
+            # Reloading a profile generates a fresh first-page request. Learn
+            # its current environment fields before replaying the saved cursor.
+            for _ in range(3):
+                if self.should_stop():
+                    return _finish("已停止")
+                first_packet = page.listen.wait(timeout=3.5)
+                if first_packet is None:
+                    continue
+                fresh = learn_kuaishou_feed_request(first_packet, user_id, self._rest_template)
+                if fresh is not None:
+                    self._rest_template = fresh
+                    rest_resume = True
+                    break
+            if not rest_resume:
+                self.response_issues.append({
+                    "level": "warning", "code": "resume_request_unavailable",
+                    "message": "新环境尚未取得目标主页的有效翻页请求，已保留已有结果。",
+                    "suggestion": "检查该主页的登录或验证提示后重试，避免重复从首屏抓取。",
+                })
+                return _finish("部分完成")
+        while (not modern_client or rest_resume) and api_page_idx < max_scrolls:
             if self.should_stop():
                 self.log(f"[快手] 收到用户终止信号，停止爬取 {account_name}")
                 return _finish("已停止")
+            check_browser_session(page)
+            if api_page_idx:
+                maintain_browser_cache(self.browser_manager, api_page_idx)
 
-            graphql_data = _fetch_kuaishou_graphql_api_via_browser(
-                page, user_id, pcursor=api_pcursor
-            )
+            graphql_data = (fetch_kuaishou_profile_feed(page, self._rest_template, api_pcursor) if rest_resume else
+                            _fetch_kuaishou_graphql_api_via_browser(page, user_id, pcursor=api_pcursor))
             if not graphql_data or not isinstance(graphql_data, dict):
+                check_browser_session(page)
                 break
 
             profile_data = _profile_list(graphql_data)
             if profile_data is None:
+                check_browser_session(page)
                 break
 
             feeds = profile_data.get("feeds") or []
@@ -834,9 +966,12 @@ class KuaishouCrawler:
                 break
 
             new_in_page = _process_photo_items(photo_list, ordered=True)
+            mark_browser_page(self.browser_manager)
             api_page_idx += 1
+            self._resume_api_pages = api_page_idx
             previous_cursor = api_pcursor
             api_pcursor = str(profile_data.get("pcursor") or "")
+            self._resume_pcursor = api_pcursor
 
             self.log(
                 f"[快手 API] {account_name} 接口第 {api_page_idx} 页获取到 {len(photo_list)} 个作品 (新增 {new_in_page})，"
@@ -855,7 +990,7 @@ class KuaishouCrawler:
                 self.log("[快手] 翻页游标未推进，保留当前结果并标记未完整抓取。")
                 break
 
-            time.sleep(0.3)
+            time.sleep(1.0)
 
         if direct_api_completed:
             self.log(
@@ -870,6 +1005,9 @@ class KuaishouCrawler:
             if self.should_stop():
                 self.log(f"[快手] 收到用户终止信号，停止爬取 {account_name}")
                 return _finish("已停止")
+            check_browser_session(page)
+            if scroll_count:
+                maintain_browser_cache(self.browser_manager, api_page_idx + scroll_count)
 
             # Wait for intercepted packet
             packet = None
@@ -911,10 +1049,17 @@ class KuaishouCrawler:
                             raise ValueError("响应不是有效的目标主页作品列表")
                         feeds = photo_list_data.get("feeds") or []
                         photo_list = _feed_photos(feeds)
+                        template = learn_kuaishou_feed_request(packet, user_id, self._rest_template)
+                        if template is not None:
+                            self._rest_template = template
                     else:
                         raise ValueError("响应不是有效JSON对象")
 
                     new_photos_in_batch = _process_photo_items(photo_list, ordered=True)
+                    mark_browser_page(self.browser_manager)
+                    if modern_client:
+                        self._resume_pcursor = str(photo_list_data.get("pcursor") or "")
+                        self._resume_api_pages += 1
                     self.log(
                         f"[快手] {account_name} 已处理 {len(seen_photo_ids)} 个视频，"
                         f"累计发现带货商品 {len(all_products)} 件"
@@ -937,6 +1082,7 @@ class KuaishouCrawler:
 
             # If no network packet captured, check DOM fallback
             if new_photos_in_batch == 0:
+                check_browser_session(page)
                 dom_cards = _extract_kuaishou_dom_video_cards(page)
                 if dom_cards:
                     added_dom = _process_photo_items(dom_cards)

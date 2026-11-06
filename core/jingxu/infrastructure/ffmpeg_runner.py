@@ -689,6 +689,7 @@ def _consume_progress(
 ) -> None:
     assert process.stdout is not None
     last_reported = -1.0
+    current_speed = ""
 
     for raw_line in process.stdout:
         if cancel_event is not None and cancel_event.is_set():
@@ -704,6 +705,10 @@ def _consume_progress(
         if on_progress is None:
             continue
 
+        if key == "speed":
+            current_speed = value.strip()
+            continue
+
         rendered = 0.0
         if key == "out_time_us":
             try:
@@ -715,15 +720,13 @@ def _consume_progress(
                 rendered = _parse_time_value(value)
             except ValueError:
                 continue
-        elif key == "speed":
-            continue
         else:
             continue
 
         percent = min(rendered / total_seconds * 100.0, 99.9)
         if percent - last_reported >= 0.5 or percent >= 99.9:
             last_reported = percent
-            on_progress(RenderProgress(round(percent, 2), rendered, total_seconds))
+            on_progress(RenderProgress(round(percent, 2), rendered, total_seconds, current_speed))
 
     if cancel_event is not None and cancel_event.is_set():
         raise RenderCancelled("渲染已取消。")

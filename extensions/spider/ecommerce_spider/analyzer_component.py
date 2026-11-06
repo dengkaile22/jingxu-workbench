@@ -95,6 +95,7 @@ class ProductAnalyzerComponent:
                     cleaned_name=it.get("cleaned_name") or it.get("清洗名称") or it.get("清洗后名称") or it.get("清洗归一名称") or "",
                     price=str(it.get("price") or it.get("售价") or it.get("参考价格") or ""),
                     detail_url=it.get("detail_url") or it.get("商品链接") or "",
+                    cover_url=it.get("cover_url") or it.get("coverUrl") or it.get("商品主图") or "",
                     like_count=int(it.get("like_count") or it.get("点赞量") or 0),
                 ))
 

@@ -49,7 +49,7 @@ def _iter_widgets(root: QWidget):  # noqa: ANN202
 
 
 def test_title_bar_fits_wordmark(qapp) -> None:  # noqa: ANN001
-    """标题栏固定高 44px，品牌字「炳恒」字号 30px：行高必须放得下。"""
+    """标题栏固定高 44px，品牌字「清影」字号 30px：行高必须放得下。"""
     line = _line_height(theme.body_font(30))
     assert line <= theme.TITLE_BAR_HEIGHT, (
         f"标题栏文字行高 {line}px 超过栏高 {theme.TITLE_BAR_HEIGHT}px，会被纵向截断"

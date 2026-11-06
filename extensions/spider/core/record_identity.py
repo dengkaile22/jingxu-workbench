@@ -3,9 +3,77 @@
 from __future__ import annotations
 
 import re
+import math
+from dataclasses import replace
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 from core.models import AccountTarget, VideoProductItem
+
+
+def sanitize_items(items, on_issue=None) -> list[VideoProductItem]:
+    """Isolate malformed observations before identity, sorting or export operations."""
+    from core.text_utils import parse_chinese_count_str
+
+    result = []
+    text_fields = (
+        "platform", "account_name", "account_id", "video_id", "video_title",
+        "video_url", "publish_time_str", "product_id", "product_name",
+        "cleaned_name", "price", "cover_url", "detail_url",
+    )
+    try:
+        observations = iter(items or ())
+    except TypeError:
+        if on_issue:
+            on_issue("已忽略格式无效的商品记录集合")
+        return []
+    for item in observations:
+        if not isinstance(item, VideoProductItem):
+            if on_issue:
+                on_issue("已忽略一条格式无效的商品记录")
+            continue
+        invalid = False
+        values = {}
+        for key in text_fields:
+            value = getattr(item, key)
+            if isinstance(value, (str, int, float)):
+                text = str(value)
+                if text.isascii():
+                    values[key] = text.strip()
+                else:
+                    encoded = text.encode("utf-8", errors="replace").decode("utf-8")
+                    invalid = invalid or encoded != text
+                    values[key] = encoded.strip()
+            else:
+                values[key] = ""
+                invalid = invalid or value is not None
+        values["platform"] = values["platform"].lower()
+        if values["platform"] not in ("douyin", "kuaishou") or not isinstance(item.product_name, str) or not values["product_name"]:
+            if on_issue:
+                on_issue("已忽略缺少平台或商品标题的记录")
+            continue
+        try:
+            timestamp = float(item.publish_time or 0)
+            if not math.isfinite(timestamp) or timestamp < 0:
+                timestamp = 0
+                invalid = True
+            if timestamp > 100_000_000_000:
+                timestamp /= 1000
+            # A timestamp outside datetime's range cannot be used for date filters.
+            from datetime import datetime
+            if timestamp:
+                datetime.fromtimestamp(timestamp)
+            values["publish_time"] = int(timestamp)
+        except (TypeError, ValueError, OverflowError, OSError):
+            values["publish_time"] = 0
+            invalid = True
+        likes = parse_chinese_count_str(item.like_count)
+        values["like_count"] = likes if 0 <= likes <= 9_007_199_254_740_991 else 0
+        invalid = invalid or likes < 0 or likes > 9_007_199_254_740_991
+        changed = any(getattr(item, key) != value for key, value in values.items())
+        result.append(replace(item, **values) if changed else item)
+        if invalid and on_issue:
+            on_issue("已修正一条商品记录的异常字段")
+    return result
 
 
 def stable_id_for(account: AccountTarget) -> str:
@@ -76,10 +144,14 @@ def deduplicate_accounts(accounts: list[AccountTarget]) -> list[AccountTarget]:
     return list(selected.values())
 
 
+def _item_quality(entry: VideoProductItem) -> tuple[int, bool, bool]:
+    return entry.like_count, bool(entry.publish_time), bool(entry.price)
+
+
 def deduplicate_items(items: list[VideoProductItem]) -> list[VideoProductItem]:
     result: list[VideoProductItem] = []
     positions: dict[tuple[str, str, str, str], int] = {}
-    for item in items:
+    for item in sanitize_items(items):
         video = item.video_id or item.video_url
         # Without a video identity, two observations cannot safely be called duplicates.
         if not video:
@@ -94,9 +166,6 @@ def deduplicate_items(items: list[VideoProductItem]) -> list[VideoProductItem]:
             result.append(item)
         else:
             position = positions[key]
-            previous = result[position]
-            def quality(entry):
-                return entry.like_count, bool(entry.publish_time), bool(entry.price)
-            if quality(item) > quality(previous):
+            if _item_quality(item) > _item_quality(result[position]):
                 result[position] = item
     return result

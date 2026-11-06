@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from functools import lru_cache
 
 from PySide6.QtCore import QByteArray, Qt, Signal
 from PySide6.QtGui import QIcon, QPainter, QPixmap, QTransform
@@ -24,15 +25,14 @@ from jingxu.ui import theme
 from jingxu.ui.icons import SECTION_CHEVRON
 
 
-def render_svg_path(
+@lru_cache(maxsize=256)
+def _render_svg_cached(
     path_data: str,
     size: int,
     color: str,
-    *,
-    stroke_width: float = 1.5,
-    view_box: int = 24,
+    stroke_width: float,
+    view_box: int,
 ) -> QPixmap:
-    """把 24x24 视图盒路径渲染为指定像素大小的位图。"""
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
         f'viewBox="0 0 {view_box} {view_box}">'
@@ -47,6 +47,23 @@ def render_svg_path(
     renderer.render(painter)
     painter.end()
     return pixmap
+
+
+def render_svg_path(
+    path_data: str,
+    size: int,
+    color: str,
+    *,
+    stroke_width: float = 1.5,
+    view_box: int = 24,
+) -> QPixmap:
+    """把 24x24 视图盒路径渲染为指定像素大小的位图（带缓存）。
+
+    QSvgRenderer 每次实例化 + 光栅化约 0.1–1ms；状态图标在队列/下载等
+    高频刷新路径上会被反复请求，这里按参数缓存结果。返回的 QPixmap 是
+    隐式共享的只读缓存副本，调用方只应通过 ``setPixmap`` 使用。
+    """
+    return _render_svg_cached(path_data, size, color, stroke_width, view_box)
 
 
 class SectionHeader(QLabel):
@@ -73,6 +90,21 @@ class CountBadge(QLabel):
         super().__init__(text)
         self.setObjectName("CountBadge")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+
+def chip_qss(*, color: str, tint: str) -> str:
+    """状态胶囊样式：浅色底 + 彩色文字，队列/下载等列表共用。"""
+    return (
+        f"background: {tint}; color: {color}; border-radius: 9px;"
+        " padding: 2px 10px; font-size: 11px; font-weight: 600;"
+    )
+
+
+def status_chip(text: str = "", *, color: str, tint: str) -> QLabel:
+    """状态胶囊：浅色底 + 彩色文字，用于队列计数与任务状态展示。"""
+    chip = QLabel(text)
+    chip.setStyleSheet(chip_qss(color=color, tint=tint))
+    return chip
 
 
 class Divider(QFrame):

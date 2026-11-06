@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jingxu-workbench"
-version = "1.0.6"
-description = "炳恒快速混剪 · Python 跨平台版（PySide6 + FFmpeg）"
+version = "1.1.1"
+description = "清影快速混剪 · Python 跨平台版（PySide6 + FFmpeg）"
 requires-python = ">=3.10"
 dependencies = [
     "PySide6>=6.5",
@@ -15,6 +15,7 @@ dependencies = [
 spider = [
     "DrissionPage>=4.1.0",
     "openpyxl>=3.0.0",
+    "Pillow>=10.0",
     "tabulate>=0.9.0",
 ]
 download = [

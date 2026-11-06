@@ -11,8 +11,13 @@ from pathlib import Path
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="jingxu", description="炳恒快速混剪 · Python 跨平台版")
+    parser = argparse.ArgumentParser(prog="jingxu", description="清影快速混剪 · Python 跨平台版")
     parser.add_argument("--self-test", action="store_true", help="无界面自检后退出（CI 用）")
+    parser.add_argument("--scheduled-spider", action="store_true", help="执行已启用的每日选品抓取任务后退出")
+    parser.add_argument("--schedule-file", metavar="PATH", help="每日选品任务配置")
+    parser.add_argument("--spider-config", metavar="PATH", help="选品账号与筛选报表配置")
+    parser.add_argument("--schedule-id", help="每日选品任务标识")
+    parser.add_argument("--data-directory", metavar="PATH", help="当前任务使用的应用数据目录")
     parser.add_argument("--import-smoke", metavar="PATH", help="探测单个素材并输出 JSON 报告（无界面）")
     parser.add_argument("--overlay-smoke", metavar="PATH", help="用蒙版素材合成静帧预览并输出 JSON 报告")
     parser.add_argument(
@@ -313,6 +318,13 @@ def _emit_report(payload: str, report_file: str | None) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.data_directory:
+        os.environ["JINGXU_DATA_DIRECTORY"] = str(Path(args.data_directory).resolve())
+    if args.scheduled_spider:
+        if not args.schedule_file or not args.spider_config or not args.schedule_id:
+            return 2
+        from jingxu.infrastructure.spider_schedule import run_scheduled_crawl
+        return run_scheduled_crawl(args.schedule_file, args.spider_config, args.schedule_id)
 
     if args.self_test or args.import_smoke or args.overlay_smoke or args.import_check or args.ui_probe:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

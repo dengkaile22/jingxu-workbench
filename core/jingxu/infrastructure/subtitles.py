@@ -94,15 +94,11 @@ def parse_ass(text: str) -> list[SubtitleCue]:
             continue
 
         payload = line.split(":", 1)[1]
-        parts = payload.split(",")
-        if len(parts) > len(format_order):
-            head = parts[: len(format_order) - 1]
-            head.append(",".join(parts[len(format_order) - 1 :]))
-            parts = head
+        parts = payload.split(",", len(format_order) - 1)
         if len(parts) < len(format_order):
             continue
 
-        values = {name: parts[index].strip() for index, name in enumerate(format_order) if index < len(parts)}
+        values = {name: parts[index].strip() for index, name in enumerate(format_order)}
         start = _parse_ass_time(values.get("start", ""))
         end = _parse_ass_time(values.get("end", ""))
         if start is None or end is None:

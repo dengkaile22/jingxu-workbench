@@ -41,6 +41,20 @@ def offline(monkeypatch):
     monkeypatch.setattr('core.kuaishou_crawler.time.sleep',lambda _duration:None)
     monkeypatch.setattr('requests.get',lambda *_args,**_kwargs:pytest.fail('no real network in this test'))
 
+def test_bad_product_record_does_not_interrupt_following_videos(monkeypatch):
+    from core import extraction
+    original = extraction.extract_products
+    def fail_one(platform, node, *args, **kwargs):
+        if node["id"] == "bad":
+            raise ValueError("private-platform-data")
+        return original(platform, node, *args, **kwargs)
+    monkeypatch.setattr(extraction, "extract_products", fail_one)
+    crawler, target, items = crawl(Page(api=[payload([photo("bad"), photo("good")])]))
+    assert [entry.video_id for entry in items] == ["good"]
+    assert target.status.startswith("部分完成")
+    assert any(issue["code"] == "invalid_product_data" for issue in crawler.response_issues)
+
+
 def test_twenty_items_and_failure_never_imply_completion():
     crawler,target,items=crawl(Page(api=[payload([photo(str(i)) for i in range(20)],more=True,cursor='next')]))
     assert target.status=='部分完成'

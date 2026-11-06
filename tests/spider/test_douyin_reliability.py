@@ -98,6 +98,23 @@ def target(**kwargs):
     return AccountTarget(platform="douyin", url_or_id=SEC_UID, name="测试账号", **kwargs)
 
 
+def test_bad_product_record_does_not_interrupt_following_videos(monkeypatch):
+    from core import extraction
+    original = extraction.extract_products
+    def fail_one(platform, node, *args, **kwargs):
+        if node["aweme_id"] == "bad":
+            raise ValueError("private-platform-data")
+        return original(platform, node, *args, **kwargs)
+    monkeypatch.setattr(extraction, "extract_products", fail_one)
+    crawler, logs = make_crawler(Page(api=[{"ok": True, "data": payload([aweme("bad"), aweme("good")])}]))
+    account = target()
+    items = crawler.crawl_account(account, TimeFilterConfig(mode="all"), max_scrolls=2)
+    assert [entry.video_id for entry in items] == ["good"]
+    assert account.status == "部分完成"
+    assert any(issue["code"] == "invalid_product_data" for issue in crawler.response_issues)
+    assert all("private-platform-data" not in line for line in logs)
+
+
 @pytest.mark.parametrize("body,status,failed,code", [
     ("", 200, False, "empty_response"),
     ("  ", 200, False, "empty_response"),

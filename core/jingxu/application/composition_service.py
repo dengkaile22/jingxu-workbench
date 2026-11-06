@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -238,7 +239,7 @@ def _materialize_split(
         if clip_index < split.start_index:
             selections.append(())
             continue
-        main = asset.path.resolve()
+        main = Path(os.path.abspath(str(asset.path)))
         directory = main.parent
         if directory not in directories:
             try:
@@ -249,7 +250,8 @@ def _materialize_split(
             except OSError as error:
                 raise ValueError(f"无法读取随机分屏素材目录：{directory}。{error}") from error
         # 只排除当前主画面。目录仅有一个视频时沿用该视频。
-        candidates = [path for path in directories[directory] if path != main] or [main]
+        main_key = os.path.normcase(str(main))
+        candidates = [path for path in directories[directory] if os.path.normcase(str(path)) != main_key] or [main]
         available = list(candidates)
         selected: list[int] = []
         for cell in range(1, split.cell_count):

@@ -57,7 +57,7 @@ function Test-SpiderDependencies([string] $PythonExe, [string] $ProbeScriptPath)
 
 $probeScript = @'
 import importlib.util as u
-mods = ["DrissionPage", "requests", "openpyxl", "tabulate"]
+mods = ["DrissionPage", "requests", "openpyxl", "tabulate", "PIL"]
 missing = [m for m in mods if u.find_spec(m) is None]
 print("OK" if not missing else "MISSING:" + ",".join(missing))
 '@

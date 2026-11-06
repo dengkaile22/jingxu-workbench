@@ -8,10 +8,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -53,15 +56,38 @@ class AudioTrack:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(self.last_used_at))
 
 
+_AUDIO_PROBE_CACHE: dict[tuple[str, int, int, str], AudioTrack] = {}
+_AUDIO_PROBE_CACHE_LOCK = threading.Lock()
+_AUDIO_PROBE_CACHE_MAX_SIZE = 512
+
+
+def clear_audio_probe_cache() -> None:
+    """清空音频探测内存缓存。"""
+    with _AUDIO_PROBE_CACHE_LOCK:
+        _AUDIO_PROBE_CACHE.clear()
+
+
 class AudioProbeError(RuntimeError):
     """音频探测失败。"""
 
 
 def probe_audio(path: Path, ffprobe_path: Path, *, timeout: float = 30.0) -> AudioTrack:
-    """探测音频流基础信息；时长必须大于零（对齐 .NET 的导入校验）。"""
+    """探测音频流基础信息；时长必须大于零（带 mtime+size 元数据缓存）。"""
     path = Path(path)
     if not path.is_file():
         raise AudioProbeError(f"音频文件不存在：{path}")
+
+    cache_key: tuple[str, int, int, str] | None = None
+    try:
+        stat = path.stat()
+        resolved_tool = str(ffprobe_path.resolve()) if ffprobe_path.exists() else str(ffprobe_path)
+        cache_key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size, resolved_tool)
+        with _AUDIO_PROBE_CACHE_LOCK:
+            cached = _AUDIO_PROBE_CACHE.get(cache_key)
+            if cached is not None:
+                return replace(cached, id=uuid.uuid4().hex)
+    except OSError:
+        pass
 
     command = [
         str(ffprobe_path),
@@ -95,7 +121,53 @@ def probe_audio(path: Path, ffprobe_path: Path, *, timeout: float = 30.0) -> Aud
     except json.JSONDecodeError as error:
         raise AudioProbeError(f"音频探测输出无法解析：{path.name}") from error
 
-    return parse_audio_payload(payload, path)
+    track = parse_audio_payload(payload, path)
+
+    if cache_key is not None:
+        with _AUDIO_PROBE_CACHE_LOCK:
+            if len(_AUDIO_PROBE_CACHE) >= _AUDIO_PROBE_CACHE_MAX_SIZE:
+                keys = list(_AUDIO_PROBE_CACHE.keys())[:128]
+                for old_key in keys:
+                    _AUDIO_PROBE_CACHE.pop(old_key, None)
+            _AUDIO_PROBE_CACHE[cache_key] = track
+
+    return track
+
+
+def probe_audio_batch(
+    paths: Sequence[Path | str],
+    ffprobe_path: Path,
+    *,
+    max_workers: int | None = None,
+    timeout: float = 30.0,
+) -> list[tuple[Path, AudioTrack | None, str | None]]:
+    """并发批量探测多个音频，返回保序元组列表：[(path, track_or_none, error_or_none), ...]"""
+    path_objs = [Path(p) for p in paths]
+    if not path_objs:
+        return []
+
+    if len(path_objs) == 1:
+        target = path_objs[0]
+        try:
+            return [(target, probe_audio(target, ffprobe_path, timeout=timeout), None)]
+        except AudioProbeError as error:
+            return [(target, None, str(error))]
+        except Exception as error:  # noqa: BLE001
+            return [(target, None, str(error))]
+
+    workers = max_workers or min(8, max(2, os.cpu_count() or 4))
+
+    def _worker(target_path: Path) -> tuple[Path, AudioTrack | None, str | None]:
+        try:
+            return (target_path, probe_audio(target_path, ffprobe_path, timeout=timeout), None)
+        except AudioProbeError as error:
+            return (target_path, None, str(error))
+        except Exception as error:  # noqa: BLE001
+            return (target_path, None, str(error))
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(_worker, path_objs))
+
 
 
 def parse_audio_payload(payload: dict, path: Path) -> AudioTrack:
@@ -288,12 +360,9 @@ class AudioLibrary:
                 continue
 
 
-def _path_key(path: Path) -> str:
-    """路径去重键：解析为绝对路径并忽略大小写（对齐 .NET OrdinalIgnoreCase）。"""
-    try:
-        return str(path.resolve()).casefold()
-    except OSError:
-        return str(path).casefold()
+def _path_key(path: Path | str) -> str:
+    """路径去重键：标准化绝对路径并忽略大小写（Windows 兼容且零磁盘 I/O 阻塞）。"""
+    return os.path.normcase(os.path.abspath(str(path)))
 
 
 def build_bgm(track: AudioTrack, *, volume_percent: int, fade_out_seconds: float, loop: bool) -> BgmSettings:

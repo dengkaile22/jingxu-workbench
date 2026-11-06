@@ -64,6 +64,6 @@ def test_external_excel_text_cannot_become_a_formula(tmp_path):
     retained,_=ProductAnalyzer(OccurrenceFilterConfig(min_account_count=1)).aggregate_and_filter(source)
     path=tmp_path/'results.xlsx'; DataExporter.export_to_excel(str(path),retained,source)
     workbook=load_workbook(path,data_only=False)
-    assert workbook.worksheets[0]['B2'].value=='=1+2'
-    assert workbook.worksheets[0]['B2'].data_type=='s'
+    assert workbook.worksheets[0]['C2'].value=='=1+2'
+    assert workbook.worksheets[0]['C2'].data_type=='s'
     assert workbook.worksheets[1]['H2'].data_type=='s'

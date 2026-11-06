@@ -109,7 +109,9 @@ def test_reserved_paths_avoid_existing_files(tmp_path: Path) -> None:
 def test_queue_exposes_pending_output_paths(tmp_path: Path) -> None:
     """队列要能报出「尚未结束任务」的输出路径，供调用方预留。"""
     queue = RenderQueue(Path("ffmpeg"))
-    # 不 start()：任务停在排队态，正好是"已入队但还没落盘"的场景
+    # 先暂停调度再入队：enqueue 会顺带启动工作线程，不暂停的话任务可能已经
+    # 进入准备/渲染态，断言「排队态」会随线程调度时序偶发失败。
+    queue.pause()
     draft = _drafts()[0]
     built = build_requests(assets=_assets(), draft=draft, output_directory=tmp_path)
     queue.enqueue(built[0])

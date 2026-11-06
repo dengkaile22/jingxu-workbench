@@ -49,9 +49,9 @@ class TimeFilterConfig:
     start_date: str = ""     # YYYY-MM-DD
     end_date: str = ""       # YYYY-MM-DD
 
-    def get_timestamps(self) -> tuple[Optional[float], Optional[float]]:
+    def get_timestamps(self, now: Optional[datetime] = None) -> tuple[Optional[float], Optional[float]]:
         """Return (start_ts, end_ts) in seconds."""
-        now = datetime.now()
+        now = now or datetime.now()
         if self.mode == "all":
             return None, None
         elif self.mode == "days":
@@ -117,6 +117,7 @@ class VideoProductItem:
             "清洗后名称": self.cleaned_name,
             "售价": self.price,
             "商品链接": self.detail_url,
+            "商品主图": self.cover_url,
         }
 
 
@@ -135,6 +136,7 @@ class RetainedProduct:
     max_like_count: int = 0                            # Max like count among featuring videos
     sample_video_like_count: int = 0                   # Likes on the linked example video
     sample_video_date: str = ""                        # Publication date of the linked example video
+    cover_url: str = ""                                # Product image, never the video thumbnail
 
     def to_summary_dict(self) -> Dict[str, Any]:
         return {
@@ -150,4 +152,5 @@ class RetainedProduct:
             "对标账号明细": ", ".join(self.accounts),
             "参考价格": self.price_range,
             "示例视频链接": self.sample_video_url,
+            "商品主图": self.cover_url,
         }

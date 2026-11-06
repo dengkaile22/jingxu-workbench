@@ -46,10 +46,11 @@ def test_result_columns_cover_dotnet_fields() -> None:
         "对标账号明细",
         "价格区间",
         "示例视频链接",
+        "商品主图",
     ):
         assert name in RESULT_COLUMNS, f"结果表缺少「{name}」列（当前：{RESULT_COLUMNS}）"
 
-    assert len(RESULT_COLUMNS) == 10
+    assert len(RESULT_COLUMNS) == 11
     assert RESULT_COLUMNS[RESULT_CHECK_COLUMN] == "选"
     assert RESULT_COLUMNS[RESULT_NAME_COLUMN] == "商品"
 
@@ -81,6 +82,7 @@ def test_maps_spider_summary_keys() -> None:
         "小A、小B、小C",
         "¥29.9 - ¥39.9",
         "https://www.douyin.com/video/123",
+        "—",
     )
 
 
@@ -171,4 +173,3 @@ def test_urls_for_entries_extracts_chinese_sample_url() -> None:
     urls = result.urls_for_entries([entry])
     assert urls == ("https://www.douyin.com/video/123456789",)
     assert result.video_urls == ("https://www.douyin.com/video/123456789",)
-

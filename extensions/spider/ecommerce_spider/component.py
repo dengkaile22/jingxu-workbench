@@ -40,10 +40,14 @@ class EcommerceCrawlerComponent:
         user_data_dir: Optional[str] = None,
         min_account_count: int = 2,
         min_total_occurrences: int = 1,
-        enable_fuzzy_cluster: bool = True
+        enable_fuzzy_cluster: bool = True,
+        *, browser_rotate_seconds: int = 300, browser_rotate_pages: int = 10,
     ):
         self.headless = headless
         self.user_data_dir = user_data_dir
+        self.browser_rotate_seconds = browser_rotate_seconds
+        self.browser_rotate_pages = browser_rotate_pages
+        self._login_browser_manager = None
         self.accounts: List[AccountTarget] = []
         self.time_config = TimeFilterConfig(mode="days", days=7)
         self.filter_config = OccurrenceFilterConfig(
@@ -122,8 +126,15 @@ class EcommerceCrawlerComponent:
 
     def open_login_browser(self, platform: str = "douyin") -> str:
         """Open a visible browser for user to scan login QR code."""
+        self.finish_login()
         bm = BrowserManager(headless=False, user_data_dir=self.user_data_dir)
+        self._login_browser_manager = bm
         return bm.open_login_window(platform)
+
+    def finish_login(self):
+        manager, self._login_browser_manager = self._login_browser_manager, None
+        if manager is not None:
+            manager.close()
 
     def run(
         self,
@@ -151,7 +162,9 @@ class EcommerceCrawlerComponent:
         self.all_items.clear()
         self.retained_products.clear()
 
-        bm = BrowserManager(headless=self.headless, user_data_dir=self.user_data_dir)
+        self.finish_login()
+        bm = BrowserManager(headless=self.headless, user_data_dir=self.user_data_dir,
+                            rotate_seconds=self.browser_rotate_seconds, rotate_pages=self.browser_rotate_pages)
         self._browser_manager = bm
 
         try:

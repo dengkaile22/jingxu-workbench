@@ -152,28 +152,20 @@ class CleanupReport:
 
 
 def _resolve_path_set(paths: Sequence[Path]) -> set[str]:
-    """把保护路径解析为规范化绝对字符串集合（大小写不敏感）。"""
+    """把保护路径解析为规范化绝对字符串集合（大小写不敏感，零磁盘 I/O）。"""
     resolved: set[str] = set()
     for path in paths:
-        try:
-            resolved.add(os.path.normcase(str(Path(path).resolve())))
-        except OSError:
-            continue
+        resolved.add(os.path.normcase(os.path.abspath(str(path))))
     return resolved
 
 
 def _is_protected(path: Path, protected: set[str]) -> bool:
-    """待删项自身或其父目录在保护集内时返回 True。"""
+    """待删项自身或其父目录在保护集内时返回 True（纯内存规范化，避免数千次磁盘 resolve）。"""
     if not protected:
         return False
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return True
-    return (
-        os.path.normcase(str(resolved)) in protected
-        or os.path.normcase(str(resolved.parent)) in protected
-    )
+    norm = os.path.normcase(os.path.abspath(str(path)))
+    parent_norm = os.path.dirname(norm)
+    return norm in protected or parent_norm in protected
 
 
 def _is_temp_candidate(entry: Path) -> bool:
@@ -324,10 +316,7 @@ def _cleanup_stale_parts_report(
     seen: set[str] = set()
     for directory in output_directories:
         output_directory = Path(directory)
-        try:
-            key = os.path.normcase(str(output_directory.resolve()))
-        except OSError:
-            continue
+        key = os.path.normcase(os.path.abspath(str(output_directory)))
         if key in seen or not output_directory.is_dir():
             continue
         seen.add(key)

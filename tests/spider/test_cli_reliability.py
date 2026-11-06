@@ -46,6 +46,8 @@ def _run_offline_cli(
     video_count=1,
     fail_after_checkpoint=False,
     cancel_after_checkpoint=False,
+    report_tasks=None,
+    malformed_record=False,
 ):
     """Run real CLI analysis and exporters while replacing external browser work."""
     cli = importlib.import_module("cli")
@@ -62,6 +64,7 @@ def _run_offline_cli(
         headless=True,
         max_scrolls_per_account=25,
         export_dir=str(tmp_path),
+        report_tasks=report_tasks or [],
     )
     browsers = []
     crawl_calls = []
@@ -105,7 +108,7 @@ def _run_offline_cli(
                 raise PageDisconnectedError('synthetic-private-token')
             # Deliberately return repeats, including across different input links:
             # the CLI/export path must remain duplicate-safe independently.
-            return items + [replace(item) for item in items]
+            return items + [replace(item) for item in items] + ([None, {}] if malformed_record else [])
 
     class OfflineKuaishouCrawler:
         def __init__(self, *, browser_manager, log_callback):
@@ -138,6 +141,24 @@ def _run_offline_cli(
     assert len(browsers) == 1
     assert browsers[0].closed is True
     return json.loads(destination.read_text(encoding="utf-8")), workbook_path, crawl_calls
+
+
+def test_cli_multi_report_pipeline_and_malformed_items(monkeypatch, tmp_path):
+    from core.report_tasks import ReportTask
+    tasks = [ReportTask(TimeFilterConfig(mode="all"), OccurrenceFilterConfig(filter_by=mode, min_account_count=2,
+             min_total_occurrences=2, min_like_count=0, enable_fuzzy_cluster=False)) for mode in ("likes", "total", "accounts")]
+    data, destination, _ = _run_offline_cli(monkeypatch, tmp_path, report_tasks=tasks, video_count=3, malformed_record=True)
+    assert [report["filter_by"] for report in data["reports"]] == ["likes", "total", "accounts"]
+    assert [len(report["retained_products"]) for report in data["reports"]] == [1, 1, 0]
+    assert data["total_items_count"] == 3
+    assert data["crawl_complete"] is False
+    assert any(issue["code"] == "invalid_product_records" for issue in data["diagnostics"]["issues"])
+    workbook = load_workbook(destination, read_only=True)
+    try:
+        assert {"按点赞量·抖音", "按总频次·抖音", "按跨账号数·抖音"} <= set(workbook.sheetnames)
+        assert workbook["按跨账号数·抖音"].max_row == 1
+    finally:
+        workbook.close()
 
 
 def test_cli_carries_response_failures_into_json_diagnostics(monkeypatch, tmp_path) -> None:

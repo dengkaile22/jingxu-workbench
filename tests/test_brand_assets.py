@@ -2,7 +2,7 @@
 
 背景：.NET 版把 ``Assets/AppLogo.png`` 与 ``Assets/AppIcon.ico`` 作为 WPF Resource
 使用（壳层标题栏与启动画面显示 logo，窗口图标用 ico）。Python 迁移版此前
-**完全没有图片资源**，标题栏用画成色块的「炳」字代替 logo，exe 也没设置图标，
+**完全没有图片资源**，标题栏用画成色块的「清」字代替 logo，exe 也没设置图标，
 资源管理器与任务栏显示的是 PyInstaller 默认图标。
 """
 
@@ -99,7 +99,7 @@ def test_logo_widget_falls_back_to_text(qapp, monkeypatch, tmp_path: Path) -> No
     widget = build_logo_widget(size=28)
 
     assert widget.pixmap().isNull()
-    assert widget.text() == "炳"
+    assert widget.text() == "清"
     assert "background" in widget.styleSheet()
 
 

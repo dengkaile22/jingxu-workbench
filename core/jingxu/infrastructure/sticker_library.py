@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -66,12 +67,9 @@ class StickerEntry:
         return self.path.is_file()
 
 
-def _path_key(path: Path) -> str:
-    """路径比较键：Windows 下不区分大小写。"""
-    try:
-        return str(Path(path).resolve()).casefold()
-    except OSError:
-        return str(path).casefold()
+def _path_key(path: Path | str) -> str:
+    """路径比较键：标准化绝对路径并忽略大小写（Windows 兼容且零磁盘 I/O 阻塞）。"""
+    return os.path.normcase(os.path.abspath(str(path)))
 
 
 def filter_sticker_paths(candidates: list[Path]) -> list[Path]:
@@ -129,27 +127,23 @@ class StickerLibrary:
             return 0
         with self._lock:
             known = {_path_key(entry.path): index for index, entry in enumerate(self._entries)}
-            added = 0
+            new_entries: list[StickerEntry] = []
+            now = time.time()
             for path in cleaned:
                 key = _path_key(path)
                 index = known.get(key)
                 if index is None:
-                    self._entries.insert(
-                        0,
-                        StickerEntry(path=path, added_at=time.time()),
-                    )
-                    known[key] = 0
-                    # 插入到最前会让既有索引整体后移，重建映射避免错位
-                    known = {
-                        _path_key(entry.path): position
-                        for position, entry in enumerate(self._entries)
-                    }
-                    added += 1
+                    new_entries.append(StickerEntry(path=path, added_at=now))
+                    known[key] = -1  # 标记为已登记，防止同批内重复
                     continue
-                existing = self._entries[index]
-                self._entries[index] = replace(existing, added_at=time.time())
+                if index >= 0:
+                    existing = self._entries[index]
+                    self._entries[index] = replace(existing, added_at=now)
+            if new_entries:
+                # 批量逆序置顶，对齐逐个 insert(0, ...) 语义，但单批次仅一次列表拼接 (O(N))
+                self._entries = list(reversed(new_entries)) + self._entries
             self.save()
-            return added
+            return len(new_entries)
 
     def remove(self, entry_id: str) -> bool:
         with self._lock:

@@ -242,13 +242,13 @@ class SettingsPage(QWidget):
         layout.setSpacing(6)
 
         # 品牌 logo（与壳层标题栏同源；对齐 .NET GateMonitor 的 64×64 展示）。
-        # 资源缺失时 build_logo_widget 自动回退为「炳」文字标记，不留空白。
+        # 资源缺失时 build_logo_widget 自动回退为「清」文字标记，不留空白。
         brand_row = QHBoxLayout()
         brand_row.setSpacing(12)
         brand_row.addWidget(build_logo_widget(size=64))
         brand_text = QVBoxLayout()
         brand_text.setSpacing(2)
-        brand_text.addWidget(Caption(f"炳恒快速混剪 · Python 跨平台版 {__version__}"))
+        brand_text.addWidget(Caption(f"清影快速混剪 · Python 跨平台版 {__version__}"))
         self._platform_label = Caption("")
         brand_text.addWidget(self._platform_label)
         brand_row.addLayout(brand_text)
@@ -256,6 +256,16 @@ class SettingsPage(QWidget):
         layout.addLayout(brand_row)
 
         layout.addWidget(Caption("本地 FFmpeg 离线渲染与业务规则；离线运行，不上传任何素材。"))
+
+        # 闲鱼账号：购买与售后入口。用富文本链接，点击走系统浏览器（与「打开输出目录」同一套 QDesktopServices）。
+        shop = QLabel(
+            '购买与售后：闲鱼 <a href="https://www.goofish.com/personal?userId=2222015802752">'
+            "2222015802752</a>"
+        )
+        shop.setOpenExternalLinks(True)
+        shop.setTextFormat(Qt.TextFormat.RichText)
+        shop.setToolTip("点击打开闲鱼主页")
+        layout.addWidget(shop)
         return SectionExpander("关于", body)
 
     # ────────────────────────────── 数据 ──────────────────────────────

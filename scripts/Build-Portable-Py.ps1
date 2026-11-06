@@ -87,7 +87,7 @@ Write-Host ("PyInstaller " + ($pyInstallerVersion -join ' ').Trim())
 
 Write-Host '=== 2. PyInstaller onedir 构建 ==='
 if ($ReuseBuild) {
-    $existingExe = Join-Path $buildRoot '炳恒快速混剪\炳恒快速混剪.exe'
+    $existingExe = Join-Path $buildRoot '清影快速混剪\清影快速混剪.exe'
     if (-not (Test-Path -LiteralPath $existingExe)) { throw '没有可复用的已编译程序。' }
     $compiledAt = (Get-Item -LiteralPath $existingExe).LastWriteTimeUtc
     $newerInputs = @(Get-ChildItem -LiteralPath $packageDir -Recurse -File |
@@ -112,7 +112,7 @@ Invoke-NativeQuiet python @(
 if ($script:NativeExitCode -ne 0) { throw "PyInstaller 构建失败（$script:NativeExitCode）" }
 }
 
-$appName = '炳恒快速混剪'
+$appName = '清影快速混剪'
 $stagedApp = Join-Path $buildRoot $appName
 $exePath = Join-Path $stagedApp "$appName.exe"
 if (-not (Test-Path $exePath)) { throw "未找到构建产物：$exePath" }
@@ -193,13 +193,13 @@ if (Test-Path (Join-Path $spiderSource 'run.py')) {
 
 if ((Test-Path -LiteralPath $embeddedPython) -and (Test-Path -LiteralPath $stagedSpider)) {
     Write-Host '=== 4b. 验证裁剪后的爬虫运行时依赖 ==='
-    $dependencyProbe = 'import DrissionPage, requests, openpyxl, tabulate; print(chr(79)+chr(75))'
+    $dependencyProbe = 'import DrissionPage, requests, openpyxl, tabulate, PIL; print(chr(79)+chr(75))'
     $dependencyOutput = Invoke-NativeQuiet $embeddedPython @('-B', '-c', $dependencyProbe)
     $dependencyText = ($dependencyOutput | Out-String).Trim()
     if ($script:NativeExitCode -ne 0 -or $dependencyText -ne 'OK') {
         throw "裁剪后的内置 Python 依赖检查失败：$dependencyText"
     }
-    Write-Host '  DrissionPage / requests / openpyxl / tabulate 均可导入'
+    Write-Host '  DrissionPage / requests / openpyxl / tabulate / Pillow 均可导入'
 }
 
 Write-Host '=== 5. 清单与声明文件 ==='

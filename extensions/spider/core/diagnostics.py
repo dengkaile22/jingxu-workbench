@@ -30,7 +30,7 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 
 from core.profile_lock import (
     lock_files_present,
-    probe_holder_pids as profile_holder_pids,
+    probe_session_holder_pids as profile_holder_pids,
     remove_stale_locks,
 )
 

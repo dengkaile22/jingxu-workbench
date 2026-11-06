@@ -60,6 +60,7 @@
 | DrissionPage | BSD-3-Clause | https://github.com/g1879/DrissionPage |
 | requests | Apache-2.0 | https://github.com/psf/requests |
 | openpyxl | MIT | https://openpyxl.readthedocs.io/ |
+| Pillow（商品主图解码与 Excel 缩略图） | MIT-CMU（随包版本 12.3.0，完整许可见其 dist-info/licenses/LICENSE） | https://github.com/python-pillow/Pillow |
 | tabulate | MIT | https://github.com/astanin/python-tabulate |
 | lxml | BSD-3-Clause | https://lxml.de/ |
 | 其余传递依赖（websocket-client、psutil、tldextract、cssselect、click、et_xmlfile 等） | BSD / Apache-2.0 / MIT | PyPI 元数据与各项目仓库 |

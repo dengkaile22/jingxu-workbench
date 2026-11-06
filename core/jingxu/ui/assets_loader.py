@@ -2,7 +2,7 @@
 
 .NET 版把 ``Assets/AppLogo.png`` 与 ``Assets/AppIcon.ico`` 作为 WPF Resource 使用
 （ShellWindow 标题栏与启动画面显示 logo，窗口图标用 ico）。Python 迁移版此前
-**完全没有图片资源**，标题栏是用一个画成色块的「炳」字代替 logo，exe 也没有
+**完全没有图片资源**，标题栏是用一个画成色块的「清」字代替 logo，exe 也没有
 设置图标（显示为 PyInstaller 默认图标）。本模块把这两个资源接回来。
 
 解析顺序（开发态与打包态都可用）：

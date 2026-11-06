@@ -66,6 +66,20 @@ def _page(tmp_path: Path, *, runner=None, config: SpiderConfig | None = None):  
 # ── 环境与初始状态 ──────────────────────────────────────────────────────────
 
 
+def test_browser_environment_limits_are_editable_and_persisted(qapp, tmp_path: Path):
+    page = _page(tmp_path)
+    try:
+        assert page._browser_rotate_minutes.value() == 5
+        assert page._browser_rotate_pages.value() == 10
+        page._browser_rotate_minutes.setValue(7)
+        page._browser_rotate_pages.setValue(4)
+        page._persist()
+        restored = _store(tmp_path).load().filters
+        assert restored.browser_rotate_seconds == 420 and restored.browser_rotate_pages == 4
+    finally:
+        page.shutdown()
+
+
 def test_page_shows_environment_message(qapp, tmp_path: Path) -> None:  # noqa: ANN001
     page = _page(tmp_path)
     assert "爬虫就绪" in page._environment_label.text()
@@ -92,11 +106,13 @@ def test_page_loads_persisted_filters(qapp, tmp_path: Path) -> None:  # noqa: AN
     config = SpiderConfig(filters=SpiderFilters(time_mode="range", min_accounts=3, headless=True))
     page = _page(tmp_path, config=config)
 
-    assert page._min_accounts.value() == 3
+    task = page._task_widgets["accounts"]
+    assert task["threshold"].value() == 3
     assert page._headless.isChecked() is True
-    assert page._time_mode.currentData() == "range"
-    assert page._start_date.isEnabled() is True
-    assert page._days.isEnabled() is False
+    assert task["preset"].currentData() == "range"
+    assert task["start"].isEnabled() is True
+    assert task["days"].isEnabled() is False
+    assert not hasattr(page, "_time_mode")
 
 
 # ── 账号管理 ────────────────────────────────────────────────────────────────
@@ -319,7 +335,7 @@ def test_run_persists_current_form_values(qapp, tmp_path: Path) -> None:  # noqa
     runner = _FakeRunner(SpiderRunResult(success=True, message="ok"))
     page = _page(tmp_path, runner=runner)
     _import_one_account(page)
-    page._min_accounts.setValue(4)
+    page._task_widgets["accounts"]["threshold"].setValue(4)
     page._enable_fuzzy.setChecked(False)
 
     page._start_crawl()
@@ -717,7 +733,7 @@ def test_finish_login_closes_browser_and_reports(qapp, tmp_path: Path, monkeypat
     assert closed == [True]
     assert page._login_session is None
     assert page._login_done.isEnabled() is False
-    assert "快手登录态已保存" in page._result_caption.text()
+    assert "快手 Cookie 已保存" in page._result_caption.text()
 
 
 def test_finish_login_without_session_is_safe(qapp, tmp_path: Path) -> None:  # noqa: ANN001

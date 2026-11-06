@@ -27,6 +27,15 @@ from jingxu.infrastructure.spider import (
 # ── 平台识别 ────────────────────────────────────────────────────────────────
 
 
+def test_browser_rotation_settings_roundtrip_and_cli_config() -> None:
+    config = SpiderConfig(filters=SpiderFilters(browser_rotate_seconds=720, browser_rotate_pages=3))
+    restored = SpiderConfig.from_dict(config.to_dict())
+    assert restored.filters.browser_rotate_seconds == 720
+    assert restored.filters.browser_rotate_pages == 3
+    document = spider_service._cli_config_document(restored)
+    assert document["browser_rotate_seconds"] == 720 and document["browser_rotate_pages"] == 3
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -882,9 +891,10 @@ def test_summarise_failure_handles_only_noise() -> None:
     assert summarise_failure(["版本: 1.0", "==="], exit_code=1) == "==="
 
 
-def test_runner_uses_bounded_default_timeout() -> None:
-    """默认必须有兜底超时，否则子进程挂死会无限等待。"""
-    assert spider_service.DEFAULT_RUN_TIMEOUT_SECONDS > 0
+def test_runner_has_no_fixed_total_crawl_deadline() -> None:
+    """多账号任务由用户取消，不因累计达到1800秒丢弃后续账号。"""
+    assert spider_service.DEFAULT_RUN_TIMEOUT_SECONDS is None
+    assert spider_service.SpiderRunner()._timeout is None
 
 
 class _SlowProcess:

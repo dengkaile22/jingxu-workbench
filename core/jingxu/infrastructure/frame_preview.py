@@ -1,8 +1,9 @@
 """单帧合成预览：把主片与叠层参数渲染成一张 JPEG（对齐 .NET 叠层预览）。"""
 
-from __future__ import annotations
-
+import os
+import shutil
 import subprocess
+import threading
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,21 @@ from jingxu.domain.render import RenderSettings
 from jingxu.infrastructure.ffmpeg_runner import _append_input, _hidden_process_kwargs
 from jingxu.infrastructure.filter_graph import build_filter_graph
 from jingxu.infrastructure.process_control import no_window_kwargs
+
+_FRAME_CACHE: dict[tuple[str, int, int, float], Path] = {}
+_FRAME_CACHE_LOCK = threading.Lock()
+_FRAME_CACHE_LIMIT = 32
+
+
+def clear_frame_cache() -> None:
+    """清空预览帧缓存并移除临时文件。"""
+    with _FRAME_CACHE_LOCK:
+        for cached in _FRAME_CACHE.values():
+            try:
+                cached.unlink(missing_ok=True)
+            except OSError:
+                pass
+        _FRAME_CACHE.clear()
 
 
 class FramePreviewError(RuntimeError):
@@ -34,7 +50,30 @@ def extract_single_frame(
     .NET 字幕实验室支持在视频画面上直接框选字幕区域；Python 版此前只有百分比
     输入框，用户很难填对。这里抽出首帧作为底图，配合可拖拽的选框使用。
     """
+    video_path = Path(video_path)
+    output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cache_key: tuple[str, int, int, float] | None = None
+    try:
+        stat = video_path.stat()
+        cache_key = (
+            os.path.normcase(os.path.abspath(str(video_path))),
+            stat.st_mtime_ns,
+            stat.st_size,
+            round(max(0.0, timestamp), 3),
+        )
+    except OSError:
+        pass
+
+    if cache_key is not None:
+        with _FRAME_CACHE_LOCK:
+            cached_path = _FRAME_CACHE.get(cache_key)
+            if cached_path is not None and cached_path.is_file():
+                if os.path.normcase(os.path.abspath(str(cached_path))) != os.path.normcase(os.path.abspath(str(output_path))):
+                    shutil.copyfile(cached_path, output_path)
+                return output_path
+
     command = [
         str(ffmpeg_path),
         "-hide_banner",
@@ -69,6 +108,23 @@ def extract_single_frame(
         detail = (completed.stderr or "").strip().splitlines()
         message = detail[-1] if detail else f"退出码 {completed.returncode}"
         raise FramePreviewError(f"抽取预览帧失败：{message}")
+
+    if cache_key is not None:
+        with _FRAME_CACHE_LOCK:
+            if len(_FRAME_CACHE) >= _FRAME_CACHE_LIMIT:
+                old_key = next(iter(_FRAME_CACHE))
+                old_file = _FRAME_CACHE.pop(old_key)
+                try:
+                    old_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            cache_file = output_path.parent / f".cached_frame_{uuid4().hex[:8]}.png"
+            try:
+                shutil.copyfile(output_path, cache_file)
+                _FRAME_CACHE[cache_key] = cache_file
+            except OSError:
+                pass
+
     return output_path
 
 

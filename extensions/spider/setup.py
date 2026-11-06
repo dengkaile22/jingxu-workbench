@@ -12,6 +12,7 @@ setup(
         "requests>=2.28.0",
         "pandas>=2.0.0",
         "openpyxl>=3.0.0",
+        "Pillow>=10.0",
         "tabulate>=0.9.0",
         "PySide6>=6.5.0",
     ],

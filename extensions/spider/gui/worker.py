@@ -27,7 +27,9 @@ class CrawlWorker(QThread):
         time_config: TimeFilterConfig,
         filter_config: OccurrenceFilterConfig,
         headless: bool = False,
-        max_scrolls: int = 25
+        max_scrolls: int = 25,
+        browser_rotate_seconds: int = 300,
+        browser_rotate_pages: int = 10,
     ):
         super().__init__()
         self.accounts = accounts
@@ -35,6 +37,8 @@ class CrawlWorker(QThread):
         self.filter_config = filter_config
         self.headless = headless
         self.max_scrolls = max_scrolls
+        self.browser_rotate_seconds = browser_rotate_seconds
+        self.browser_rotate_pages = browser_rotate_pages
         self._is_stopped = False
         self.browser_manager: BrowserManager = None
 
@@ -43,7 +47,7 @@ class CrawlWorker(QThread):
         self._is_stopped = True
         self.log_signal.emit("[系统] 正在请求终止爬虫...")
         if self.browser_manager:
-            self.browser_manager.close()
+            self.browser_manager.stop()
 
     def run(self):
         """Execution entry point for thread."""
@@ -60,7 +64,9 @@ class CrawlWorker(QThread):
         all_crawled_items: List[VideoProductItem] = []
 
         try:
-            self.browser_manager = BrowserManager(headless=self.headless)
+            self.browser_manager = BrowserManager(headless=self.headless,
+                rotate_seconds=self.browser_rotate_seconds, rotate_pages=self.browser_rotate_pages,
+                log_callback=lambda message: self.log_signal.emit(message))
 
             douyin_crawler = DouyinCrawler(
                 browser_manager=self.browser_manager,

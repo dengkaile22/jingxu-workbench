@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+from collections import defaultdict
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -29,11 +31,13 @@ def _same_asset(left: MediaAsset, right: MediaAsset) -> bool:
     return str(left.path).casefold() == str(right.path).casefold()
 
 
+def _path_key(path: Path | str) -> str:
+    """路径键：忽略大小写绝对路径规范化（零磁盘 I/O）。"""
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
 def _same_file(left: MediaAsset, right: MediaAsset) -> bool:
-    try:
-        return Path(left.path).resolve() == Path(right.path).resolve()
-    except OSError:
-        return str(left.path).casefold() == str(right.path).casefold()
+    return _path_key(left.path) == _path_key(right.path)
 
 
 class DoubleScreenSourceMode(str, Enum):
@@ -88,6 +92,11 @@ class DoubleScreenEffectPlan:
         return zero_based_clip_index >= 0 and zero_based_clip_index + 1 >= self.start_clip_index
 
     def selection_for(self, zero_based_clip_index: int) -> DoubleScreenClipSelection | None:
+        idx = zero_based_clip_index - (self.start_clip_index - 1)
+        if 0 <= idx < len(self.clip_selections):
+            item = self.clip_selections[idx]
+            if item.clip_index == zero_based_clip_index:
+                return item
         for selection in self.clip_selections:
             if selection.clip_index == zero_based_clip_index:
                 return selection
@@ -194,6 +203,11 @@ class FourScreenEffectPlan:
         return zero_based_clip_index >= 0 and zero_based_clip_index + 1 >= self.start_clip_index
 
     def selection_for(self, zero_based_clip_index: int) -> FourScreenClipSelection | None:
+        idx = zero_based_clip_index - (self.start_clip_index - 1)
+        if 0 <= idx < len(self.clip_selections):
+            item = self.clip_selections[idx]
+            if item.clip_index == zero_based_clip_index:
+                return item
         for selection in self.clip_selections:
             if selection.clip_index == zero_based_clip_index:
                 return selection
@@ -214,12 +228,15 @@ class FourScreenEffectPlan:
         normalized = normalize_assets(source_assets)
         seen_paths: set[str] = set()
         unique: list[MediaAsset] = []
+        folder_candidates: dict[str, list[MediaAsset]] = defaultdict(list)
         for asset in normalized:
-            key = str(Path(asset.path).resolve()).casefold()
+            key = _path_key(asset.path)
             if key in seen_paths:
                 continue
             seen_paths.add(key)
             unique.append(asset)
+            fld = os.path.dirname(key)
+            folder_candidates[fld].append(asset)
 
         seed = plan.seed if plan.seed is not None else 0
         selections: list[FourScreenClipSelection] = []
@@ -236,14 +253,13 @@ class FourScreenEffectPlan:
             )
             random_mode = self.source_mode is FourScreenSourceMode.RANDOM_CURRENT_FOLDER
             main_position = random.next_int(4) if random_mode else 0
-            folder = str(Path(main.path).resolve().parent).casefold()
+            folder = os.path.dirname(_path_key(main.path))
             candidates: list[MediaAsset] = []
             if random_mode:
                 candidates = [
                     asset
-                    for asset in unique
+                    for asset in folder_candidates[folder]
                     if not _same_asset(asset, main)
-                    and str(Path(asset.path).resolve().parent).casefold() == folder
                 ]
 
             for index in range(len(candidates) - 1, 0, -1):

@@ -5,7 +5,7 @@ param(
     # 输出目录；默认 artifacts/release（与 .NET 版统一到同一交付目录）
     [string] $OutputDirectory = "",
     # 产品版本（写入 MSI ProductVersion，四段数字）
-    [string] $ProductVersion = "1.0.6.0",
+    [string] $ProductVersion = "1.1.1.0",
     # 便携目录缺失时自动先跑打包脚本
     [switch] $SkipPortableBuild
 )
@@ -52,7 +52,7 @@ function Find-WixExecutable {
 }
 
 $repoRoot = Resolve-RepoRoot
-$appName = '炳恒快速混剪'
+$appName = '清影快速混剪'
 if ([string]::IsNullOrWhiteSpace($PortableDirectory)) {
     $PortableDirectory = Join-Path $repoRoot 'artifacts\py-build'
     $PortableDirectory = Join-Path $PortableDirectory $appName

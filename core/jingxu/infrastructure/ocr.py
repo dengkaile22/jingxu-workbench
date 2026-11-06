@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import math
+import os
 import shutil
 import statistics
 import subprocess
@@ -465,20 +467,52 @@ def detect_subtitle_regions(
         raise OcrError(f"无法创建 OCR 临时目录：{error}") from error
 
     try:
-        frame_paths: list[Path] = []
-        frame_times: list[float] = []
         total = len(samples)
-        for position, timestamp in enumerate(samples):
-            check_cancelled()
-            frame_path = session_dir / f"frame_{position:04d}.png"
-            if _extract_frame(Path(ffmpeg_path), video, timestamp, frame_path):
-                frame_paths.append(frame_path)
-                frame_times.append(timestamp)
-            report(
-                FRAME_EXTRACT_PROGRESS[0]
-                + (FRAME_EXTRACT_PROGRESS[1] - FRAME_EXTRACT_PROGRESS[0]) * (position + 1) / total,
-                f"抽帧 {position + 1}/{total}",
-            )
+        results: list[tuple[Path, float] | None] = [None] * total
+        max_workers = min(4, os.cpu_count() or 1, total) if total > 1 else 1
+
+        def extract_job(pos: int, ts: float) -> tuple[int, Path, float, bool]:
+            target = session_dir / f"frame_{pos:04d}.png"
+            ok = _extract_frame(Path(ffmpeg_path), video, ts, target)
+            return pos, target, ts, ok
+
+        completed_count = 0
+        if max_workers <= 1:
+            for position, timestamp in enumerate(samples):
+                check_cancelled()
+                frame_path = session_dir / f"frame_{position:04d}.png"
+                if _extract_frame(Path(ffmpeg_path), video, timestamp, frame_path):
+                    results[position] = (frame_path, timestamp)
+                completed_count += 1
+                report(
+                    FRAME_EXTRACT_PROGRESS[0]
+                    + (FRAME_EXTRACT_PROGRESS[1] - FRAME_EXTRACT_PROGRESS[0]) * completed_count / total,
+                    f"抽帧 {completed_count}/{total}",
+                )
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(extract_job, pos, ts): pos
+                    for pos, ts in enumerate(samples)
+                }
+                try:
+                    for future in concurrent.futures.as_completed(futures):
+                        check_cancelled()
+                        pos, target, ts, ok = future.result()
+                        if ok:
+                            results[pos] = (target, ts)
+                        completed_count += 1
+                        report(
+                            FRAME_EXTRACT_PROGRESS[0]
+                            + (FRAME_EXTRACT_PROGRESS[1] - FRAME_EXTRACT_PROGRESS[0]) * completed_count / total,
+                            f"抽帧 {completed_count}/{total}",
+                        )
+                except Exception:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+
+        frame_paths: list[Path] = [r[0] for r in results if r is not None]
+        frame_times: list[float] = [r[1] for r in results if r is not None]
 
         if not frame_paths:
             raise OcrError("抽帧失败，无法继续 OCR。")

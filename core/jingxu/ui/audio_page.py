@@ -16,7 +16,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from jingxu.infrastructure.audio_library import AudioLibrary, AudioProbeError, AudioTrack, probe_audio
+from jingxu.infrastructure.audio_library import (
+    AudioLibrary,
+    AudioProbeError,
+    AudioTrack,
+    probe_audio,
+    probe_audio_batch,
+)
 from jingxu.ui.widgets import Caption, SecondaryButton, SectionHeader
 
 AUDIO_FILTER = "音频文件 (*.mp3 *.m4a *.aac *.wav *.flac *.ogg *.wma);;所有文件 (*)"
@@ -114,11 +120,11 @@ class AudioPage(QWidget):
 
         tracks: list[AudioTrack] = []
         failures: list[str] = []
-        for raw in files:
-            path = Path(raw)
-            try:
-                tracks.append(probe_audio(path, self._ffprobe))
-            except AudioProbeError as error:
+        batch_results = probe_audio_batch([Path(raw) for raw in files], self._ffprobe)
+        for _, track, error in batch_results:
+            if track is not None:
+                tracks.append(track)
+            else:
                 failures.append(str(error))
 
         added = self._library.add(tracks)

@@ -16,7 +16,7 @@ from jingxu.ui.assets_loader import icon_path, logo_path
 
 
 def build_logo_widget(*, size: int = 28) -> QLabel:
-    """品牌 logo 控件：优先用 AppLogo.png，缺失时回退到「炳」文字标记。
+    """品牌 logo 控件：优先用 AppLogo.png，缺失时回退到「清」文字标记。
 
     .NET 版 ShellWindow.xaml 用 ``<Image Source="Assets/AppLogo.png">``，
     这里保持一致；资源不可用时不能让界面空一块，故保留文字降级。
@@ -36,9 +36,9 @@ def build_logo_widget(*, size: int = 28) -> QLabel:
                     Qt.TransformationMode.SmoothTransformation,
                 )
             )
-            label.setToolTip("炳恒快速混剪")
+            label.setToolTip("清影快速混剪")
             return label
-    label.setText("炳")
+    label.setText("清")
     label.setStyleSheet(
         f"background: {theme.BRAND_PRIMARY}; color: {theme.ON_BRAND};"
         f"border-radius: {max(4, size // 4)}px; font-weight: 700;"

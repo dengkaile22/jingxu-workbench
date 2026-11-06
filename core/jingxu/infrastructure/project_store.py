@@ -128,7 +128,7 @@ def document_from_payload(
 
 def _same_path(left: Path, right: Path) -> bool:
     try:
-        return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
+        return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(os.path.abspath(str(right)))
     except OSError:
         return left == right
 

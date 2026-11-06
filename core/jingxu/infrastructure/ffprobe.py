@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import threading
 import uuid
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 from jingxu.domain.media import MediaAsset, extract_sequence_index
@@ -99,11 +104,35 @@ def parse_probe_payload(payload: dict, path: Path) -> MediaAsset:
     )
 
 
+_PROBE_CACHE: dict[tuple[str, int, int, str], MediaAsset] = {}
+_PROBE_CACHE_LOCK = threading.Lock()
+_PROBE_CACHE_MAX_SIZE = 1024
+
+
+def clear_probe_cache() -> None:
+    """清空 ffprobe 内存元数据缓存。"""
+    with _PROBE_CACHE_LOCK:
+        _PROBE_CACHE.clear()
+
+
 def probe_media(path: Path, ffprobe_path: Path, *, timeout: float = 60.0) -> MediaAsset:
-    """调用 ffprobe 探测单个素材。"""
+    """调用 ffprobe 探测单个素材（带 mtime+size 感知的高性能缓存）。"""
     path = Path(path)
     if not path.is_file():
         raise ProbeError(f"素材不存在：{path}")
+
+    # 尝试命中元数据缓存：避免相同/未修改文件的重复外部进程启动开销
+    cache_key: tuple[str, int, int, str] | None = None
+    try:
+        stat = path.stat()
+        resolved_tool = str(ffprobe_path.resolve()) if ffprobe_path.exists() else str(ffprobe_path)
+        cache_key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size, resolved_tool)
+        with _PROBE_CACHE_LOCK:
+            cached = _PROBE_CACHE.get(cache_key)
+            if cached is not None:
+                return replace(cached, asset_id=uuid.uuid4().hex)
+    except OSError:
+        pass
 
     command = [
         str(ffprobe_path),
@@ -142,4 +171,61 @@ def probe_media(path: Path, ffprobe_path: Path, *, timeout: float = 60.0) -> Med
     except json.JSONDecodeError as error:
         raise ProbeError(f"探测输出无法解析：{path.name}") from error
 
-    return parse_probe_payload(payload, path)
+    asset = parse_probe_payload(payload, path)
+
+    if cache_key is not None:
+        with _PROBE_CACHE_LOCK:
+            if len(_PROBE_CACHE) >= _PROBE_CACHE_MAX_SIZE:
+                keys = list(_PROBE_CACHE.keys())[:256]
+                for old_key in keys:
+                    _PROBE_CACHE.pop(old_key, None)
+            _PROBE_CACHE[cache_key] = asset
+
+    return asset
+
+
+def probe_media_batch(
+    paths: Sequence[Path | str],
+    ffprobe_path: Path,
+    *,
+    probe_fn: Callable[..., MediaAsset] | None = None,
+    max_workers: int | None = None,
+    timeout: float = 60.0,
+) -> list[tuple[Path, MediaAsset | None, str | None]]:
+    """并发探测多个素材，返回保序列表：[(path, asset_or_none, error_message_or_none), ...]
+
+    利用线程池并行拉起 ffprobe 外部进程，大幅消除多素材导入与工程加载时的串行耗时。
+    """
+    path_objs = [Path(p) for p in paths]
+    if not path_objs:
+        return []
+
+    probe = probe_fn or probe_media
+
+    def _call_probe(target_path: Path) -> MediaAsset:
+        if probe_fn is not None:
+            return probe_fn(target_path, ffprobe_path)
+        return probe_media(target_path, ffprobe_path, timeout=timeout)
+
+    if len(path_objs) == 1:
+        target = path_objs[0]
+        try:
+            return [(target, _call_probe(target), None)]
+        except ProbeError as error:
+            return [(target, None, str(error))]
+        except Exception as error:  # noqa: BLE001
+            return [(target, None, str(error))]
+
+    workers = max_workers or min(8, max(2, os.cpu_count() or 4))
+
+    def _worker(target_path: Path) -> tuple[Path, MediaAsset | None, str | None]:
+        try:
+            return (target_path, _call_probe(target_path), None)
+        except ProbeError as error:
+            return (target_path, None, str(error))
+        except Exception as error:  # noqa: BLE001
+            return (target_path, None, str(error))
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(_worker, path_objs))
+

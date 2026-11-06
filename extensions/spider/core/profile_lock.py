@@ -38,6 +38,7 @@ import json
 import os
 import subprocess
 from typing import Callable, Iterable, Sequence
+from pathlib import Path
 
 # 会独占 user_data_dir 的内核进程名（小写，含 .exe）。
 BROWSER_PROCESS_NAMES = frozenset(
@@ -434,3 +435,42 @@ def remove_stale_locks(profile_directory: str | os.PathLike[str]) -> tuple[str, 
             continue
         removed.append(name)
     return tuple(removed)
+
+
+def owned_profile_directories(session_directory):
+    """Return legacy and marked disposable profiles within this app's directory."""
+    root = Path(session_directory).resolve()
+    result = [root]
+    environments = root / 'environments'
+    if environments.is_symlink() or getattr(environments, 'is_junction', lambda: False)():
+        return result
+    if not environments.is_dir():
+        return result
+    for path in environments.glob('env-*'):
+        if path.is_symlink() or getattr(path, 'is_junction', lambda: False)():
+            continue
+        if not path.resolve().is_relative_to(environments.resolve()):
+            continue
+        try:
+            marker = json.loads((path / '.jingxu-environment.json').read_text(encoding='utf-8'))
+            if not marker.get('token') or Path(marker.get('sessionDirectory', '')).resolve() != root:
+                continue
+            result.append(path.resolve())
+        except (OSError, ValueError, TypeError):
+            continue
+    return result
+
+
+def probe_session_holder_pids(session_directory, *, probe=None):
+    pids = set()
+    for profile in owned_profile_directories(session_directory):
+        pids.update(probe_holder_pids(profile, probe=probe))
+    return tuple(sorted(pids))
+
+
+def terminate_session_holders(session_directory, *, timeout=3.0):
+    """Terminate only profiles explicitly owned by this app's session directory."""
+    remaining = set()
+    for profile in owned_profile_directories(session_directory):
+        remaining.update(terminate_profile_holders(profile, timeout=timeout))
+    return tuple(sorted(remaining))

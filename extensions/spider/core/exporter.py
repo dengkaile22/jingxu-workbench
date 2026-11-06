@@ -6,6 +6,7 @@ import os
 import csv
 import json
 import tempfile
+import io
 from typing import List, Dict, Any, Optional
 from datetime import date, datetime
 
@@ -14,6 +15,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, NamedSty
 from openpyxl.utils import get_column_letter
 
 from core.models import RetainedProduct, VideoProductItem, AccountTarget
+from core.product_images import load_product_images
 from core.record_identity import (
     account_profile_url,
     deduplicate_accounts,
@@ -23,6 +25,7 @@ from core.record_identity import (
 
 RETAINED_HEADERS = [
     "序号",
+    "商品主图",
     "商品名称",
     "清洗归一名称",
     "涉及平台",
@@ -48,6 +51,7 @@ DETAIL_HEADERS = [
     "商品价格",
     "视频链接",
     "商品链接",
+    "商品主图",
 ]
 
 ACCOUNT_HEADERS = [
@@ -66,6 +70,7 @@ def _build_retained_rows(retained_products: List[RetainedProduct]) -> List[List[
         rows.append(
             [
                 idx,
+                p.cover_url,
                 p.product_name,
                 p.cleaned_name,
                 p.platform,
@@ -108,6 +113,7 @@ def _build_detail_rows(all_items: List[VideoProductItem]) -> List[List[Any]]:
                 it.price,
                 it.video_url,
                 it.detail_url,
+                it.cover_url,
             ]
         )
     return rows
@@ -215,7 +221,7 @@ def _write_sheet(worksheet, headers: List[str], rows: List[List[Any]]) -> None:
                 if isinstance(cell.value, date):
                     cell.number_format = "yyyy-mm-dd"
             val_str = str(cell.value or "")
-            char_len = sum(2 if ord(c) > 127 else 1 for c in val_str)
+            char_len = len(val_str) if val_str.isascii() else len(val_str.encode("gbk", "replace"))
             if char_len > max_len:
                 max_len = char_len
         worksheet.column_dimensions[col_letter].width = max(10, min(max_len + 4, 60))
@@ -223,6 +229,40 @@ def _write_sheet(worksheet, headers: List[str], rows: List[List[Any]]) -> None:
     worksheet.row_dimensions[1].height = 26
     for r in range(2, worksheet.max_row + 1):
         worksheet.row_dimensions[r].height = 20
+
+
+def _attach_product_images(worksheet, products, image_data) -> None:
+    """Embed actual product thumbnails; preserve clickable URLs when retrieval fails."""
+    image_column = next((cell.column for cell in worksheet[1] if cell.value == "商品主图"), None)
+    if image_column is None:
+        return
+    for row, product in enumerate(products, 2):
+        cell = worksheet.cell(row, image_column)
+        if product.cover_url.startswith(("http://", "https://")):
+            cell.hyperlink = product.cover_url
+        data = image_data.get(product.cover_url)
+        if not data:
+            continue
+        try:
+            from PIL import Image as PillowImage
+            from openpyxl.drawing.image import Image
+            with PillowImage.open(io.BytesIO(data)) as original:
+                if original.width * original.height > 20_000_000:
+                    continue
+                thumbnail = original.convert("RGBA")
+                thumbnail.thumbnail((72, 72))
+                stream = io.BytesIO()
+                thumbnail.save(stream, format="PNG")
+                stream.seek(0)
+            image = Image(stream)
+            worksheet.add_image(image, f"{get_column_letter(image_column)}{row}")
+            # Keep the hyperlink data, but display the picture without a long URL underneath.
+            cell.number_format = ";;;"
+            worksheet.row_dimensions[row].height = 58
+            worksheet.column_dimensions[get_column_letter(image_column)].width = 14
+        except Exception:  # Image decoding is optional; retain the product URL on failure.
+            # Broken/missing product images must not destroy an otherwise valid report.
+            continue
 
 
 class DataExporter:
@@ -234,17 +274,46 @@ class DataExporter:
         retained_products: List[RetainedProduct],
         all_items: List[VideoProductItem],
         accounts: List[AccountTarget] = None,
+        *, reports=None,
     ) -> str:
         """Export analysis results to a styled Excel file with multiple sheets."""
         all_items = deduplicate_items(all_items)
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
 
         workbook = Workbook()
-        summary_sheet = workbook.active
-        summary_sheet.title = f"保留相同商品汇总({len(retained_products)}款)"
-        _write_sheet(
-            summary_sheet, RETAINED_HEADERS, _build_retained_rows(retained_products)
-        )
+        image_products = retained_products if reports is None else [p for report in reports for p in report.products]
+        image_data = load_product_images(p.cover_url for p in image_products)
+        if reports is None:
+            summary_sheet = workbook.active
+            summary_sheet.title = f"保留相同商品汇总({len(retained_products)}款)"
+            _write_sheet(summary_sheet, RETAINED_HEADERS, _build_retained_rows(retained_products))
+            _attach_product_images(summary_sheet, retained_products, image_data)
+        else:
+            workbook.remove(workbook.active)
+            for index, report in enumerate(reports, 1):
+                for platform, label, color in (("douyin", "抖音", "EC7299"), ("kuaishou", "快手", "ECA34D")):
+                    name = f"{report.task.name}·{label}"
+                    if name in workbook.sheetnames:
+                        name += f"·{index}"
+                    summary_sheet = workbook.create_sheet(name)
+                    summary_sheet.sheet_properties.tabColor = color
+                    products = [p for p in report.products if p.platform == platform]
+                    mode = report.task.filter_config.filter_by
+                    columns = [index for index, header in enumerate(RETAINED_HEADERS)
+                               if not (header == "共同带货账号数" and mode not in ("accounts", "both"))
+                               and not (header == "带货视频总数" and mode not in ("total", "both"))]
+                    _write_sheet(summary_sheet, [RETAINED_HEADERS[index] for index in columns],
+                                 [[row[index] for index in columns] for row in _build_retained_rows(products)])
+                    _attach_product_images(summary_sheet, products, image_data)
+            settings = workbook.create_sheet("筛选任务设置")
+            rows = []
+            for report in reports:
+                config = report.task.filter_config
+                time = report.task.time_config
+                threshold = config.min_like_count if config.filter_by == "likes" else config.min_total_occurrences if config.filter_by == "total" else config.min_account_count
+                period = f"近{time.days}天" if time.mode == "days" else "不限时间" if time.mode == "all" else f"{time.start_date or '不限起始'} ~ {time.end_date or '不限结束'}"
+                rows.append([report.task.name, threshold, period, "抖音 / 快手分别统计"])
+            _write_sheet(settings, ["筛选条件", "门槛", "时间范围", "平台"], rows)
 
         detail_sheet = workbook.create_sheet(f"全部带货商品明细({len(all_items)}条)")
         _write_sheet(detail_sheet, DETAIL_HEADERS, _build_detail_rows(all_items))
@@ -254,7 +323,15 @@ class DataExporter:
             account_sheet = workbook.create_sheet("对标账号爬取统计")
             _write_sheet(account_sheet, ACCOUNT_HEADERS, account_rows)
 
-        workbook.save(file_path)
+        fd, temporary = tempfile.mkstemp(prefix=".jingxu-report-", suffix=".xlsx", dir=os.path.dirname(os.path.abspath(file_path)))
+        os.close(fd)
+        try:
+            workbook.save(temporary)
+            os.replace(temporary, file_path)
+        finally:
+            workbook.close()
+            if os.path.exists(temporary):
+                os.unlink(temporary)
         return file_path
 
     @staticmethod
@@ -280,6 +357,7 @@ class DataExporter:
                         "参考价格区间": p.price_range,
                         "示例视频日期": p.sample_video_date,
                         "示例视频链接": p.sample_video_url,
+                        "商品主图": p.cover_url,
                     }
                 )
         return file_path
@@ -292,6 +370,7 @@ class DataExporter:
         excel_path: Optional[str] = None,
         diagnostics: Optional[Dict[str, Any]] = None,
         accounts: list[AccountTarget] | None = None,
+        reports=None,
     ) -> str:
         """Export full data to JSON.
 
@@ -333,6 +412,7 @@ class DataExporter:
             "account_resolutions": [account_data(acc) for acc in (accounts or [])],
             "crawl_complete": not incomplete,
             "message": message,
+            "reports": [report.to_dict() for report in reports] if reports is not None else [],
         }
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
         directory = os.path.dirname(os.path.abspath(file_path))

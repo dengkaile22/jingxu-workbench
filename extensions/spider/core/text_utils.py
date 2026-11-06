@@ -3,6 +3,7 @@ Text processing and similarity clustering utilities for e-commerce product title
 """
 
 import re
+import math
 from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import Set, Any
@@ -51,6 +52,13 @@ NOISE_KEYWORDS = [
     r"全网热销",
 ]
 
+# Precompiled regexes for high-performance title cleaning
+_NOISE_BRACKET_RE = re.compile("|".join(NOISE_BRACKET_PATTERNS), re.IGNORECASE)
+_NOISE_KEYWORDS_RE = re.compile("|".join(NOISE_KEYWORDS), re.IGNORECASE)
+_LEADING_BRACKETS_RE = re.compile(r"^[【\[\(（]+", re.UNICODE)
+_TRAILING_BRACKETS_RE = re.compile(r"[】\]\)）]+$", re.UNICODE)
+_COLLAPSE_SPACES_RE = re.compile(r"\s+", re.UNICODE)
+
 # Symbols / emojis regex
 SYMBOLS_RE = re.compile(
     r"[\s\-_——\|\/\\★☆◆◇●○▲△▼▽【】\[\]（）\(\)《》「」" "''“”‘’!！?？~～#]+", re.UNICODE
@@ -68,24 +76,22 @@ def clean_product_title(title: str) -> str:
 
     cleaned = title.strip()
 
-    # 1. Remove bracketed promo sections
-    for pat in NOISE_BRACKET_PATTERNS:
-        cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE)
+    # 1. Remove bracketed promo sections (compiled single pass)
+    cleaned = _NOISE_BRACKET_RE.sub("", cleaned)
 
-    # 2. Remove isolated promo keywords
-    for kw in NOISE_KEYWORDS:
-        cleaned = re.sub(kw, "", cleaned, flags=re.IGNORECASE)
+    # 2. Remove isolated promo keywords (compiled single pass)
+    cleaned = _NOISE_KEYWORDS_RE.sub("", cleaned)
 
     # 3. Clean leading / trailing leftover brackets and punctuation
-    cleaned = re.sub(r"^[【\[\(（]+", "", cleaned)
-    cleaned = re.sub(r"[】\]\)）]+$", "", cleaned)
+    cleaned = _LEADING_BRACKETS_RE.sub("", cleaned)
+    cleaned = _TRAILING_BRACKETS_RE.sub("", cleaned)
 
     # 4. Collapse multiple spaces and symbols
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = _COLLAPSE_SPACES_RE.sub(" ", cleaned).strip()
 
     # 5. If over-cleaned to empty, fallback to basic stripped original
     if not cleaned:
-        cleaned = re.sub(r"\s+", " ", title).strip()
+        cleaned = _COLLAPSE_SPACES_RE.sub(" ", title).strip()
 
     return cleaned
 
@@ -144,6 +150,16 @@ def calculate_string_similarity(
     intersection = len(grams1 & grams2)
     union = len(grams1) + len(grams2) - intersection
     jaccard_ratio = intersection / union if union else 0.0
+
+    # Fast mathematical upper-bound pruning:
+    # SequenceMatcher's maximum possible ratio is real_quick_ratio() = 2.0 * short_len / (len(t1_clean) + len(t2_clean)).
+    # If the combined upper bound cannot reach minimum, short-circuit immediately without
+    # allocating SequenceMatcher and building its index structures.
+    if minimum > 0:
+        max_sm = (2.0 * short_len) / (len(t1_clean) + len(t2_clean))
+        if 0.5 * max_sm + 0.5 * jaccard_ratio + 0.00005 < minimum:
+            return 0.0
+
     matcher = SequenceMatcher(None, t1_clean, t2_clean)
     # quick_ratio is an upper bound, not a replacement score. Account for
     # round(..., 4) so pruning cannot change threshold or tie decisions.
@@ -196,6 +212,8 @@ def parse_chinese_count_str(val: Any) -> int:
     try:
         base = float(num_str)
     except ValueError:
+        return 0
+    if not math.isfinite(base):
         return 0
 
     if unit in ("万", "w", "W"):

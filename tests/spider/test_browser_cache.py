@@ -1,11 +1,9 @@
 """Cache maintenance must never remove cookies or other persistent login state."""
 import hashlib
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from core.browser_cache import CACHE_DIRECTORIES, ProfileSessionLock, cleanup_profile_cache
-from core.browser_manager import BrowserManager
 from core.browser_manager import BrowserSessionStopped
 from DrissionPage.errors import PageDisconnectedError
 
@@ -70,38 +68,39 @@ def test_refuses_cache_links_to_external_content(tmp_path):
     assert protected.read_bytes() == b'fake-login-state'
 
 
-def test_browser_lifecycle_automatically_cleans_without_losing_cookies(tmp_path, monkeypatch):
-    cookie = write(tmp_path,'Default/Network/Cookies')
-    cache = write(tmp_path,'Default/Cache/before')
-    monkeypatch.setattr('core.profile_lock.profile_holder_state',lambda _root: ())
-    page = SimpleNamespace(quit=lambda: None)
-    monkeypatch.setattr('core.browser_manager.ChromiumPage',lambda **_kwargs: page)
-    manager = BrowserManager(user_data_dir=str(tmp_path))
-    assert manager.get_page() is page
-    assert not cache.exists()
-    cache = write(tmp_path,'Default/Cache/during')
+def test_browser_lifecycle_uses_fresh_profiles_and_saved_cookies(tmp_path, owned_browser):
+    import json
+    manager = owned_browser.make_manager()
+    first = manager.get_page()
+    first.cookies = [{'name': 'sessionid', 'value': 'synthetic-login', 'domain': '.douyin.com', 'path': '/', 'session': True}]
+    profile = Path(manager.user_data_dir)
+    cache = write(profile, 'Default/Cache/old', b'cache')
     manager.close()
-    assert not cache.exists()
-    assert cookie.read_bytes() == b'fake-login-state'
-    manager.get_page(); manager.close()
+    assert not profile.exists() and not cache.exists()
+    stored = json.loads(manager.cookie_store.path.read_text(encoding='utf-8'))
+    assert stored['cookies'][0]['value'] == 'synthetic-login'
+    second = manager.get_page()
+    assert Path(manager.user_data_dir) != profile
+    assert second.cookies[0]['value'] == 'synthetic-login'
+    assert second.process_id != first.process_id
 
 
-def test_port_selection_retains_original_login_profile(tmp_path):
-    manager=BrowserManager(user_data_dir=str(tmp_path))
-    options=manager.get_options()
-    assert Path(options.user_data_path).resolve() == tmp_path.resolve()
-    assert not options.is_auto_port
+def test_port_selection_uses_disposable_profile_and_owned_connection(tmp_path, owned_browser):
+    manager = owned_browser.make_manager()
+    options = manager.get_options()
+    assert Path(options.user_data_path).parent == manager.session_directory/'environments'
+    assert Path(options.user_data_path) != manager.session_directory
+    assert not options.is_auto_port and options.is_existing_only
     assert options.address.startswith('127.0.0.1:')
+    manager.close()
 
 
-def test_browser_start_failure_releases_session_lease(tmp_path, monkeypatch):
-    monkeypatch.setattr('core.profile_lock.profile_holder_state',lambda _root: ())
-    def fail(**_kwargs):
-        raise RuntimeError('synthetic browser failure')
-    monkeypatch.setattr('core.browser_manager.ChromiumPage',fail)
-    manager=BrowserManager(user_data_dir=str(tmp_path))
+def test_browser_start_failure_releases_session_lease(tmp_path, monkeypatch, owned_browser):
+    manager = owned_browser.make_manager()
+    def fail(_options): raise RuntimeError('synthetic browser failure')
+    monkeypatch.setattr(manager, '_launch_owned_browser', fail)
     with pytest.raises(RuntimeError): manager.get_page()
-    lock=ProfileSessionLock(tmp_path)
+    lock = ProfileSessionLock(manager.session_directory)
     assert lock.acquire()
     lock.close()
 
@@ -134,89 +133,59 @@ def test_windows_cache_junction_cannot_remove_external_login_data(tmp_path):
     assert cookie.read_bytes()==b'fake-login-state'
 
 
-def test_cached_disconnected_page_reopens_same_profile_and_preserves_cookies(tmp_path, monkeypatch):
-    monkeypatch.setattr('core.profile_lock.profile_holder_state', lambda _root: ())
-    cookie = write(tmp_path, 'Default/Network/Cookies')
-    pages = []
-    options = []
-    def create(**kwargs):
-        options.append(kwargs['addr_or_opts'])
-        page = SimpleNamespace(states=SimpleNamespace(is_alive=True), quit=lambda: None)
-        pages.append(page)
-        return page
-    monkeypatch.setattr('core.browser_manager.ChromiumPage', create)
-    manager = BrowserManager(user_data_dir=str(tmp_path))
+def test_disconnected_page_reopens_fresh_environment_and_restores_cookies(tmp_path, owned_browser):
+    manager = owned_browser.make_manager()
     first = manager.get_page()
+    first.cookies = [{'name': 'sessionid', 'value': 'synthetic-login', 'domain': '.douyin.com', 'session': True}]
+    assert manager.save_cookies()
+    profile = Path(manager.user_data_dir)
     first.states.is_alive = False
-    try:
-        second = manager.get_page()
-        assert second is not first and len(pages) == 2
-        assert all(Path(option.user_data_path).resolve() == tmp_path.resolve() for option in options)
-        assert cookie.read_bytes() == b'fake-login-state'
-    finally:
-        manager.close()
+    second = manager.get_page()
+    assert second is not first and Path(manager.user_data_dir) != profile
+    assert second.cookies[0]['value'] == 'synthetic-login'
+    assert not profile.exists()
 
 
-def test_stop_is_permanent_and_does_not_relaunch(tmp_path, monkeypatch):
-    monkeypatch.setattr('core.profile_lock.profile_holder_state', lambda _root: ())
-    launches = []
-    def create(**_kwargs):
-        launches.append(1)
-        return SimpleNamespace(quit=lambda: None)
-    monkeypatch.setattr('core.browser_manager.ChromiumPage', create)
-    manager = BrowserManager(user_data_dir=str(tmp_path))
+def test_stop_is_permanent_and_does_not_relaunch(tmp_path, owned_browser):
+    manager = owned_browser.make_manager()
     manager.get_page()
     manager.stop()
-    with pytest.raises(BrowserSessionStopped):
-        manager.get_page(force_new=True)
-    assert len(launches) == 1
-    lock = ProfileSessionLock(tmp_path)
-    assert lock.acquire()
-    lock.close()
+    with pytest.raises(BrowserSessionStopped): manager.get_page()
+    assert len(owned_browser.processes) == 1
+    assert all(process.poll() is not None for process in owned_browser.processes)
 
 
-def test_close_releases_lease_even_when_page_properties_and_quit_fail(tmp_path, monkeypatch):
-    monkeypatch.setattr('core.profile_lock.profile_holder_state', lambda _root: ())
-    class DeadPage:
-        @property
-        def process_id(self):
-            raise PageDisconnectedError()
-        def quit(self):
-            raise PageDisconnectedError()
-    monkeypatch.setattr('core.browser_manager.ChromiumPage', lambda **_kwargs: DeadPage())
-    manager = BrowserManager(user_data_dir=str(tmp_path))
-    manager.get_page()
-    monkeypatch.setattr('core.profile_lock.profile_holder_state', lambda _root: (_ for _ in ()).throw(OSError()))
+def test_close_releases_lease_even_when_quit_fails(tmp_path, monkeypatch, owned_browser):
+    manager = owned_browser.make_manager()
+    page = manager.get_page()
+    monkeypatch.setattr(page, 'quit', lambda **_kwargs: (_ for _ in ()).throw(PageDisconnectedError()))
     manager.close()
-    assert manager._page is None
-    lock = ProfileSessionLock(tmp_path)
+    assert manager._page is None and all(process.poll() is not None for process in owned_browser.processes)
+    lock = ProfileSessionLock(manager.session_directory)
     assert lock.acquire()
     lock.close()
 
 
-def test_cancel_during_startup_closes_created_browser_without_orphan(tmp_path, monkeypatch):
+def test_cancel_during_startup_closes_created_browser_without_orphan(tmp_path, monkeypatch, owned_browser):
     from concurrent.futures import ThreadPoolExecutor
     import threading
-    monkeypatch.setattr('core.profile_lock.profile_holder_state', lambda _root: ())
-    launching = threading.Event()
-    continue_launch = threading.Event()
-    quit_calls = []
-    def create(**_kwargs):
+    manager = owned_browser.make_manager()
+    launching, continue_launch = threading.Event(), threading.Event()
+    def launch(options):
         launching.set()
         assert continue_launch.wait(3)
-        return SimpleNamespace(quit=lambda: quit_calls.append(1))
-    monkeypatch.setattr('core.browser_manager.ChromiumPage', create)
-    manager = BrowserManager(user_data_dir=str(tmp_path))
+        owned_browser.launch(manager, options)
+    monkeypatch.setattr(manager, '_launch_owned_browser', launch)
     with ThreadPoolExecutor(max_workers=2) as pool:
         start = pool.submit(manager.get_page)
         assert launching.wait(3)
-        cancel = pool.submit(manager.stop)
+        stop = pool.submit(manager.stop)
         assert manager._stopped.wait(3)
         continue_launch.set()
-        with pytest.raises(BrowserSessionStopped):
-            start.result(timeout=3)
-        cancel.result(timeout=3)
-    assert quit_calls == [1] and manager._page is None
-    lock = ProfileSessionLock(tmp_path)
+        with pytest.raises(BrowserSessionStopped): start.result(timeout=3)
+        stop.result(timeout=3)
+    assert manager._page is None
+    assert all(process.poll() is not None for process in owned_browser.processes)
+    lock = ProfileSessionLock(manager.session_directory)
     assert lock.acquire()
     lock.close()

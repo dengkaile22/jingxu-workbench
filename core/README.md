@@ -1,6 +1,6 @@
 # 主应用核心包
 
-`core/jingxu/` 是炳恒快速混剪的 Python 主应用包；项目配置在仓库根目录 `pyproject.toml`。
+`core/jingxu/` 是清影快速混剪的 Python 主应用包；项目配置在仓库根目录 `pyproject.toml`。
 
 从仓库根目录运行：
 

@@ -10,9 +10,12 @@ from typing import List, Optional, Callable, Dict, Any, Set
 
 from core.models import VideoProductItem, AccountTarget, TimeFilterConfig
 from core.text_utils import clean_product_title, parse_chinese_count_str
-from core.browser_manager import BrowserManager, BROWSER_SESSION_ERRORS, BrowserSessionStopped
+from core.browser_manager import BrowserManager, BROWSER_SESSION_ERRORS, BrowserSessionStopped, BrowserSessionAbnormal, BrowserEnvironmentRotated
+from core.browser_recovery import (
+    MAX_SESSION_RECOVERIES, check_browser_session, maintain_browser_cache, mark_browser_page, recover_browser_session,
+)
 from core.record_identity import deduplicate_items
-from core.extraction import ExtractionDiagnostic, extract_products
+from core.extraction import ExtractionDiagnostic, safe_extract_products as extract_products
 from core.account_identity import AccountResolutionError, extract_douyin_sec_uid, resolve_douyin_identity
 
 
@@ -352,6 +355,7 @@ def _fetch_douyin_post_api_via_browser(
             const secUid = {json.dumps(sec_uid)};
             const cursor = {max_cursor};
             const count = {count};
+            const browserVersion = (navigator.userAgent.match(new RegExp('(?:Chrome|Chromium)/([0-9.]+)')) || [])[1] || '';
             const params = new URLSearchParams({{
                 device_platform: 'webapp',
                 aid: '6383',
@@ -369,17 +373,17 @@ def _fetch_douyin_post_api_via_browser(
                 cookie_enabled: 'true',
                 screen_width: String(window.innerWidth || 1920),
                 screen_height: String(window.innerHeight || 1080),
-                browser_language: 'zh-CN',
-                browser_platform: 'Win32',
+                browser_language: navigator.language || 'zh-CN',
+                browser_platform: navigator.platform || 'Win32',
                 browser_name: 'Chrome',
-                browser_version: '126.0.0.0',
+                browser_version: browserVersion,
                 browser_online: 'true',
                 engine_name: 'Blink',
-                engine_version: '126.0.0.0',
+                engine_version: browserVersion,
                 os_name: 'Windows',
                 os_version: '10',
-                cpu_core_num: '8',
-                device_memory: '8',
+                cpu_core_num: String(navigator.hardwareConcurrency || 4),
+                device_memory: String(navigator.deviceMemory || 8),
                 platform: 'PC',
                 downlink: '10',
                 effective_type: '4g',
@@ -461,13 +465,15 @@ class DouyinCrawler:
         time_config: TimeFilterConfig,
         max_scrolls: int = 30
     ) -> List[VideoProductItem]:
-        """Recover one unexpected disconnect while retaining confirmed records."""
+        """Recover disconnects and abnormal access without losing confirmed records."""
         retained: List[VideoProductItem] = []
         self.partial_items = []
         target.scraped_videos = 0
         target.found_products = 0
         checkpoint = getattr(self, "on_checkpoint", None)
         self._active_video_ids: Set[str] = set()
+        self._resume_cursor = 0
+        self._resume_api_pages = 0
         diagnostics_start = len(self.diagnostics)
 
         def save(items):
@@ -507,28 +513,56 @@ class DouyinCrawler:
 
         self.on_checkpoint = save
         try:
-            for attempt in range(2):
+            disconnect_recoveries = session_recoveries = 0
+            force_new = False
+            while True:
                 if self.should_stop():
                     target.status = "已停止"
                     break
                 try:
                     save(self._crawl_account_once(
-                        target, time_config, max_scrolls, force_new=bool(attempt)
+                        target, time_config, max_scrolls, force_new=force_new
                     ))
+                    break
+                except BrowserEnvironmentRotated:
+                    self._seen_accounts.discard(target.sec_uid)
+                    force_new = False
+                    self.log("[抖音] 浏览器已按周期更换环境，从保存的翻页位置继续抓取。")
+                    continue
+                except BrowserSessionAbnormal:
+                    if self.should_stop():
+                        target.status = "已停止"
+                        break
+                    if session_recoveries < MAX_SESSION_RECOVERIES and recover_browser_session(
+                        self.browser_manager, "douyin", self.log, self.should_stop
+                    ):
+                        session_recoveries += 1
+                        self._seen_accounts.discard(target.sec_uid)
+                        force_new = False
+                        continue
+                    self._record_issue(DouyinResponseError(
+                        "browser_session_abnormal", "抖音主页访问异常，自动清理后仍未能恢复。",
+                        "已保留取得的数据并继续其他账号；请检查页面提示或稍后重试当前账号。",
+                    ))
+                    target.status = "已停止" if self.should_stop() else ("部分完成" if retained else "抓取失败")
                     break
                 except BROWSER_SESSION_ERRORS as error:
                     if isinstance(error, BrowserSessionStopped) or self.should_stop():
                         target.status = "已停止"
                         break
-                    if attempt == 0:
+                    if disconnect_recoveries == 0:
+                        disconnect_recoveries += 1
                         self._seen_accounts.discard(target.sec_uid)
                         self.log("[抖音] 页面连接已断开，保留已抓数据并尝试恢复一次；Cookies 与登录资料保留。")
+                        force_new = True
+                        continue
                     else:
                         self._record_issue(DouyinResponseError(
                             "page_disconnected", "抖音页面连接断开，恢复后仍未能继续抓取。",
                             "已保留取得的数据并继续其他账号；请检查浏览器或网络后重试该账号。",
                         ))
                         target.status = "部分完成" if retained else "抓取失败"
+                        break
                 except Exception:
                     # Let the CLI isolate unexpected failures, with access to
                     # confirmed rows even if recovery/startup itself fails.
@@ -562,6 +596,7 @@ class DouyinCrawler:
         if self.should_stop():
             target.status = "已停止"
             return []
+        maintain_browser_cache(self.browser_manager)
         try:
             sec_uid = resolve_douyin_identity(target.sec_uid or target.url_or_id, page=page, log=self.log)
         except AccountResolutionError as error:
@@ -635,6 +670,7 @@ class DouyinCrawler:
             pass
 
         try:
+            check_browser_session(page)
             _verify_douyin_profile(page, sec_uid)
         except DouyinResponseError as issue:
             self._record_issue(issue)
@@ -678,6 +714,11 @@ class DouyinCrawler:
             return all_products
 
         def _finish_complete() -> List[VideoProductItem]:
+            if any(self.diagnostics[index].data_error for index in diagnostic_indices.values()):
+                self._record_issue(DouyinResponseError(
+                    "invalid_product_data", "部分视频商品数据异常，已继续处理其余视频。", "有效记录已保留，可重试当前账号补全异常视频。"
+                ))
+                return _finish("部分完成")
             if pending_time_ids:
                 self._record_issue(DouyinResponseError(
                     "incomplete_video_data", "已到本次抓取边界，但部分视频仍缺少必要的发布时间。",
@@ -851,12 +892,15 @@ class DouyinCrawler:
 
         # Direct requests retry the same cursor at most three times. A successful
         # first page never proves completeness if a later request fails.
-        api_cursor = 0
-        api_page_idx = 0
+        api_cursor = self._resume_cursor
+        api_page_idx = self._resume_api_pages
         page_limit = max(0, int(max_scrolls))
         while api_page_idx < page_limit:
             if self.should_stop():
                 return _finish("已停止")
+            check_browser_session(page)
+            if api_page_idx:
+                maintain_browser_cache(self.browser_manager, api_page_idx)
             api_payload = None
             aweme_list: List[Dict[str, Any]] = []
             for attempt in range(3):
@@ -875,13 +919,16 @@ class DouyinCrawler:
                         api_payload = None
                 if not hasattr(page, "run_js"):
                     break
+                check_browser_session(page)
                 if attempt < 2:
                     time.sleep(0.3)
             if api_payload is None:
                 break
 
             new_in_page = _process_aweme_items(aweme_list)
+            mark_browser_page(self.browser_manager)
             api_page_idx += 1
+            self._resume_api_pages = api_page_idx
             self.log(
                 f"[抖音 API] {account_name} 第 {api_page_idx} 页：视频 {len(aweme_list)} 个，"
                 f"新增 {new_in_page} 个，累计商品 {len(all_products)} 件。"
@@ -897,12 +944,13 @@ class DouyinCrawler:
                 break
             try:
                 api_cursor = int(next_cursor)
+                self._resume_cursor = api_cursor
             except (TypeError, ValueError):
                 self._record_issue(DouyinResponseError(
                     "invalid_cursor", "抖音视频翻页位置无效。", "正在等待页面数据，请稍后重试完整抓取。"
                 ))
                 break
-            time.sleep(0.3)
+            time.sleep(1.0)
 
         # Listen for recovery, including successful data that arrives after a DOM
         # card. DOM discovery has its own IDs and cannot replace complete records.
@@ -911,6 +959,9 @@ class DouyinCrawler:
         while scroll_count < remaining_pages:
             if self.should_stop():
                 return _finish("已停止")
+            check_browser_session(page)
+            if scroll_count:
+                maintain_browser_cache(self.browser_manager, api_page_idx + scroll_count)
             packet = None
             try:
                 packet = page.listen.wait(timeout=3.5)
@@ -932,6 +983,7 @@ class DouyinCrawler:
                     aweme_list = _payload_awemes(res_json)
                     consecutive_invalid_responses = 0
                     new_videos_in_batch = _process_aweme_items(aweme_list)
+                    mark_browser_page(self.browser_manager)
                     if hit_time_limit or res_json.get("has_more") in (0, "0", False):
                         return _finish_complete()
                 except DouyinResponseError as issue:
@@ -946,6 +998,7 @@ class DouyinCrawler:
                     consecutive_invalid_responses += 1
 
             if new_videos_in_batch == 0:
+                check_browser_session(page)
                 dom_cards = _extract_douyin_dom_video_cards(page)
                 new_dom_ids = {
                     str(card.get("aweme_id")) for card in dom_cards if card.get("aweme_id")

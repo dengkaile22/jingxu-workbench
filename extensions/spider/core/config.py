@@ -5,6 +5,7 @@ import os
 import json
 from typing import List, Dict, Any
 from core.models import AccountTarget, TimeFilterConfig, OccurrenceFilterConfig
+from core.report_tasks import ReportTask
 
 
 DEFAULT_CONFIG_PATH = os.path.join(
@@ -41,6 +42,13 @@ SAMPLE_ACCOUNTS = [
 ]
 
 
+def _rotation_value(raw, fallback, minimum):
+    try:
+        return max(minimum, int(raw))
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+
+
 class AppConfig:
     """Manages application settings, targets, and parameters."""
 
@@ -49,7 +57,10 @@ class AppConfig:
         self.accounts: List[AccountTarget] = []
         self.time_config = TimeFilterConfig()
         self.filter_config = OccurrenceFilterConfig()
+        self.report_tasks: List[ReportTask] = []
         self.headless: bool = False
+        self.browser_rotate_seconds = 300
+        self.browser_rotate_pages = 10
         self.max_scrolls_per_account: int = 25
         self.export_dir: str = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -59,6 +70,7 @@ class AppConfig:
 
     def load(self):
         """Load configuration from JSON file or initialize with defaults."""
+        self.report_tasks = []
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, "r", encoding="utf-8-sig") as f:
@@ -89,6 +101,14 @@ class AppConfig:
                 )
 
                 self.headless = data.get("headless", False)
+                self.browser_rotate_seconds = _rotation_value(data.get("browser_rotate_seconds", 300), 300, 30)
+                self.browser_rotate_pages = _rotation_value(data.get("browser_rotate_pages", 10), 10, 1)
+                raw_tasks = data.get("report_tasks") or []
+                for task in raw_tasks if isinstance(raw_tasks, list) else []:
+                    try:
+                        self.report_tasks.append(ReportTask.from_dict(task))
+                    except (TypeError, ValueError, OverflowError):
+                        print("[配置] 已忽略格式无效的报表任务，请重新设置该任务。")
                 self.max_scrolls_per_account = data.get("max_scrolls_per_account", 25)
                 self.export_dir = data.get("export_dir", self.export_dir)
                 return
@@ -106,6 +126,7 @@ class AppConfig:
         """Save current configuration to JSON file."""
         data = {
             "accounts": [acc.to_dict() for acc in self.accounts],
+            "report_tasks": [task.to_dict() for task in self.report_tasks],
             "time_config": {
                 "mode": self.time_config.mode,
                 "days": self.time_config.days,
@@ -121,6 +142,8 @@ class AppConfig:
                 "fuzzy_threshold": self.filter_config.fuzzy_threshold,
             },
             "headless": self.headless,
+            "browser_rotate_seconds": self.browser_rotate_seconds,
+            "browser_rotate_pages": self.browser_rotate_pages,
             "max_scrolls_per_account": self.max_scrolls_per_account,
             "export_dir": self.export_dir,
         }

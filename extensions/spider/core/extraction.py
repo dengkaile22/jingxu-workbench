@@ -90,6 +90,11 @@ PRODUCT_URL_KEYS = (
     "open_url",
 )
 
+PRODUCT_ID_KEYS_SET = frozenset(PRODUCT_ID_KEYS)
+PRODUCT_TITLE_KEYS_SET = frozenset(PRODUCT_TITLE_KEYS)
+PRODUCT_PRICE_KEYS_SET = frozenset(PRODUCT_PRICE_KEYS)
+PRODUCT_URL_KEYS_SET = frozenset(PRODUCT_URL_KEYS)
+
 # 通用锚点标题：这些只是"这里有个商品位"的占位说明，不是商品名。
 # 不排除的话，外层 anchor_info.title（值为「商品」）会被当成第二个商品，
 # 制造出并不存在的条目。
@@ -156,6 +161,7 @@ class ExtractionDiagnostic:
     scan_matched_paths: list[str] = field(default_factory=list)
     extracted: int = 0
     note: str = ""
+    data_error: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -168,6 +174,7 @@ class ExtractionDiagnostic:
             "scanMatchedPaths": list(self.scan_matched_paths),
             "extracted": self.extracted,
             "note": self.note,
+            "dataError": self.data_error,
         }
 
     def summary(self) -> str:
@@ -322,8 +329,8 @@ def _resolve_product_dict(val: Any) -> list[dict]:
             nested = _maybe_json(sub_val)
             if isinstance(nested, (dict, list, tuple)):
                 return _resolve_product_dict(nested)
-        elif isinstance(sub_val, dict) and any(
-            k in sub_val for k in PRODUCT_TITLE_KEYS
+        elif isinstance(sub_val, dict) and not sub_val.keys().isdisjoint(
+            PRODUCT_TITLE_KEYS_SET
         ):
             return [sub_val]
 
@@ -347,9 +354,40 @@ def _maybe_json(value: Any) -> Any:
 
 def _first_of(node: dict, keys: tuple[str, ...]) -> Any:
     for key in keys:
-        if key in node and node[key] not in (None, "", [], {}):
-            return node[key]
+        val = node.get(key)
+        if val not in (None, "", [], {}):
+            return val
     return None
+
+
+def _product_cover(node: dict) -> str:
+    """Read image fields on a product node, without substituting video covers."""
+    def read(value, depth=0):
+        if depth > 5:
+            return ""
+        if isinstance(value, str):
+            return "https:" + value if value.startswith("//") else value if value.startswith(("https://", "http://")) else ""
+        if isinstance(value, dict):
+            for key in ("url_list", "urlList", "url", "src", "uri", "image", "images"):
+                result = read(value.get(key), depth + 1)
+                if result:
+                    return result
+        elif isinstance(value, (list, tuple)):
+            for child in value[:20]:
+                result = read(child, depth + 1)
+                if result:
+                    return result
+        return ""
+
+    # Current Douyin account feeds put the actual product photo in
+    # anchor_info.extra[*].elastic_images, not in the video's cover or cart icon.
+    for key in ("elastic_images", "elasticImages", "main_image", "mainImage", "mainPic", "product_image", "productImage",
+                "image_url", "imageUrl", "img_url", "cover_url", "coverUrl", "goodsCover",
+                "image", "images", "cover", "pic", "pics", "img", "thumb_url"):
+        result = read(node.get(key))
+        if result:
+            return result
+    return ""
 
 
 def _price_text(value: Any) -> str:
@@ -383,6 +421,7 @@ class _Candidate:
     price: str = ""
     detail_url: str = ""
     score: int = 0
+    cover_url: str = ""
 
 
 def _score_candidate(node: dict) -> int:
@@ -423,8 +462,8 @@ def scan_candidates(
             continue
 
         if isinstance(current, dict):
-            has_product_key = any(key in current for key in PRODUCT_ID_KEYS)
-            has_title = any(key in current for key in PRODUCT_TITLE_KEYS)
+            has_product_key = not current.keys().isdisjoint(PRODUCT_ID_KEYS_SET)
+            has_title = not current.keys().isdisjoint(PRODUCT_TITLE_KEYS_SET)
             if has_product_key and has_title:
                 score = _score_candidate(current)
                 if score >= 3:
@@ -438,6 +477,7 @@ def scan_candidates(
                             price=_price_text(_first_of(current, PRODUCT_PRICE_KEYS)),
                             detail_url=str(_first_of(current, PRODUCT_URL_KEYS) or ""),
                             score=score,
+                            cover_url=_product_cover(current),
                         )
                     )
             for key, value in current.items():
@@ -528,6 +568,9 @@ def extract_products(
 
     返回（商品列表, 诊断）。诊断无论成败都会产出，便于回答「为什么是 0 件」。
     """
+    if not isinstance(node, dict):
+        return [], ExtractionDiagnostic(platform=platform, video_id="", note="视频数据格式无效，已忽略", data_error=True)
+    like_count = max(0, parse_chinese_count_str(like_count))
     diagnostic = ExtractionDiagnostic(
         platform=platform,
         video_id=str(
@@ -544,12 +587,16 @@ def extract_products(
     if like_count <= 0:
         like_count = _extract_like_count(platform, node)
 
-    def _add(title: str, product_id: str, price: str, detail_url: str) -> None:
+    def _add(title: str, product_id: str, price: str, detail_url: str, cover_url: str = "") -> None:
         title = (title or "").strip()
         if not title:
             return
         key = product_id or title
         if key in seen_keys:
+            if cover_url:
+                for previous in products:
+                    if (previous.product_id or previous.product_name) == key and not previous.cover_url:
+                        previous.cover_url = cover_url
             return
         seen_keys.add(key)
         products.append(
@@ -568,6 +615,7 @@ def extract_products(
                 price=price,
                 detail_url=detail_url,
                 like_count=like_count,
+                cover_url=cover_url,
             )
         )
 
@@ -626,7 +674,8 @@ def extract_products(
                 )
 
                 extracted_any = True
-                _add(title, product_id, price, detail_url)
+                cover_url = _product_cover(d) or (_product_cover(raw_val) if isinstance(raw_val, dict) else "")
+                _add(title, product_id, price, detail_url, cover_url)
 
             if extracted_any:
                 if path not in diagnostic.known_paths_hit:
@@ -647,7 +696,7 @@ def extract_products(
     for candidate in sorted(candidates, key=lambda item: item.score, reverse=True)[:5]:
         diagnostic.scan_matched_paths.append(candidate.path)
         _add(
-            candidate.title, candidate.product_id, candidate.price, candidate.detail_url
+            candidate.title, candidate.product_id, candidate.price, candidate.detail_url, candidate.cover_url
         )
 
     diagnostic.extracted = len(products)
@@ -658,6 +707,24 @@ def extract_products(
         else:
             diagnostic.note = "有候选节点但未能取出有效商品名，平台字段结构可能已变化"
     return products, diagnostic
+
+
+def safe_extract_products(platform, node, *args, **kwargs):
+    """A malformed video must not interrupt subsequent videos or target accounts."""
+    try:
+        from core.record_identity import sanitize_items
+        products, diagnostic = extract_products(platform, node, *args, **kwargs)
+        changes = []
+        products = sanitize_items(products, changes.append)
+        if changes:
+            diagnostic.data_error = True
+            diagnostic.note = "部分商品字段异常，已修正或跳过；其余有效记录继续处理"
+        diagnostic.extracted = len(products)
+        return products, diagnostic
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError):
+        identity = str(node.get("aweme_id") or node.get("photoId") or node.get("id") or "") if isinstance(node, dict) else ""
+        return [], ExtractionDiagnostic(platform=platform, video_id=identity,
+                                        note="视频商品数据异常，已跳过并继续其他视频", data_error=True)
 
 
 def collect_diagnostics_summary(diagnostics: list[ExtractionDiagnostic]) -> dict:
@@ -674,4 +741,5 @@ def collect_diagnostics_summary(diagnostics: list[ExtractionDiagnostic]) -> dict
         "videosWithoutProducts": total - with_products,
         "knownPathHits": hit_paths,
         "scanMatched": sum(len(item.scan_matched_paths) for item in diagnostics),
+        "invalidVideoRecords": sum(item.data_error for item in diagnostics),
     }

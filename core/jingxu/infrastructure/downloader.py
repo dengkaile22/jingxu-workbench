@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import deque
 from collections.abc import Callable, Sequence
 import tempfile
 from dataclasses import dataclass, field
@@ -450,7 +451,7 @@ class DownloadQueue:
         )
         self._concurrency = max(1, min(int(concurrency), 8))
 
-        self._pending: list[str] = []
+        self._pending: deque[str] = deque()
         self._jobs: dict[str, DownloadJob] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._listeners: list[Callable[[str, DownloadJob], None]] = []
@@ -600,11 +601,11 @@ class DownloadQueue:
         表现为"下载列表点了清空之后，新任务再也不开始"。
         """
         with self._lock:
-            for job_id in [job.id for job in self._jobs.values() if not job.is_active]:
+            finished = {job.id for job in self._jobs.values() if not job.is_active}
+            for job_id in finished:
                 self._jobs.pop(job_id, None)
                 self._cancel_events.pop(job_id, None)
-                if job_id in self._pending:
-                    self._pending.remove(job_id)
+            self._pending = deque(job_id for job_id in self._pending if job_id not in finished)
 
     @property
     def jobs(self) -> list[DownloadJob]:
@@ -640,7 +641,7 @@ class DownloadQueue:
                     self._wakeup.wait(timeout=0.3)
                 if self._stop_requested:
                     return
-                job_id = self._pending.pop(0)
+                job_id = self._pending.popleft()
                 job = self._jobs.get(job_id)
                 if job is None:
                     # 已被清理/取消：待办里不该再出现它的 ID，跳过而不是崩溃。

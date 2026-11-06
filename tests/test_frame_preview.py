@@ -190,3 +190,36 @@ def test_render_raises_when_output_missing(tmp_path: Path, monkeypatch) -> None:
             SETTINGS,
             tmp_path / "preview.jpg",
         )
+
+
+def test_extract_single_frame_caching(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jingxu.infrastructure.frame_preview import clear_frame_cache, extract_single_frame
+
+    clear_frame_cache()
+    video = tmp_path / "test_video.mp4"
+    video.write_bytes(b"dummy video data")
+
+    call_count = 0
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal call_count
+        call_count += 1
+        output_file = Path(command[-1])
+        output_file.write_bytes(b"fake frame png")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    first_output = tmp_path / "first.png"
+    result1 = extract_single_frame(Path("ffmpeg"), video, first_output, timestamp=1.5)
+    assert result1 == first_output
+    assert first_output.read_bytes() == b"fake frame png"
+    assert call_count == 1
+
+    # 第二次请求相同视频与时间点，写入不同目标文件：应直接命中缓存，无需再次调用 FFmpeg
+    second_output = tmp_path / "second.png"
+    result2 = extract_single_frame(Path("ffmpeg"), video, second_output, timestamp=1.5)
+    assert result2 == second_output
+    assert second_output.read_bytes() == b"fake frame png"
+    assert call_count == 1  # FFmpeg 没有被再次调用！
+

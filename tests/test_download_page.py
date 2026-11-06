@@ -15,6 +15,7 @@ from conftest import wait_until
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from jingxu.infrastructure.downloader import (  # noqa: E402
@@ -575,4 +576,179 @@ def test_download_page_auto_numbering(qapp, tmp_path: Path, queue_factory) -> No
     assert page._table.rowCount() == 2
     assert page._table.item(0, 1).text() == "1"
     assert page._table.item(1, 1).text() == "2"
+
+
+# ────────────────────────────── 下载页陈列（胶囊 / 进度条 / 计数） ──────────────────────────────
+
+
+def _state_job(state: DownloadState, *, suffix: str = "", **kwargs) -> DownloadJob:  # noqa: ANN003
+    """构造指定状态的下载任务，用于确定性验证表格陈列。"""
+    payload = {
+        "id": f"job-{state.value}-{suffix}".rstrip("-"),
+        "url": "https://example.com/video/1",
+        "filename": "演示素材",
+        "percent": 0.0,
+        "speed": "",
+        "message": "",
+    }
+    payload.update(kwargs)
+    return DownloadJob(state=state, **payload)
+
+
+def _page_with_jobs(queue_factory, jobs: list[DownloadJob]):  # noqa: ANN001, ANN202
+    """构造页面：任务同时注入队列（计数来源）与表格（陈列对象）。
+
+    注入时同步补齐 ``cancel_events`` 与 ``pending``，与 ``enqueue`` 的内部
+    结构保持一致，避免后续 ``cancel``/``stop`` 访问缺失的取消事件。
+    """
+    from jingxu.ui.download_page import DownloadPage
+
+    queue = queue_factory(RecordingDownloader())
+    with queue._lock:
+        for job in jobs:
+            queue._jobs[job.id] = job
+            queue._pending.append(job.id)
+            queue._cancel_events[job.id] = threading.Event()
+    page = DownloadPage(queue)
+    page._fill_table(jobs)
+    return page
+
+
+class TestDownloadTablePresentation:
+    def test_running_row_shows_chip_progress_and_speed(self, qapp, tmp_path, queue_factory) -> None:  # noqa: ANN001
+        from jingxu.ui.download_page import PROGRESS_COLUMN, STATUS_COLUMN, ProgressCell, StatusChipCell
+
+        jobs = [_state_job(DownloadState.RUNNING, percent=62.0, speed="2.4MiB/s")]
+        page = _page_with_jobs(queue_factory, jobs)
+        row = page._rows[jobs[0].id]
+
+        chip_cell = page._table.cellWidget(row, STATUS_COLUMN)
+        assert isinstance(chip_cell, StatusChipCell)
+        assert chip_cell.chip.text() == "下载中"
+
+        progress_cell = page._table.cellWidget(row, PROGRESS_COLUMN)
+        assert isinstance(progress_cell, ProgressCell)
+        assert progress_cell.bar.value() == 62
+        assert progress_cell.percent.text() == "62%"
+
+        assert page._table.item(row, 4).text() == "2.4MiB/s"
+
+    def test_pending_row_hides_percent(self, qapp, tmp_path, queue_factory) -> None:  # noqa: ANN001
+        from jingxu.ui.download_page import PROGRESS_COLUMN, ProgressCell
+
+        jobs = [_state_job(DownloadState.PENDING)]
+        page = _page_with_jobs(queue_factory, jobs)
+        row = page._rows[jobs[0].id]
+
+        progress_cell = page._table.cellWidget(row, PROGRESS_COLUMN)
+        assert isinstance(progress_cell, ProgressCell)
+        assert progress_cell.bar.value() == 0
+        assert progress_cell.percent.text() == ""
+
+    def test_completed_row_shows_full_progress(self, qapp, tmp_path, queue_factory) -> None:  # noqa: ANN001
+        from jingxu.ui.download_page import PROGRESS_COLUMN, STATUS_COLUMN, ProgressCell
+
+        jobs = [_state_job(DownloadState.COMPLETED, percent=100.0, message="完成：演示素材.mp4")]
+        page = _page_with_jobs(queue_factory, jobs)
+        row = page._rows[jobs[0].id]
+
+        progress_cell = page._table.cellWidget(row, PROGRESS_COLUMN)
+        assert progress_cell.bar.value() == 100
+        assert progress_cell.percent.text() == "100%"
+        assert page._table.cellWidget(row, STATUS_COLUMN).chip.text() == "已完成"
+
+    def test_failed_row_colors_message(self, qapp, tmp_path, queue_factory) -> None:  # noqa: ANN001
+        from jingxu.ui.download_page import MESSAGE_COLUMN, STATE_COLORS, STATUS_COLUMN
+
+        jobs = [_state_job(DownloadState.FAILED, percent=37.0, message="下载失败：连接被重置")]
+        page = _page_with_jobs(queue_factory, jobs)
+        row = page._rows[jobs[0].id]
+
+        assert page._table.cellWidget(row, STATUS_COLUMN).chip.text() == "失败"
+        item = page._table.item(row, MESSAGE_COLUMN)
+        assert item.text() == "下载失败：连接被重置"
+        assert item.foreground().color().name() == QColor(STATE_COLORS[DownloadState.FAILED]).name()
+
+    def test_task_column_tooltip_shows_url(self, qapp, tmp_path, queue_factory) -> None:  # noqa: ANN001
+        jobs = [_state_job(DownloadState.PENDING, url="https://example.com/detail/9")]
+        page = _page_with_jobs(queue_factory, jobs)
+        row = page._rows[jobs[0].id]
+        assert page._table.item(row, 0).toolTip() == "https://example.com/detail/9"
+
+    def test_count_chips_and_empty_hint(self, qapp, tmp_path, queue_factory) -> None:  # noqa: ANN001
+        # 不含「下载中」：合成数据没有工作线程，取消是异步的（真实场景由工作线程收尾）。
+        jobs = [
+            _state_job(DownloadState.PENDING, suffix="p"),
+            _state_job(DownloadState.COMPLETED, suffix="c", percent=100.0),
+            _state_job(DownloadState.FAILED, suffix="f"),
+        ]
+        page = _page_with_jobs(queue_factory, jobs)
+        assert page._counts.text() == "共 3 个任务"
+        assert page._count_chips["pending"].text() == "等待中 1"
+        assert page._count_chips["completed"].text() == "已完成 1"
+        assert page._count_chips["failed"].text() == "失败 1"
+        assert page._count_chips["running"].isHidden()
+        assert page._empty_hint.isHidden()
+
+        # 「清空列表」：取消全部 + 清空记录后，表格与计数一起回到空状态
+        page._clear_all()
+        assert page._table.rowCount() == 0
+        assert page._counts.text() == "暂无下载任务"
+        assert page._count_chips["pending"].isHidden()
+        assert not page._empty_hint.isHidden()
+
+
+class TestDownloadPagePerformanceContract:
+    """高频事件下的刷新契约：进度合并、终态即时、未变化不重写。"""
+
+    def test_progress_events_are_coalesced_then_flushed(self, qapp, tmp_path, queue_factory) -> None:  # noqa: ANN001
+        from jingxu.ui.download_page import PROGRESS_COLUMN, ProgressCell
+
+        job = _state_job(DownloadState.RUNNING, percent=5.0)
+        page = _page_with_jobs(queue_factory, [job])
+        row = page._rows[job.id]
+
+        job.percent = 60.0
+        page._on_queue_event("updated", job)
+        qapp.processEvents()
+        cell = page._table.cellWidget(row, PROGRESS_COLUMN)
+        assert isinstance(cell, ProgressCell)
+        # 合并窗口内不立即刷新（避免逐条进度事件触发逐行重绘）
+        assert cell.bar.value() == 5
+
+        def flushed() -> bool:
+            qapp.processEvents()
+            return cell.bar.value() == 60 and cell.percent.text() == "60%"
+
+        wait_until(flushed)
+
+    def test_finished_event_applies_immediately(self, qapp, tmp_path, queue_factory) -> None:  # noqa: ANN001
+        from jingxu.ui.download_page import STATUS_COLUMN
+
+        job = _state_job(DownloadState.RUNNING, percent=40.0)
+        page = _page_with_jobs(queue_factory, [job])
+        row = page._rows[job.id]
+
+        job.percent = 100.0
+        job.state = DownloadState.COMPLETED
+        job.message = "完成：演示素材.mp4"
+        page._on_queue_event("finished", job)
+        qapp.processEvents()
+
+        assert page._table.cellWidget(row, STATUS_COLUMN).chip.text() == "已完成"
+
+    def test_unchanged_row_is_not_rewritten(self, qapp, tmp_path, queue_factory) -> None:  # noqa: ANN001
+        from jingxu.ui.download_page import PROGRESS_COLUMN, ProgressCell
+
+        job = _state_job(DownloadState.RUNNING, percent=42.0)
+        page = _page_with_jobs(queue_factory, [job])
+        row = page._rows[job.id]
+        cell = page._table.cellWidget(row, PROGRESS_COLUMN)
+        assert isinstance(cell, ProgressCell)
+
+        # 用同一个（未变化的）任务再次刷新：签名一致 → 不应触碰单元格控件
+        touched = []
+        cell.set_progress = lambda **kwargs: touched.append(kwargs)  # type: ignore[method-assign]
+        page._update_row(row, job)
+        assert touched == []
 

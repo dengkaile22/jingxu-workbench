@@ -22,7 +22,8 @@ from core.douyin_crawler import DouyinCrawler
 from core.kuaishou_crawler import KuaishouCrawler
 from core.extraction import collect_diagnostics_summary
 from core.record_identity import deduplicate_items
-from core.analyzer import ProductAnalyzer
+from core.record_identity import sanitize_items
+from core.report_tasks import ReportTask, analyze_reports, crawl_time_filter
 from core.exporter import DataExporter
 from core.diagnostics import (
     LOGIN_URLS,
@@ -123,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-scrolls", type=int, default=None, help="单账号最大滚动翻页次数"
     )
     parser.add_argument(
-        "--profile-dir", type=str, default=None, help="浏览器登录态持久化目录"
+        "--session-dir", "--profile-dir", dest="profile_dir", type=str, default=None, help="独立 Cookie 存储及临时浏览器环境目录"
     )
     parser.add_argument(
         "--browser-path",
@@ -132,6 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Chromium 内核浏览器可执行文件路径（缺省自动探测 Chrome/Edge）",
     )
     parser.add_argument("--export-dir", type=str, default=None, help="报表导出目录")
+    parser.add_argument("--rotate-seconds", type=int, default=None, help="独立浏览器环境更换周期（秒，至少30）")
+    parser.add_argument("--rotate-pages", type=int, default=None, help="每个浏览器环境累计抓取页数上限")
     parser.add_argument("--export", type=str, default=None, help="导出Excel路径")
     parser.add_argument(
         "--json-out", type=str, default=None, help="导出JSON结果路径(供外部系统解析)"
@@ -185,6 +188,10 @@ def apply_overrides(app_config: AppConfig, args: argparse.Namespace) -> None:
 
     if args.headless:
         app_config.headless = True
+    if getattr(args, "rotate_seconds", None) is not None:
+        app_config.browser_rotate_seconds = max(30, args.rotate_seconds)
+    if getattr(args, "rotate_pages", None) is not None:
+        app_config.browser_rotate_pages = max(1, args.rotate_pages)
 
 
 def run_login(args: argparse.Namespace) -> None:
@@ -214,6 +221,11 @@ def run_cli() -> None:
     config_path = os.path.abspath(args.config)
     app_config = AppConfig(config_path)
     apply_overrides(app_config, args)
+    report_tasks = getattr(app_config, "report_tasks", None) or [
+        ReportTask(app_config.time_config, app_config.filter_config)
+    ]
+    analysis_now = datetime.now()
+    crawl_range = crawl_time_filter(report_tasks, now=analysis_now)
 
     enabled_accounts = [acc for acc in app_config.accounts if acc.enabled]
     if not enabled_accounts:
@@ -278,25 +290,44 @@ def run_cli() -> None:
         user_data_dir=args.profile_dir,
         browser_path=args.browser_path,
         log_callback=lambda message: print(message, flush=True),
+        rotate_seconds=getattr(app_config, "browser_rotate_seconds", 300),
+        rotate_pages=getattr(app_config, "browser_rotate_pages", 10),
     )
     all_crawled_items = []
     account_items = []
     account_issues = []
+    data_warnings = set()
+
+    def data_issue(message):
+        if message not in data_warnings:
+            data_warnings.add(message)
+            print(f"[!] {message}；其余有效记录继续处理。", flush=True)
+
+    def analyze(current):
+        reports = analyze_reports(current, report_tasks, now=analysis_now, on_issue=data_issue)
+        retained = []
+        identities = set()
+        for report in reports:
+            for product in report.products:
+                key = (product.platform, product.cleaned_name)
+                if key not in identities:
+                    retained.append(product)
+                    identities.add(key)
+        return retained, reports
 
     def should_stop():
         return bool(args.cancel_file and Path(args.cancel_file).exists())
 
     def checkpoint(current_items):
         nonlocal account_items
-        account_items = deduplicate_items([*account_items, *current_items])
+        account_items = deduplicate_items(sanitize_items([*account_items, *current_items], data_issue))
         if not args.json_out:
             return
         current = deduplicate_items([*all_crawled_items, *account_items])
-        retained, _ = ProductAnalyzer(app_config.filter_config).aggregate_and_filter(
-            current
-        )
+        retained, reports = analyze(current)
         DataExporter.export_to_json(
-            args.json_out, retained, current, accounts=app_config.accounts
+            args.json_out, retained, current, accounts=app_config.accounts,
+            reports=reports,
         )
 
     try:
@@ -347,7 +378,7 @@ def run_cli() -> None:
             crawl_failed = False
             try:
                 items = crawler.crawl_account(
-                    target, app_config.time_config, app_config.max_scrolls_per_account
+                    target, crawl_range, app_config.max_scrolls_per_account
                 )
             except Exception as error:
                 crawl_failed = True
@@ -365,7 +396,12 @@ def run_cli() -> None:
                     account_issues.append(issue)
                     print(f"[!] {issue.message}；{issue.suggestion}。", flush=True)
                 target.found_products = len(items)
-            all_crawled_items.extend(items)
+            valid_items = sanitize_items(items, data_issue)
+            invalid_collection = not isinstance(items, (list, tuple))
+            if (invalid_collection or len(valid_items) < len(items)) and target.status in ("已完成", "完成"):
+                target.status = "部分完成：异常商品记录已跳过"
+                target.found_products = len(deduplicate_items(valid_items))
+            all_crawled_items.extend(valid_items)
             checkpoint([])
             if should_stop():
                 break
@@ -391,8 +427,7 @@ def run_cli() -> None:
             flush=True,
         )
 
-        analyzer = ProductAnalyzer(app_config.filter_config)
-        retained, _ = analyzer.aggregate_and_filter(all_crawled_items)
+        retained, reports = analyze(all_crawled_items)
 
         # ── 运行后诊断：解释「为什么没抓到」 ────────────────────────────────
         all_diagnostics = list(douyin_crawler.diagnostics) + list(
@@ -416,6 +451,9 @@ def run_cli() -> None:
             login_states=login_states,
         )
         issues.extend(account_issues)
+        if data_warnings:
+            issues.append(Issue("warning", "invalid_product_records",
+                                "部分商品数据含异常字段，已修正或跳过", "有效记录与其他账号已继续处理，可查看运行日志"))
         for crawler in (douyin_crawler, kuaishou_crawler):
             for raw_issue in getattr(crawler, "response_issues", []):
                 issues.append(Issue(**raw_issue))
@@ -484,11 +522,11 @@ def run_cli() -> None:
             os.makedirs(export_dir, exist_ok=True)
             export_file = os.path.join(
                 export_dir,
-                f"带货商品跨账号保留_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                f"{'多条件选品' if len(reports) > 1 else reports[0].task.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             )
 
         DataExporter.export_to_excel(
-            export_file, retained, all_crawled_items, app_config.accounts
+            export_file, retained, all_crawled_items, app_config.accounts, reports=reports
         )
         print(f"\n[✓] 数据报表已导出至: {export_file}", flush=True)
 
@@ -499,6 +537,7 @@ def run_cli() -> None:
                 all_crawled_items,
                 excel_path=export_file,
                 accounts=app_config.accounts,
+                reports=reports,
                 diagnostics=build_diagnostics_payload(
                     preflight=preflight,
                     login_states=login_states_snapshot(args.profile_dir),

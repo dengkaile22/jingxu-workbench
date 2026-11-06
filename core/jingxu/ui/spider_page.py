@@ -17,13 +17,15 @@ import threading
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
+from PySide6.QtCore import QObject, Qt, QUrl, Signal, QSize, QByteArray, QBuffer, QIODevice, QTimer
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QDoubleSpinBox,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -42,6 +44,8 @@ from PySide6.QtWidgets import (
 )
 
 from jingxu.infrastructure import spider as spider_service
+from jingxu.infrastructure.spider_schedule import DailyScheduleStore, WindowsDailyTaskScheduler, CrawlRunLease, RUN_BUSY_MESSAGE
+from jingxu.ui.spider_schedule_dialog import SpiderScheduleDialog
 from jingxu.ui import theme
 from jingxu.ui.widgets import (
     Caption,
@@ -68,18 +72,23 @@ RESULT_COLUMNS = (
     "对标账号明细",
     "价格区间",
     "示例视频链接",
+    "商品主图",
 )
-RESULT_COLUMN_WIDTHS = (40, 240, 180, 70, 80, 80, 80, 200, 110, 240)
+RESULT_COLUMN_WIDTHS = (40, 240, 180, 70, 80, 80, 80, 200, 110, 240, 140)
 RESULT_CHECK_COLUMN = 0
 RESULT_NAME_COLUMN = 1
 RESULT_PLATFORM_COLUMN = 3
 RESULT_LIKES_COLUMN = 4
 RESULT_SAMPLE_VIDEO_COLUMN = 9
+RESULT_IMAGE_COLUMN = 10
 # 可点开的链接列（对齐 .NET：商品链接与示例视频都能直接打开）。
 # 平台与示例视频链接固定列号，供双击/右键打开使用。
-LINK_COLUMNS = (RESULT_SAMPLE_VIDEO_COLUMN,)
+LINK_COLUMNS = (RESULT_SAMPLE_VIDEO_COLUMN, RESULT_IMAGE_COLUMN)
 # 日志行数上限，对齐 .NET AppendLog 的 200000 字符保护（按平均行长折算）。
 LOG_MAX_BLOCKS = 2000
+TIME_PRESETS = [(str(days), f"近 {days} 天") for days in (3, 7, 15, 30, 60, 90, 180, 365)] + [
+    ("days", "自定天数"), ("range", "自定义日期"), ("all", "不限时间")]
+REPORT_TASK_MODES = (("likes", "按点赞量"), ("total", "按总频次"), ("accounts", "按跨账号数"))
 
 # 每一列取哪个字段。键名在不同来源里不一致（爬虫 `to_summary_dict` 用中文键，
 # 中间层可能给 camelCase 或 snake_case），因此每列给一组候选键，按序兜底。
@@ -93,6 +102,7 @@ _RESULT_FIELD_KEYS: tuple[tuple[str, ...], ...] = (
     ("对标账号明细", "accounts", "account_names", "influencers"),
     ("参考价格", "价格区间", "price_range", "priceRange"),
     ("示例视频链接", "sample_video_url", "sampleVideoUrl", "video_url", "videoUrl"),
+    ("商品主图", "cover_url", "coverUrl", "product_image_url"),
 )
 
 
@@ -101,6 +111,8 @@ class SpiderBridge(QObject):
 
     log = Signal(str)
     finished = Signal(object)
+    cover_ready = Signal(str, object)
+    schedule_finished = Signal(object, str)
 
 
 def extract_video_urls(items: list) -> list[str]:
@@ -128,6 +140,8 @@ class SpiderPage(QWidget):
         store: spider_service.SpiderConfigStore | None = None,
         runner: spider_service.SpiderRunner | None = None,
         check_environment=None,  # noqa: ANN001 - Callable[[], SpiderEnvironment]
+        schedule_store=None,
+        scheduler=None,
     ) -> None:
         super().__init__()
 
@@ -135,6 +149,10 @@ class SpiderPage(QWidget):
         self._runner = runner or spider_service.SpiderRunner()
         self._check_environment = check_environment or spider_service.check_environment
         self._config = self._store.load()
+        self._schedule_store = schedule_store or DailyScheduleStore(self._store.path.with_name("daily_schedule.json"))
+        self._scheduler = scheduler or WindowsDailyTaskScheduler()
+        self._schedule_busy = False
+        self._observed_schedule_finish = ""
         self._rows: list[spider_service.SpiderAccount] = []
         self._result_entries: list[dict] = []
         self._running = False
@@ -142,12 +160,19 @@ class SpiderPage(QWidget):
         self._last_result: spider_service.SpiderRunResult | None = None
         self._login_session: spider_service.SpiderLoginSession | None = None
         self._updating = False
+        self._cover_cache: dict[str, bytes] = {}
+        self._pending_covers: set[str] = set()
+        self._deferred_covers: set[str] = set()
+        self._cover_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="selection-covers")
+        self._disposed = False
         # 可打开的链接单元格 (行, 列)；填充结果时重建。
         self._openable_cells: set[tuple[int, int]] = set()
 
         self._bridge = SpiderBridge(self)
         self._bridge.finished.connect(self._on_run_finished)
         self._bridge.log.connect(self._append_log)
+        self._bridge.cover_ready.connect(self._on_cover_ready)
+        self._bridge.schedule_finished.connect(self._on_schedule_finished)
 
         # 整页放进滚动区：本页内容很长（账号表 + 门槛 + 登录 + 结果 + 日志），
         # 窗口不够高时下方区块会被截断且无法滚动到。与合成页保持同一写法。
@@ -194,18 +219,25 @@ class SpiderPage(QWidget):
         layout.addWidget(self._import_box)
 
         layout.addSpacing(12)
-        layout.addWidget(SectionHeader("抓取范围与保留门槛"))
+        layout.addWidget(SectionHeader("抓取设置"))
         layout.addSpacing(6)
         layout.addLayout(self._build_filter_rows())
+        layout.addSpacing(6)
+        layout.addWidget(SectionHeader("筛选报表（勾选一项或多项，各自设置时间范围）"))
+        layout.addWidget(self._build_report_tasks())
+        layout.addWidget(Caption("勾选一项可导出单项报表；勾选多项可同时导出。每项分别筛选，抖音与快手分别列出。"))
 
         layout.addSpacing(10)
         layout.addLayout(self._build_action_row())
+        self._schedule_caption = Caption("")
+        layout.addWidget(self._schedule_caption)
         layout.addSpacing(4)
         layout.addLayout(self._build_login_row())
 
         layout.addSpacing(10)
         self._result_caption = Caption("尚未抓取。")
         layout.addWidget(self._result_caption)
+        layout.addLayout(self._build_result_filters())
         layout.addSpacing(6)
         layout.addWidget(self._build_results_table())
         layout.addSpacing(6)
@@ -217,6 +249,11 @@ class SpiderPage(QWidget):
         self._refresh_accounts()
         self._refresh_environment()
         self._refresh_login_status()
+        self._schedule_timer = QTimer(self)
+        self._schedule_timer.setInterval(15000)
+        self._schedule_timer.timeout.connect(self._refresh_schedule_status)
+        self._schedule_timer.start()
+        self._refresh_schedule_status()
         self._restore_last_result()
 
     # ────────────────────────────── 构建 ──────────────────────────────
@@ -370,56 +407,6 @@ class SpiderPage(QWidget):
         column = QVBoxLayout()
         column.setSpacing(6)
 
-        time_row = QHBoxLayout()
-        time_row.setSpacing(8)
-        time_row.addWidget(Caption("时间范围（遇到超期视频自动早停）"), alignment=Qt.AlignmentFlag.AlignVCenter)
-        self._time_mode = _combo(
-            [(value, label) for value, label in spider_service.TIME_MODES]
-        )
-        self._time_mode.currentIndexChanged.connect(self._on_time_mode_changed)
-        time_row.addWidget(self._time_mode)
-
-        self._days = QSpinBox()
-        self._days.setRange(1, 365)
-        self._days.setSuffix(" 天")
-        time_row.addWidget(self._days)
-
-        self._start_date = QLineEdit()
-        self._start_date.setPlaceholderText("起始 YYYY-MM-DD")
-        self._start_date.setFixedWidth(126)
-        time_row.addWidget(self._start_date)
-        self._end_date = QLineEdit()
-        self._end_date.setPlaceholderText("结束 YYYY-MM-DD")
-        self._end_date.setFixedWidth(126)
-        time_row.addWidget(self._end_date)
-        time_row.addStretch(1)
-        column.addLayout(time_row)
-
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(8)
-        filter_row.addWidget(Caption("保留准则"), alignment=Qt.AlignmentFlag.AlignVCenter)
-        self._filter_by = _combo([(value, label) for value, label in spider_service.FILTER_MODES])
-        filter_row.addWidget(self._filter_by)
-
-        filter_row.addWidget(Caption("跨账号数 ≥ N（预爆品）"), alignment=Qt.AlignmentFlag.AlignVCenter)
-        self._min_accounts = QSpinBox()
-        self._min_accounts.setRange(1, 50)
-        filter_row.addWidget(self._min_accounts)
-
-        filter_row.addWidget(Caption("最低点赞量 ≥ K（爆品）"), alignment=Qt.AlignmentFlag.AlignVCenter)
-        self._min_likes = QSpinBox()
-        self._min_likes.setRange(0, 10000000)
-        self._min_likes.setSingleStep(500)
-        self._min_likes.setSuffix(" 赞")
-        filter_row.addWidget(self._min_likes)
-
-        filter_row.addWidget(Caption("累计频次 ≥ M"), alignment=Qt.AlignmentFlag.AlignVCenter)
-        self._min_occurrences = QSpinBox()
-        self._min_occurrences.setRange(1, 200)
-        filter_row.addWidget(self._min_occurrences)
-        filter_row.addStretch(1)
-        column.addLayout(filter_row)
-
         advanced_row = QHBoxLayout()
         advanced_row.setSpacing(8)
         self._enable_fuzzy = QCheckBox("开启智能去噪与同款商品模糊合并")
@@ -439,7 +426,94 @@ class SpiderPage(QWidget):
         advanced_row.addWidget(self._headless)
         advanced_row.addStretch(1)
         column.addLayout(advanced_row)
+        browser_row = QHBoxLayout()
+        browser_row.setSpacing(8)
+        browser_row.addWidget(Caption("更换独立浏览器环境：每"))
+        self._browser_rotate_minutes = QSpinBox()
+        self._browser_rotate_minutes.setRange(1, 120)
+        self._browser_rotate_minutes.setSuffix(" 分钟")
+        browser_row.addWidget(self._browser_rotate_minutes)
+        browser_row.addWidget(Caption("或累计"))
+        self._browser_rotate_pages = QSpinBox()
+        self._browser_rotate_pages.setRange(1, 200)
+        self._browser_rotate_pages.setSuffix(" 页")
+        browser_row.addWidget(self._browser_rotate_pages)
+        browser_row.addWidget(Caption("达到任一条件即更换，保存 Cookie 并接着抓取"))
+        browser_row.addStretch(1)
+        column.addLayout(browser_row)
         return column
+
+    def _build_report_tasks(self) -> QWidget:
+        table = self._tasks_table = QTableWidget(3, 7)
+        table.setHorizontalHeaderLabels(["启用", "筛选条件", "门槛", "时间范围", "天数", "开始日期", "结束日期"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setFixedHeight(146)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._task_widgets = {}
+        for row, (mode, label) in enumerate(REPORT_TASK_MODES):
+            enabled = QCheckBox()
+            enabled.setChecked(True)
+            table.setCellWidget(row, 0, enabled)
+            table.setItem(row, 1, QTableWidgetItem(label))
+            threshold = QSpinBox()
+            threshold.setRange(0 if mode == "likes" else 1, 10_000_000)
+            threshold.setValue(0 if mode == "likes" else 2)
+            threshold.setSuffix(" 赞" if mode == "likes" else " 次" if mode == "total" else " 账号")
+            preset = _combo(TIME_PRESETS)
+            days = QSpinBox()
+            days.setRange(1, 3650)
+            days.setValue(7)
+            start, end = QLineEdit(), QLineEdit()
+            start.setPlaceholderText("YYYY-MM-DD")
+            end.setPlaceholderText("YYYY-MM-DD")
+            widgets = dict(enabled=enabled, threshold=threshold, preset=preset, days=days, start=start, end=end)
+            self._task_widgets[mode] = widgets
+            for column, widget in enumerate((threshold, preset, days, start, end), 2):
+                table.setCellWidget(row, column, widget)
+            preset.currentIndexChanged.connect(partial(self._on_task_time_changed, mode))
+            _select(preset, "7")
+            self._on_task_time_changed(mode)
+            table.setRowHeight(row, 36)
+        return table
+
+    def _on_task_time_changed(self, mode: str, *_unused) -> None:
+        widgets = self._task_widgets[mode]
+        value = str(widgets["preset"].currentData())
+        if value.isdigit():
+            widgets["days"].setValue(int(value))
+        widgets["days"].setEnabled(value == "days")
+        widgets["start"].setEnabled(value == "range")
+        widgets["end"].setEnabled(value == "range")
+
+    def _collect_report_tasks(self) -> tuple[spider_service.SpiderFilters, ...]:
+        defaults = self._collect_filters()
+        tasks = []
+        for mode, widgets in self._task_widgets.items():
+            if not widgets["enabled"].isChecked():
+                continue
+            time = str(widgets["preset"].currentData())
+            metric = {"likes": "min_likes", "total": "min_occurrences", "accounts": "min_accounts"}[mode]
+            tasks.append(replace(defaults, filter_by=mode, time_mode=time if time in ("range", "all") else "days",
+                                 days=widgets["days"].value(), start_date=widgets["start"].text().strip(),
+                                 end_date=widgets["end"].text().strip(), **{metric: widgets["threshold"].value()}))
+        return tuple(tasks)
+
+    def _build_result_filters(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(Caption("查看报表"))
+        self._result_report = _combo([("", "当前筛选结果")])
+        self._result_platform = _combo([("", "全部平台"), ("douyin", "抖音"), ("kuaishou", "快手")])
+        row.addWidget(self._result_report)
+        row.addWidget(self._result_platform)
+        row.addStretch(1)
+        self._result_report.currentIndexChanged.connect(self._refilter_results)
+        self._result_platform.currentIndexChanged.connect(self._refilter_results)
+        return row
+
+    def _refilter_results(self) -> None:
+        if self._last_result is not None and not self._updating:
+            self._fill_results(self._last_result)
 
     def _build_action_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -449,6 +523,10 @@ class SpiderPage(QWidget):
         self._run_button.setToolTip("将打开浏览器读取对标账号的带货视频，可随时取消。")
         self._run_button.clicked.connect(self._start_crawl)
         row.addWidget(self._run_button)
+        self._schedule_button = SecondaryButton("定时抓取")
+        self._schedule_button.setToolTip("自定义每天自动开始时间，完成后自动保存报表。")
+        self._schedule_button.clicked.connect(self._configure_schedule)
+        row.addWidget(self._schedule_button)
 
         self._cancel_button = SecondaryButton("取消抓取")
         self._cancel_button.clicked.connect(self._cancel_crawl)
@@ -465,6 +543,76 @@ class SpiderPage(QWidget):
         row.addWidget(self._export_label)
         row.addStretch(1)
         return row
+
+    def _configure_schedule(self) -> None:
+        if self._schedule_busy:
+            return
+        dialog = SpiderScheduleDialog(self._schedule_store.load(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._save_schedule(dialog.schedule())
+
+    def _save_schedule(self, schedule) -> None:
+        if not self._persist():
+            return
+        if schedule.enabled:
+            if not self._config.enabled_accounts:
+                self._set_result_caption("请先添加并启用对标账号，再开启定时抓取。", warn=True)
+                return
+            if not self._config.report_tasks:
+                self._set_result_caption("请至少勾选一个筛选报表，再开启定时抓取。", warn=True)
+                return
+            for task in self._config.report_tasks:
+                issue = spider_service.validate_date_filters(task)
+                if issue:
+                    self._set_result_caption(issue, warn=True)
+                    return
+        self._schedule_busy = True
+        self._schedule_button.setEnabled(False)
+        self._schedule_caption.setText("正在保存每日抓取时间…")
+        def register():
+            configured, error = None, ""
+            try:
+                configured = self._scheduler.configure(schedule, self._schedule_store, self._store.path)
+            except Exception as problem:
+                error = str(problem) if isinstance(problem, RuntimeError) else f"定时设置未保存（{type(problem).__name__}），请检查系统任务计划。"
+            if not self._disposed:
+                try:
+                    self._bridge.schedule_finished.emit(configured, error)
+                except RuntimeError:
+                    pass
+        threading.Thread(target=register, name="jingxu-spider-schedule", daemon=True).start()
+
+    def _on_schedule_finished(self, schedule, error: str) -> None:
+        if self._disposed:
+            return
+        self._schedule_busy = False
+        self._schedule_button.setEnabled(True)
+        self._refresh_schedule_status()
+        if error:
+            self._set_result_caption(error, warn=True)
+        elif schedule.enabled:
+            self._set_result_caption(f"已设置每天 {schedule.time} 自动抓取；完成后自动保存报表，关闭软件也可执行。")
+        else:
+            self._set_result_caption("每日定时抓取已停用。")
+
+    def _refresh_schedule_status(self) -> None:
+        if self._disposed or self._schedule_busy:
+            return
+        schedule = self._schedule_store.load()
+        state = self._schedule_store.load_state()
+        if schedule.enabled:
+            self._schedule_caption.setText(f"每日 {schedule.time} 自动抓取 · 下次 {schedule.next_run().strftime('%m-%d %H:%M')} · 请保持电脑开机、当前账号登录并联网")
+        else:
+            self._schedule_caption.setText("未启用每日抓取，可点击「定时抓取」设置。")
+        status = state.get("status")
+        if status:
+            label = {"running": "正在抓取", "complete": "已完成", "partial": "部分完成", "failed": "未完成", "skipped": "已有任务，本次已跳过"}.get(status, str(status))
+            self._schedule_caption.setText(self._schedule_caption.text() + f" · 最近定时任务：{label}")
+        finished = str(state.get("finishedAt") or "")
+        if finished and finished != self._observed_schedule_finish and not self._running:
+            self._observed_schedule_finish = finished
+            self._restore_last_result()
 
     def _build_login_row(self) -> QHBoxLayout:
         """扫码登录入口。
@@ -603,11 +751,12 @@ class SpiderPage(QWidget):
             self._login_done.setEnabled(False)
             return
         label = self._login_session.platform_label
-        self._login_session.close()
+        saved = self._login_session.close()
         self._login_session = None
         self._login_done.setEnabled(False)
         self._refresh_login_status()
-        self._set_result_caption(f"{label}登录态已保存，可以开始抓取了。")
+        self._set_result_caption(f"{label} Cookie 已保存，抓取时将使用新的独立浏览器环境。" if saved is not False else
+                                 f"{label} Cookie 保存失败，请检查选品数据目录后重新登录。", warn=saved is False)
 
     def _build_results_table(self) -> QWidget:
         self._results_table = QTableWidget(0, len(RESULT_COLUMNS))
@@ -615,12 +764,15 @@ class SpiderPage(QWidget):
         self._results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._results_table.verticalHeader().setVisible(False)
-        self._results_table.setFixedHeight(150)
+        self._results_table.setFixedHeight(300)
         header = self._results_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
         for column, width in enumerate(RESULT_COLUMN_WIDTHS):
             self._results_table.setColumnWidth(column, width)
+        # Keep image previews before the product while preserving logical column
+        # indices used by link actions and stored row data.
+        header.moveSection(header.visualIndex(RESULT_IMAGE_COLUMN), 1)
         self._results_table.setMinimumWidth(sum(RESULT_COLUMN_WIDTHS) + 24)
         self._results_table.itemChanged.connect(self._on_result_item_changed)
         # 链接列可直接打开（对齐 .NET 的 OpenSelectedSampleVideo/OpenSelectedVideo）。
@@ -823,68 +975,76 @@ class SpiderPage(QWidget):
     # ────────────────────────────── 配置 ──────────────────────────────
 
     def _collect_filters(self) -> spider_service.SpiderFilters:
-        return spider_service.SpiderFilters(
-            time_mode=str(self._time_mode.currentData() or "days"),
-            days=int(self._days.value()),
-            start_date=self._start_date.text().strip(),
-            end_date=self._end_date.text().strip(),
-            min_accounts=int(self._min_accounts.value()),
-            min_occurrences=int(self._min_occurrences.value()),
-            min_likes=int(self._min_likes.value()),
-            filter_by=str(self._filter_by.currentData() or "accounts"),
-            enable_fuzzy=self._enable_fuzzy.isChecked(),
-            fuzzy_threshold=float(self._fuzzy_threshold.value()),
-            max_scrolls=int(self._max_scrolls.value()),
-            headless=self._headless.isChecked(),
-        )
+        base = self._config.filters
+        enabled = next(((mode, widgets) for mode, widgets in self._task_widgets.items() if widgets["enabled"].isChecked()), None)
+        if enabled:
+            mode, widgets = enabled
+            time = str(widgets["preset"].currentData())
+            base = replace(base, filter_by=mode, time_mode=time if time in ("range", "all") else "days",
+                           days=widgets["days"].value(), start_date=widgets["start"].text().strip(), end_date=widgets["end"].text().strip(),
+                           min_likes=self._task_widgets["likes"]["threshold"].value(),
+                           min_occurrences=self._task_widgets["total"]["threshold"].value(),
+                           min_accounts=self._task_widgets["accounts"]["threshold"].value())
+        return replace(base, enable_fuzzy=self._enable_fuzzy.isChecked(),
+                       fuzzy_threshold=float(self._fuzzy_threshold.value()), max_scrolls=self._max_scrolls.value(),
+                       headless=self._headless.isChecked(),
+                       browser_rotate_seconds=self._browser_rotate_minutes.value() * 60,
+                       browser_rotate_pages=self._browser_rotate_pages.value())
 
     def _apply_config_to_form(self) -> None:
         filters = self._config.filters
-        _select(self._time_mode, filters.time_mode)
-        _select(self._filter_by, filters.filter_by)
-        self._days.setValue(filters.days)
-        self._start_date.setText(filters.start_date)
-        self._end_date.setText(filters.end_date)
-        self._min_accounts.setValue(filters.min_accounts)
-        self._min_occurrences.setValue(filters.min_occurrences)
-        self._min_likes.setValue(filters.min_likes)
         self._enable_fuzzy.setChecked(filters.enable_fuzzy)
         self._fuzzy_threshold.setValue(filters.fuzzy_threshold)
         self._max_scrolls.setValue(filters.max_scrolls)
         self._headless.setChecked(filters.headless)
+        self._browser_rotate_minutes.setValue(max(1, (filters.browser_rotate_seconds + 59) // 60))
+        self._browser_rotate_pages.setValue(filters.browser_rotate_pages)
         self._rows = list(self._config.accounts)
-        self._on_time_mode_changed()
-
-    def _on_time_mode_changed(self) -> None:
-        mode = str(self._time_mode.currentData() or "days")
-        self._days.setEnabled(mode == "days")
-        self._start_date.setEnabled(mode == "range")
-        self._end_date.setEnabled(mode == "range")
-
-    def _persist(self) -> None:
+        tasks = {task.filter_by: task for task in self._config.report_tasks}
+        for mode, widgets in self._task_widgets.items():
+            task = tasks.get(mode, filters)
+            widgets["enabled"].setChecked(mode in tasks if tasks else mode == filters.filter_by or filters.filter_by == "both" and mode in ("accounts", "total"))
+            widgets["threshold"].setValue(getattr(task, {"likes": "min_likes", "total": "min_occurrences", "accounts": "min_accounts"}[mode]))
+            widgets["days"].setValue(task.days)
+            widgets["start"].setText(task.start_date)
+            widgets["end"].setText(task.end_date)
+            _select(widgets["preset"], str(task.days) if task.time_mode == "days" and str(task.days) in dict(TIME_PRESETS) else task.time_mode)
+    def _persist(self) -> bool:
         self._config = spider_service.SpiderConfig(
-            accounts=tuple(self._rows), filters=self._collect_filters()
+            accounts=tuple(self._rows), filters=self._collect_filters(), report_tasks=self._collect_report_tasks()
         )
         try:
             self._store.save(self._config)
+            return True
         except OSError as error:
             self._set_result_caption(f"配置保存失败：{error}", warn=True)
+            return False
 
     # ────────────────────────────── 抓取 ──────────────────────────────
 
     def _start_crawl(self) -> None:
         if self._running:
             return
-        self._persist()
+        lease = CrawlRunLease()
+        if not lease.acquire():
+            self._set_result_caption(RUN_BUSY_MESSAGE, warn=True)
+            return
+        lease.close()
+        if not self._persist():
+            return
+        if not self._config.report_tasks:
+            self._set_result_caption("请至少启用一个筛选报表任务。", warn=True)
+            return
         if not self._config.enabled_accounts:
             self._set_result_caption("请先添加并启用至少一个对标账号。", warn=True)
             return
 
         # 日期范围在本地先校验：抓取要开浏览器翻页，不该为格式错误白等一轮。
-        date_issue = spider_service.validate_date_filters(self._config.filters)
-        if date_issue:
-            self._set_result_caption(date_issue, warn=True)
-            return
+        for task in self._config.report_tasks or (self._config.filters,):
+            date_issue = spider_service.validate_date_filters(task)
+            if date_issue:
+                self._set_result_caption(date_issue, warn=True)
+                return
 
         # 关键：必须先释放登录浏览器。登录与抓取共用同一个 Chromium profile 目录，
         # 而 Chromium 对 profile 加独占锁；两个实例同时用它会导致启动失败
@@ -946,19 +1106,31 @@ class SpiderPage(QWidget):
         config = self._config
 
         def work() -> None:
-            result = self._runner.run(
-                config, on_log=self._emit_log, cancel_event=self._cancel
-            )
-            self._bridge.finished.emit(result)
+            try:
+                result = self._runner.run(config, on_log=self._emit_log, cancel_event=self._cancel)
+            except Exception as error:
+                result = spider_service.SpiderRunResult(success=False, message=f"选品数据处理失败（{type(error).__name__}），请查看运行日志并重试。")
+            try:
+                if not self._disposed:
+                    self._bridge.finished.emit(result)
+                else:
+                    self._running = False
+            except RuntimeError:
+                self._running = False
 
         threading.Thread(target=work, name="jingxu-spider-run", daemon=True).start()
 
     def _emit_log(self, line: str) -> None:
         """后台线程调用：经信号排队到 UI 线程再写控件。"""
-        self._bridge.log.emit(line)
+        if not self._disposed:
+            try:
+                self._bridge.log.emit(line)
+            except RuntimeError:
+                return
 
     def _append_log(self, line: str) -> None:
-        self._log.appendPlainText(line)
+        if not self._disposed:
+            self._log.appendPlainText(line)
 
     def _cancel_crawl(self) -> None:
         if not self._running:
@@ -968,6 +1140,8 @@ class SpiderPage(QWidget):
 
     def _on_run_finished(self, result: spider_service.SpiderRunResult) -> None:
         self._running = False
+        if self._disposed:
+            return
         self._run_button.setEnabled(True)
         self._cancel_button.setEnabled(False)
         self._last_result = result
@@ -999,7 +1173,7 @@ class SpiderPage(QWidget):
             self._set_result_caption(result.message, warn=not result.success)
 
         self._fill_results(result)
-        self._send_button.setEnabled(bool(result.video_urls))
+        self._send_button.setEnabled(bool(self._selected_urls()))
         if result.has_payload:
             try:
                 self._store.save_result(result)
@@ -1054,7 +1228,7 @@ class SpiderPage(QWidget):
         prefix = f"上次抓取（{when}）：" if when else "上次抓取："
         self._set_result_caption(f"{prefix}{result.message}")
         self._fill_results(result)
-        self._send_button.setEnabled(bool(result.video_urls))
+        self._send_button.setEnabled(bool(self._selected_urls()))
         self._refresh_export_label(result)
 
     def _refresh_export_label(self, result: spider_service.SpiderRunResult) -> None:
@@ -1065,7 +1239,29 @@ class SpiderPage(QWidget):
 
     def _fill_results(self, result: spider_service.SpiderRunResult) -> None:
         """填充结果表，只显示符合筛选条件的商品。"""
-        entries = result.effective_entries
+        self._result_report.blockSignals(True)
+        selected = self._result_report.currentData()
+        self._result_report.clear()
+        if result.reports:
+            for index, report in enumerate(result.reports):
+                self._result_report.addItem(str(report.get("name") or "筛选报表"), index)
+            match = self._result_report.findData(selected)
+            self._result_report.setCurrentIndex(max(0, match))
+        else:
+            self._result_report.addItem("当前筛选结果", "")
+        self._result_report.blockSignals(False)
+        if result.reports:
+            report = result.reports[int(self._result_report.currentData() or 0)]
+            entries = tuple((True, entry) for entry in spider_service._dict_records(report.get("retained_products")))
+            mode = str(report.get("filter_by") or "accounts")
+        else:
+            entries = result.effective_entries
+            mode = self._config.filters.filter_by
+        self._results_table.setColumnHidden(5, mode not in ("accounts", "both"))
+        self._results_table.setColumnHidden(6, mode not in ("total", "both"))
+        platform = str(self._result_platform.currentData() or "")
+        if platform:
+            entries = tuple((retained, entry) for retained, entry in entries if str(entry.get("涉及平台") or entry.get("platform") or "") == platform)
         self._result_entries = [entry for _, entry in entries]
         self._openable_cells.clear()
 
@@ -1085,15 +1281,18 @@ class SpiderPage(QWidget):
                 check.setData(Qt.ItemDataRole.UserRole, entry)
                 check.setToolTip("保留商品" if is_retained else "未达保留门槛的带货记录")
                 self._results_table.setItem(row, RESULT_CHECK_COLUMN, check)
+                self._results_table.setRowHeight(row, 32)
 
                 for offset, value in enumerate(_entry_columns(entry), start=1):
                     item = QTableWidgetItem(str(value))
                     item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                    try:
-                        num = int(str(value).replace(",", ""))
-                        item.setData(Qt.ItemDataRole.EditRole, num)
-                    except (ValueError, TypeError):
-                        pass
+                    if offset in (RESULT_LIKES_COLUMN, 5, 6):
+                        try:
+                            num = int(str(value).replace(",", ""))
+                            if 0 <= num <= 9_007_199_254_740_991:
+                                item.setData(Qt.ItemDataRole.EditRole, num)
+                        except (ValueError, TypeError, OverflowError):
+                            pass
                     if offset in LINK_COLUMNS and _is_openable_url(value):
                         # 可点开的链接给出手型光标与下划线提示，否则用户不知道能双击。
                         item.setForeground(QColor(theme.BRAND_PRIMARY))
@@ -1103,9 +1302,16 @@ class SpiderPage(QWidget):
                         item.setFont(font)
                         self._openable_cells.add((row, offset))
                     self._results_table.setItem(row, offset, item)
+                    if offset == RESULT_IMAGE_COLUMN and _is_openable_url(value):
+                        item.setData(Qt.ItemDataRole.UserRole, value)
+                        item.setText("加载主图…")
+                        self._request_cover(value)
         finally:
             self._results_table.setSortingEnabled(True)
             self._updating = previous
+        if result.reports:
+            metric = {"likes": RESULT_LIKES_COLUMN, "total": 6, "accounts": 5, "both": 5}.get(mode, 5)
+            self._results_table.sortItems(metric, Qt.SortOrder.DescendingOrder)
 
         self._updating = True
         try:
@@ -1113,6 +1319,58 @@ class SpiderPage(QWidget):
         finally:
             self._updating = previous
         self._refresh_selection_caption()
+
+    def _request_cover(self, url: str) -> None:
+        if url in self._cover_cache:
+            self._on_cover_ready(url, self._cover_cache[url])
+            return
+        if url in self._pending_covers or self._disposed:
+            return
+        if not self.isVisible():
+            self._deferred_covers.add(url)
+            return
+        self._pending_covers.add(url)
+        future = self._cover_pool.submit(spider_service.fetch_product_cover, url)
+
+        def ready(done):
+            try:
+                data = done.result()
+            except Exception:
+                data = b""
+            try:
+                if not self._disposed:
+                    self._bridge.cover_ready.emit(url, data)
+            except RuntimeError:
+                pass
+        future.add_done_callback(ready)
+
+    def _on_cover_ready(self, url: str, data: bytes) -> None:
+        if self._disposed:
+            return
+        self._pending_covers.discard(url)
+        self._deferred_covers.discard(url)
+        self._cover_cache[url] = data
+        if len(self._cover_cache) > 256:
+            self._cover_cache.pop(next(iter(self._cover_cache)))
+        buffer = QBuffer()
+        buffer.setData(QByteArray(data))
+        buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+        reader = QImageReader(buffer)
+        size = reader.size()
+        pixmap = QPixmap.fromImage(reader.read()) if size.width() > 0 and size.width() * size.height() <= 20_000_000 else QPixmap()
+        sorting = self._results_table.isSortingEnabled()
+        self._results_table.setSortingEnabled(False)
+        try:
+            for row in range(self._results_table.rowCount()):
+                item = self._results_table.item(row, RESULT_IMAGE_COLUMN)
+                if item is not None and item.data(Qt.ItemDataRole.UserRole) == url:
+                    item.setText("查看" if not pixmap.isNull() else "打开主图链接")
+                    if not pixmap.isNull():
+                        item.setIcon(QIcon(pixmap.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)))
+                        self._results_table.setIconSize(QSize(64, 64))
+                        self._results_table.setRowHeight(row, 72)
+        finally:
+            self._results_table.setSortingEnabled(sorting)
 
     def _on_result_item_changed(self, item: QTableWidgetItem) -> None:
         if self._updating or item.column() != RESULT_CHECK_COLUMN:
@@ -1152,7 +1410,7 @@ class SpiderPage(QWidget):
         item = self._results_table.item(row, column)
         if item is None:
             return ""
-        text = item.text().strip()
+        text = str(item.data(Qt.ItemDataRole.UserRole) or "") if column == RESULT_IMAGE_COLUMN else item.text().strip()
         return text if _is_openable_url(text) else ""
 
     def _open_result_link(self, row: int, column: int) -> None:
@@ -1225,10 +1483,12 @@ class SpiderPage(QWidget):
         total = self._results_table.rowCount()
         if total == 0:
             self._selection_caption.setText("")
+            self._send_button.setEnabled(False)
             return
         picked = len(self._selected_entries())
         urls = self._selected_urls()
         self._selection_caption.setText(f"已选 {picked}/{total} 款，可送出 {len(urls)} 个链接。")
+        self._send_button.setEnabled(bool(urls) and not self._running)
 
     def _selected_urls(self) -> tuple[str, ...]:
         if self._last_result is None:
@@ -1280,6 +1540,10 @@ class SpiderPage(QWidget):
         不做这步的话，关掉应用后扫码登录的浏览器窗口与正在跑的抓取进程会
         残留在后台。
         """
+        self._disposed = True
+        if hasattr(self, "_schedule_timer"):
+            self._schedule_timer.stop()
+        self._cover_pool.shutdown(wait=False, cancel_futures=True)
         if self._login_session is not None:
             try:
                 self._login_session.close()
@@ -1288,6 +1552,17 @@ class SpiderPage(QWidget):
             self._login_session = None
         if self._running:
             self._cancel.set()
+
+    def showEvent(self, event) -> None:  # noqa: ANN001 - QShowEvent
+        super().showEvent(event)
+        urls = tuple(self._deferred_covers)
+        self._deferred_covers.clear()
+        for url in urls:
+            self._request_cover(url)
+
+    def closeEvent(self, event) -> None:  # noqa: ANN001 - QCloseEvent
+        self.shutdown()
+        super().closeEvent(event)
 
     # ────────────────────────────── 测试辅助 ──────────────────────────────
 

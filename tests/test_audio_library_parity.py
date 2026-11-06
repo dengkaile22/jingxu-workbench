@@ -204,3 +204,49 @@ class TestUnsupportedDownloadUrl:
         assert "支持" in message
         assert "分享链接" in message
         assert "主页链接" not in message
+
+
+def test_probe_audio_cache_and_batch(monkeypatch, tmp_path: Path) -> None:
+    from unittest.mock import MagicMock
+    from jingxu.infrastructure.audio_library import (
+        clear_audio_probe_cache,
+        probe_audio,
+        probe_audio_batch,
+    )
+
+    clear_audio_probe_cache()
+    file1 = tmp_path / "bgm1.mp3"
+    file2 = tmp_path / "bgm2.mp3"
+    file1.write_bytes(b"audio1")
+    file2.write_bytes(b"audio2")
+
+    mock_run = MagicMock()
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = json.dumps(
+        {
+            "streams": [{"codec_type": "audio", "codec_name": "mp3", "sample_rate": "44100", "channels": 2}],
+            "format": {"duration": "60.0"},
+        }
+    )
+    mock_run.return_value.stderr = ""
+    monkeypatch.setattr("subprocess.run", mock_run)
+
+    dummy_tool = tmp_path / "ffprobe.exe"
+    dummy_tool.write_text("dummy")
+
+    t1 = probe_audio(file1, dummy_tool)
+    assert t1.duration == 60.0
+    assert mock_run.call_count == 1
+
+    # 再次探测相同文件：命中缓存
+    t2 = probe_audio(file1, dummy_tool)
+    assert t2.duration == 60.0
+    assert mock_run.call_count == 1
+    assert t1.id != t2.id
+
+    # 批量探测
+    results = probe_audio_batch([file1, file2], dummy_tool)
+    assert len(results) == 2
+    assert results[0][1] is not None and results[1][1] is not None
+    assert mock_run.call_count == 2
+

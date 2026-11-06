@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QProgressBar,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -29,11 +30,23 @@ from jingxu.infrastructure.downloader import (
     has_yt_dlp,
 )
 from jingxu.ui import theme
-from jingxu.ui.widgets import Caption, PrimaryButton, SecondaryButton, SectionHeader
+from jingxu.ui.widgets import (
+    Caption,
+    PrimaryButton,
+    SecondaryButton,
+    SectionHeader,
+    chip_qss,
+    status_chip,
+)
 
 URL_PATTERN = re.compile(r"https?://[^\s\"'<>）)】\]]+", re.IGNORECASE)
 COLUMNS = ("任务", "文件名", "状态", "进度", "速度", "说明")
+TASK_COLUMN = COLUMNS.index("任务")
 FILENAME_COLUMN = COLUMNS.index("文件名")
+STATUS_COLUMN = COLUMNS.index("状态")
+PROGRESS_COLUMN = COLUMNS.index("进度")
+SPEED_COLUMN = COLUMNS.index("速度")
+MESSAGE_COLUMN = COLUMNS.index("说明")
 
 STATE_COLORS = {
     DownloadState.PENDING: theme.INK_MUTED,
@@ -42,6 +55,74 @@ STATE_COLORS = {
     DownloadState.FAILED: theme.STATUS_FAILED,
     DownloadState.CANCELLED: theme.INK_MUTED,
 }
+
+# 状态胶囊底色：下载中与失败用浅色底强调，其余素色。
+STATE_TINTS = {
+    DownloadState.PENDING: "#F1F0EA",
+    DownloadState.RUNNING: "#FBF1E3",
+    DownloadState.COMPLETED: "#E9F3EC",
+    DownloadState.FAILED: "#FAEAE7",
+    DownloadState.CANCELLED: "#F1F0EA",
+}
+
+
+class StatusChipCell(QWidget):
+    """状态列的胶囊单元格（浅底 + 彩色文字）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._state_key: tuple[str, str, str] | None = None
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 0, 6, 0)
+        row.setSpacing(0)
+        self.chip = QLabel("")
+        row.addWidget(self.chip)
+        row.addStretch(1)
+
+    def set_state(self, text: str, *, color: str, tint: str) -> None:
+        key = (text, color, tint)
+        if key == self._state_key:
+            return
+        self._state_key = key
+        self.chip.setText(text)
+        self.chip.setStyleSheet(chip_qss(color=color, tint=tint))
+
+
+class ProgressCell(QWidget):
+    """进度列的进度条 + 百分比文本。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._color: str | None = None
+        row = QHBoxLayout(self)
+        row.setContentsMargins(6, 0, 8, 0)
+        row.setSpacing(8)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setFixedHeight(8)
+        self.bar.setTextVisible(False)
+        row.addWidget(self.bar, stretch=1)
+        self.percent = QLabel("")
+        self.percent.setObjectName("Mono")
+        self.percent.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 11px;")
+        self.percent.setMinimumWidth(40)
+        self.percent.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.percent)
+
+    def set_progress(self, *, percent: float, color: str, show_percent: bool) -> None:
+        value = max(0.0, min(percent, 100.0))
+        target = int(value)
+        if self.bar.value() != target:
+            self.bar.setValue(target)
+        if self._color != color:
+            self._color = color
+            self.bar.setStyleSheet(
+                f"QProgressBar {{ background: {theme.SURFACE_SUNK}; border: none; border-radius: 4px; }}"
+                f"QProgressBar::chunk {{ background: {color}; border-radius: 4px; }}"
+            )
+        text = f"{value:.0f}%" if show_percent else ""
+        if self.percent.text() != text:
+            self.percent.setText(text)
 
 
 TERMINAL_STATES = (
@@ -83,6 +164,15 @@ class DownloadPage(QWidget):
         self._rows: dict[str, int] = {}
         self._row_jobs: dict[int, str] = {}
         self._updating = False
+        # 行级刷新缓存：变更签名与状态（跳过高频事件里的重复刷新）。
+        self._row_signatures: dict[int, tuple] = {}
+        self._row_state: dict[int, DownloadState] = {}
+        self._last_counts: tuple[int, ...] | None = None
+        self._pending_jobs: dict[str, DownloadJob] = {}
+        self._jobs_timer = QTimer(self)
+        self._jobs_timer.setSingleShot(True)
+        self._jobs_timer.setInterval(60)
+        self._jobs_timer.timeout.connect(self._flush_pending_jobs)
 
         bridge = DownloadBridge(self)
         bridge.event.connect(self._on_queue_event)
@@ -113,7 +203,17 @@ class DownloadPage(QWidget):
         layout.addSpacing(12)
         layout.addLayout(self._build_actions_row())
 
-        layout.addSpacing(8)
+        layout.addSpacing(10)
+        layout.addLayout(self._build_overview())
+
+        layout.addSpacing(6)
+        self._empty_hint = Caption(
+            "粘贴链接后点击「开始下载」，任务会按顺序出现在这里；等待中的任务可双击文件名修改。"
+        )
+        self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_hint.setContentsMargins(0, 18, 0, 18)
+        layout.addWidget(self._empty_hint)
+
         self._table = QTableWidget(0, len(COLUMNS))
         self._table.setHorizontalHeaderLabels(list(COLUMNS))
         self._table.setEditTriggers(
@@ -123,11 +223,13 @@ class DownloadPage(QWidget):
         )
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.verticalHeader().setVisible(False)
+        self._table.verticalHeader().setDefaultSectionSize(36)
+        self._table.setShowGrid(False)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setColumnWidth(0, 240)
         self._table.setColumnWidth(1, 220)
-        self._table.setColumnWidth(2, 80)
-        self._table.setColumnWidth(3, 80)
+        self._table.setColumnWidth(STATUS_COLUMN, 96)
+        self._table.setColumnWidth(PROGRESS_COLUMN, 200)
         self._table.setColumnWidth(4, 90)
         self._table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._table, stretch=1)
@@ -139,6 +241,7 @@ class DownloadPage(QWidget):
         self._queue.set_output_directory(default_download_directory())
         self._queue.set_concurrency(3)
         self._directory_edit.setText(str(default_download_directory()))
+        self._refresh_overview()
 
     # ────────────────────────────── 构建 ──────────────────────────────
 
@@ -208,6 +311,55 @@ class DownloadPage(QWidget):
 
         row.addStretch(1)
         return row
+
+    def _build_overview(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._counts = Caption("")
+        row.addWidget(self._counts)
+        self._count_chips: dict[str, QLabel] = {}
+        self._count_labels: dict[str, str] = {}
+        for key, label, color, tint in (
+            ("pending", "等待中", theme.INK_MUTED, "#F1F0EA"),
+            ("running", "下载中", theme.STATUS_RUNNING, "#FBF1E3"),
+            ("completed", "已完成", "#3F7A55", "#E9F3EC"),
+            ("failed", "失败", theme.STATUS_FAILED, "#FAEAE7"),
+        ):
+            chip = status_chip(label, color=color, tint=tint)
+            chip.setVisible(False)
+            self._count_chips[key] = chip
+            self._count_labels[key] = label
+            row.addWidget(chip)
+        row.addStretch(1)
+        return row
+
+    def _refresh_overview(self) -> None:
+        """更新计数胶囊与空状态提示（与任务表保持同步，内容不变则跳过）。"""
+        jobs = self._queue.jobs
+        counts = {
+            "pending": sum(1 for job in jobs if job.state is DownloadState.PENDING),
+            "running": sum(1 for job in jobs if job.state is DownloadState.RUNNING),
+            "completed": sum(1 for job in jobs if job.state is DownloadState.COMPLETED),
+            "failed": sum(1 for job in jobs if job.state is DownloadState.FAILED),
+        }
+        signature = (
+            len(jobs),
+            counts["pending"],
+            counts["running"],
+            counts["completed"],
+            counts["failed"],
+            self._table.rowCount(),
+        )
+        if signature == self._last_counts:
+            return
+        self._last_counts = signature
+
+        self._counts.setText(f"共 {len(jobs)} 个任务" if jobs else "暂无下载任务")
+        for key, count in counts.items():
+            chip = self._count_chips[key]
+            chip.setText(f"{self._count_labels[key]} {count}")
+            chip.setVisible(count > 0)
+        self._empty_hint.setVisible(self._table.rowCount() == 0)
 
     def _backend_text(self) -> str:
         if has_yt_dlp():
@@ -291,6 +443,9 @@ class DownloadPage(QWidget):
             self._table.setRowCount(0)
             self._rows.clear()
             self._row_jobs.clear()
+            self._row_signatures.clear()
+            self._row_state.clear()
+            self._pending_jobs.clear()
             for job in jobs:
                 row = self._table.rowCount()
                 self._table.insertRow(row)
@@ -299,6 +454,7 @@ class DownloadPage(QWidget):
                 self._update_row(row, job)
         finally:
             self._updating = previous
+        self._refresh_overview()
 
     def _send_to_materials(self) -> None:
         finished = [
@@ -320,10 +476,28 @@ class DownloadPage(QWidget):
             self._table.insertRow(row)
             self._rows[job.id] = row
             self._row_jobs[row] = job.id
-        row = self._rows.get(job.id)
-        if row is None:
+            self._update_row(row, job)
+            self._refresh_overview()
             return
-        self._update_row(row, job)
+        self._pending_jobs[job.id] = job
+        if event == "finished":
+            # 终态（完成/失败/取消）立即呈现：文件名、用时等结果需要马上可见，
+            # 顺带把积压的进度更新一并落地。
+            self._jobs_timer.stop()
+            self._flush_pending_jobs()
+            return
+        # 其余进度事件（每秒可能多条）合并到 60ms 节拍，避免逐条刷新整张表。
+        if not self._jobs_timer.isActive():
+            self._jobs_timer.start()
+
+    def _flush_pending_jobs(self) -> None:
+        pending = list(self._pending_jobs.values())
+        self._pending_jobs.clear()
+        for job in pending:
+            row = self._rows.get(job.id)
+            if row is not None:
+                self._update_row(row, job)
+        self._refresh_overview()
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._updating or item.column() != FILENAME_COLUMN:
@@ -333,32 +507,93 @@ class DownloadPage(QWidget):
             return
         if not self._queue.set_filename(job_id, item.text()):
             self._status.setText("该任务已不存在，文件名未保存。")
+            return
+        # 立即回显清洗后的文件名（不等合并节拍，避免短暂显示含非法字符的输入）。
+        current = next((job for job in self._queue.jobs if job.id == job_id), None)
+        if current is not None:
+            self._row_signatures.pop(item.row(), None)
+            self._update_row(item.row(), current)
+
+    @staticmethod
+    def _text_color(column: int, job: DownloadJob) -> str:
+        """文本颜色：状态色只强调失败/取消的说明列，其余保持中性。"""
+        if column == MESSAGE_COLUMN:
+            if job.state in (DownloadState.FAILED, DownloadState.CANCELLED):
+                return STATE_COLORS[job.state]
+            return theme.INK_MUTED
+        if column == SPEED_COLUMN:
+            return theme.INK_MUTED
+        return theme.INK_PRIMARY
 
     def _update_row(self, row: int, job: DownloadJob) -> None:
-        color = STATE_COLORS.get(job.state, theme.INK_MUTED)
-        progress = f"{job.percent:.0f}%" if job.state is DownloadState.RUNNING else ""
-        suggestion = job.filename or Path(job.display_filename).stem or job.display_filename
-        values = (
-            job.display_name,
-            suggestion,
-            job.state.display_text,
-            progress,
+        """刷新一行的文本、状态胶囊与进度条。
+
+        高频进度事件会反复调用本方法；用「变更签名」跳过未变化的行，并把
+        胶囊/进度条的样式表只在状态变化时重写（``setStyleSheet`` 会触发
+        整棵子树的样式重算，是刷新路径上最贵的操作）。
+        """
+        signature = (
+            job.state,
+            round(job.percent, 1),
             job.speed,
             job.message,
+            job.display_name,
+            job.filename,
         )
+        if signature == self._row_signatures.get(row) and self._row_state.get(row) is job.state:
+            return
+        state_changed = self._row_state.get(row) is not job.state
+        self._row_signatures[row] = signature
+        self._row_state[row] = job.state
+
+        color = STATE_COLORS.get(job.state, theme.INK_MUTED)
+        tint = STATE_TINTS.get(job.state, "#F1F0EA")
+        suggestion = job.filename or Path(job.display_filename).stem or job.display_filename
+        # 状态与进度列由单元格控件呈现，这里保留空 item 以维持列结构与非编辑性。
+        values = (job.display_name, suggestion, "", "", job.speed, job.message)
         previous = self._updating
         self._updating = True
         try:
             for column, value in enumerate(values):
                 item = self._table.item(row, column)
+                created = item is None
                 if item is None:
                     item = QTableWidgetItem()
                     self._table.setItem(row, column, item)
-                item.setText(str(value))
-                item.setForeground(QColor(color))
-                if column == FILENAME_COLUMN:
-                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-                else:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                text = str(value)
+                if item.text() != text:
+                    item.setText(text)
+                    item.setForeground(QColor(self._text_color(column, job)))
+                elif created or state_changed:
+                    item.setForeground(QColor(self._text_color(column, job)))
+                if created:
+                    if column == FILENAME_COLUMN:
+                        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+                    else:
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            task_item = self._table.item(row, TASK_COLUMN)
+            if task_item is not None and task_item.toolTip() != job.url:
+                task_item.setToolTip(job.url)
+            filename_item = self._table.item(row, FILENAME_COLUMN)
+            if filename_item is not None:
+                hint = "双击修改文件名（等待中的任务改名会直接影响落盘文件名）"
+                if filename_item.toolTip() != hint:
+                    filename_item.setToolTip(hint)
         finally:
             self._updating = previous
+
+        chip_cell = self._table.cellWidget(row, STATUS_COLUMN)
+        if not isinstance(chip_cell, StatusChipCell):
+            chip_cell = StatusChipCell()
+            self._table.setCellWidget(row, STATUS_COLUMN, chip_cell)
+        chip_cell.set_state(job.state.display_text, color=color, tint=tint)
+
+        progress_cell = self._table.cellWidget(row, PROGRESS_COLUMN)
+        if not isinstance(progress_cell, ProgressCell):
+            progress_cell = ProgressCell()
+            self._table.setCellWidget(row, PROGRESS_COLUMN, progress_cell)
+        progress_cell.set_progress(
+            percent=job.percent,
+            color=color,
+            show_percent=job.state is not DownloadState.PENDING,
+        )

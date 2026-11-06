@@ -33,19 +33,20 @@ from jingxu.infrastructure.paths import data_directory
 from jingxu.infrastructure.process_control import ProcessTreeGuard, no_window_kwargs
 from jingxu.infrastructure.profile_lock import (
     lock_files_present,
-    probe_holder_pids,
+    probe_session_holder_pids as probe_holder_pids,
     remove_stale_locks,
-    terminate_profile_holders as _terminate_profile_holders,
+    terminate_session_holders as _terminate_profile_holders,
 )
 
 SPIDER_ENV_DIR = "JINGXU_SPIDER_DIR"
 SPIDER_ENV_PYTHON = "JINGXU_SPIDER_PYTHON"
 
-# 单次抓取的兜底超时（秒）。真实抓取要逐账号翻页，这里只防挂死。
-DEFAULT_RUN_TIMEOUT_SECONDS = 1800.0
+# A complete multi-account crawl has no fixed 30-minute deadline. Individual
+# browser/network operations retain their own timeouts and cancellation guard.
+DEFAULT_RUN_TIMEOUT_SECONDS = None
 
 # CLI 依赖模块（缺失时给出可操作提示，与爬虫 requirements.txt 对应）
-REQUIRED_MODULES = ("DrissionPage", "requests", "openpyxl")
+REQUIRED_MODULES = ("DrissionPage", "requests", "openpyxl", "PIL")
 # 平台识别关键字（对齐爬虫 accounts 的 platform 字段）
 PLATFORMS = ("douyin", "kuaishou")
 PLATFORM_LABELS = {"douyin": "抖音", "kuaishou": "快手"}
@@ -57,6 +58,23 @@ FILTER_MODES = (
     ("total", "按总频次"),
     ("both", "账号数与总频次"),
 )
+
+
+def fetch_product_cover(url: str) -> bytes:
+    """Fetch an optional product image without blocking or failing the crawl UI."""
+    from urllib.request import Request, urlopen
+    limit = 4 * 1024 * 1024
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return b""
+        with urlopen(Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "image/*"}), timeout=5) as response:
+            if int(response.headers.get("Content-Length", "0") or 0) > limit:
+                return b""
+            data = response.read(limit + 1)
+        return data if len(data) <= limit else b""
+    except (OSError, TypeError, ValueError):
+        return b""
 
 
 class SpiderError(RuntimeError):
@@ -229,6 +247,8 @@ class SpiderFilters:
     fuzzy_threshold: float = 0.75
     max_scrolls: int = 25
     headless: bool = False
+    browser_rotate_seconds: int = 300
+    browser_rotate_pages: int = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +257,7 @@ class SpiderConfig:
 
     accounts: tuple[SpiderAccount, ...] = ()
     filters: SpiderFilters = field(default_factory=SpiderFilters)
+    report_tasks: tuple[SpiderFilters, ...] = ()
 
     @property
     def enabled_accounts(self) -> tuple[SpiderAccount, ...]:
@@ -249,6 +270,7 @@ class SpiderConfig:
     def to_dict(self) -> dict:
         return {
             "schemaVersion": 1,
+            "reportTasks": [SpiderConfig(filters=task).to_dict()["filters"] for task in self.report_tasks],
             "accounts": [account.to_dict() for account in self.accounts],
             "filters": {
                 "timeMode": self.filters.time_mode,
@@ -263,12 +285,14 @@ class SpiderConfig:
                 "fuzzyThreshold": self.filters.fuzzy_threshold,
                 "maxScrolls": self.filters.max_scrolls,
                 "headless": self.filters.headless,
+                "browserRotateSeconds": self.filters.browser_rotate_seconds,
+                "browserRotatePages": self.filters.browser_rotate_pages,
             },
         }
 
     @classmethod
     def from_dict(cls, payload: dict) -> "SpiderConfig":
-        raw_accounts = payload.get("accounts") or []
+        raw_accounts = _dict_records(payload.get("accounts"))
         accounts = tuple(
             account
             for account in (
@@ -279,6 +303,8 @@ class SpiderConfig:
             if account.url_or_id
         )
         raw = payload.get("filters") or {}
+        if not isinstance(raw, dict):
+            raw = {}
         defaults = SpiderFilters()
         filters = SpiderFilters(
             time_mode=_choice(
@@ -305,8 +331,14 @@ class SpiderConfig:
             ),
             max_scrolls=_int(raw.get("maxScrolls"), defaults.max_scrolls, minimum=1),
             headless=bool(raw.get("headless", defaults.headless)),
+            browser_rotate_seconds=_int(raw.get("browserRotateSeconds"), defaults.browser_rotate_seconds, minimum=30),
+            browser_rotate_pages=_int(raw.get("browserRotatePages"), defaults.browser_rotate_pages, minimum=1),
         )
-        return cls(accounts=accounts, filters=filters)
+        report_tasks = tuple(
+            cls.from_dict({"filters": task}).filters
+            for task in _dict_records(payload.get("reportTasks"))
+        )
+        return cls(accounts=accounts, filters=filters, report_tasks=report_tasks)
 
 
 def _choice(value: object, allowed: set[str], fallback: str) -> str:
@@ -314,10 +346,14 @@ def _choice(value: object, allowed: set[str], fallback: str) -> str:
     return text if text in allowed else fallback
 
 
+def _dict_records(value: object) -> tuple[dict, ...]:
+    return tuple(item for item in value if isinstance(item, dict)) if isinstance(value, (list, tuple)) else ()
+
+
 def _int(value: object, fallback: int, *, minimum: int) -> int:
     try:
         return max(minimum, int(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return fallback
 
 
@@ -474,7 +510,7 @@ def exports_directory() -> Path:
 
 
 def profile_directory() -> Path:
-    """浏览器登录态目录（首次扫码登录后复用，无需重复登录）。"""
+    """Cookie 存储和临时独立环境目录；浏览器不直接使用此根目录。"""
     return data_directory() / "Spider" / "browser_profile"
 
 
@@ -518,18 +554,23 @@ def profile_status() -> tuple[bool, str]:
     浏览器首次启动就会生成，空档案也有。因此这里只如实报告档案状态与路径，
     真正的判据是抓取能否读到数据，不向用户做虚假保证。
     """
-    directory = profile_directory()
-    if not directory.is_dir() or not any(directory.iterdir()):
-        return False, "尚未建立浏览器档案（首次抓取会打开浏览器要求扫码）"
-
+    file = profile_directory() / "cookies.json"
+    if not file.is_file() or file.is_symlink():
+        return False, "尚未保存 Cookie（扫码登录后自动保存，抓取使用独立新环境）"
     try:
-        moment = datetime.fromtimestamp(directory.stat().st_mtime)
-    except OSError:
-        return True, "浏览器档案已存在"
-    return (
-        True,
-        f"浏览器档案已存在（{moment.strftime('%m-%d %H:%M')} 更新，若抓取无数据请重新扫码）",
-    )
+        document = json.loads(file.read_text(encoding="utf-8-sig"))
+        cookies = document.get("cookies", [])
+        if not isinstance(cookies, list):
+            return False, "Cookie 文件格式无效，请重新扫码"
+        now = time.time()
+        count = sum(1 for item in cookies if isinstance(item, dict) and item.get("name") and item.get("value")
+                    and ("expires" not in item or isinstance(item["expires"], (int, float)) and item["expires"] > now))
+        if not count:
+            return False, "尚无有效 Cookie，请扫码登录"
+        moment = datetime.fromtimestamp(file.stat().st_mtime)
+        return True, f"已单独保存 {count} 条 Cookie（{moment.strftime('%m-%d %H:%M')} 更新，登录状态以站点页面为准）"
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False, "保存的 Cookie 无法读取，请重新扫码"
 
 
 def profile_ready() -> bool:
@@ -649,17 +690,26 @@ class SpiderLoginSession:
     profile: Path
 
     def is_running(self) -> bool:
-        return self._manager is not None
+        manager = self._manager
+        if manager is None:
+            return False
+        if hasattr(manager, "_page") and manager._page is None:
+            return False
+        try:
+            return getattr(getattr(getattr(manager, "_page", None), "states", None), "is_alive", True) is not False
+        except Exception:
+            return False
 
-    def close(self, timeout: float = 3.0) -> None:
+    def close(self, timeout: float = 3.0) -> bool:
         """关闭浏览器并落盘 Cookie（幂等）。"""
         manager, self._manager = self._manager, None
         if manager is None:
-            return
+            return True
+        saved = True
         try:
-            manager.close()  # type: ignore[attr-defined]
+            saved = manager.close() is not False  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001 - 关闭失败不应影响退出流程
-            pass
+            saved = False
         if self.profile:
             deadline = time.monotonic() + max(0.0, timeout)
             while time.monotonic() < deadline:
@@ -669,6 +719,7 @@ class SpiderLoginSession:
             else:
                 _terminate_profile_holders(self.profile, timeout=1.0)
             remove_stale_locks(self.profile)
+        return saved
 
 
 def _missing_login_modules() -> tuple[str, ...]:
@@ -943,12 +994,16 @@ class SpiderDiagnosticsView:
         if not isinstance(payload, dict) or not payload:
             return None
         extraction = payload.get("extraction") or {}
+        if not isinstance(extraction, dict):
+            extraction = {}
         raw_issues = payload.get("issues") or []
         login = payload.get("loginState") or {}
+        if not isinstance(login, dict):
+            login = {}
         return cls(
-            issues=tuple(item for item in raw_issues if isinstance(item, dict)),
-            videos_scanned=int(extraction.get("videosScanned") or 0),
-            videos_with_products=int(extraction.get("videosWithProducts") or 0),
+            issues=_dict_records(raw_issues),
+            videos_scanned=_int(extraction.get("videosScanned"), 0, minimum=0),
+            videos_with_products=_int(extraction.get("videosWithProducts"), 0, minimum=0),
             login_states=tuple(
                 (str(platform), str((entry or {}).get("status") or ""))
                 for platform, entry in login.items()
@@ -971,11 +1026,12 @@ class SpiderRunResult:
     diagnostics: SpiderDiagnosticsView | None = None
     accounts: tuple[dict, ...] = ()
     crawl_complete: bool = True
+    reports: tuple[dict, ...] = ()
 
     @property
     def has_payload(self) -> bool:
         """是否有可复用的抓取内容（用于判断是否值得落盘/恢复）。"""
-        return bool(self.retained or self.items)
+        return bool(self.retained or self.items or self.reports)
 
     @property
     def finished_at_display(self) -> str:
@@ -1003,6 +1059,7 @@ class SpiderRunResult:
             ],
             "accounts": list(self.accounts),
             "crawl_complete": self.crawl_complete,
+            "reports": list(self.reports),
         }
 
     @classmethod
@@ -1010,31 +1067,22 @@ class SpiderRunResult:
         if not isinstance(payload, dict):
             return cls(success=False, message="结果格式无效。")
         raw_issues = payload.get("issues") or []
-        issues = tuple(item for item in raw_issues if isinstance(item, dict))
+        issues = _dict_records(raw_issues)
         diagnostics = SpiderDiagnosticsView(issues=issues) if issues else None
         return cls(
             success=bool(payload.get("success")),
             message=str(payload.get("message") or ""),
-            retained=tuple(
-                item
-                for item in (payload.get("retained") or [])
-                if isinstance(item, dict)
-            ),
-            items=tuple(
-                item for item in (payload.get("items") or []) if isinstance(item, dict)
-            ),
+            retained=_dict_records(payload.get("retained")),
+            items=_dict_records(payload.get("items")),
             excel_path=str(payload.get("excelPath") or payload.get("excel_path") or ""),
             json_path=str(payload.get("jsonPath") or payload.get("json_path") or ""),
             finished_at=str(
                 payload.get("finishedAt") or payload.get("finished_at") or ""
             ),
             diagnostics=diagnostics,
-            accounts=tuple(
-                item
-                for item in (payload.get("accounts") or [])
-                if isinstance(item, dict)
-            ),
+            accounts=_dict_records(payload.get("accounts")),
             crawl_complete=bool(payload.get("crawl_complete", True)),
+            reports=_dict_records(payload.get("reports")),
         )
 
     @property
@@ -1132,8 +1180,8 @@ def parse_result_payload(payload: dict) -> SpiderRunResult:
         payload.get("retained_products") or payload.get("retainedProducts") or []
     )
     items_raw = payload.get("all_items") or payload.get("allItems") or []
-    retained = tuple(item for item in retained_raw if isinstance(item, dict))
-    items = tuple(item for item in items_raw if isinstance(item, dict))
+    retained = _dict_records(retained_raw)
+    items = _dict_records(items_raw)
     return SpiderRunResult(
         success=True,
         message=str(
@@ -1148,14 +1196,9 @@ def parse_result_payload(payload: dict) -> SpiderRunResult:
         items=items,
         excel_path=str(payload.get("excel_path") or payload.get("excelPath") or ""),
         diagnostics=SpiderDiagnosticsView.from_payload(payload.get("diagnostics")),
-        accounts=tuple(
-            item
-            for item in (
-                payload.get("account_resolutions") or payload.get("accounts") or []
-            )
-            if isinstance(item, dict)
-        ),
+        accounts=_dict_records(payload.get("account_resolutions") or payload.get("accounts")),
         crawl_complete=bool(payload.get("crawl_complete", True)),
+        reports=_dict_records(payload.get("reports")),
     )
 
 
@@ -1281,6 +1324,16 @@ class SpiderRunner:
         on_log=None,  # noqa: ANN001 - Callable[[str], None] | None
         cancel_event=None,  # noqa: ANN001 - threading.Event | None
     ) -> SpiderRunResult:
+        from jingxu.infrastructure.spider_schedule import CrawlRunLease, RUN_BUSY_MESSAGE
+        lease = CrawlRunLease()
+        if not lease.acquire():
+            return SpiderRunResult(success=False, crawl_complete=False, message=RUN_BUSY_MESSAGE)
+        try:
+            return self._run_with_lease(config, on_log=on_log, cancel_event=cancel_event)
+        finally:
+            lease.close()
+
+    def _run_with_lease(self, config: SpiderConfig, *, on_log=None, cancel_event=None) -> SpiderRunResult:
         environment = check_environment()
         if not environment.available or environment.directory is None:
             return SpiderRunResult(success=False, message=environment.message)
@@ -1291,9 +1344,10 @@ class SpiderRunner:
             )
 
         # 日期范围提前校验：界面是自由文本输入，写错格式只会在抓取中途失败。
-        date_issue = validate_date_filters(config.filters)
-        if date_issue:
-            return SpiderRunResult(success=False, message=date_issue)
+        for task in config.report_tasks or (config.filters,):
+            date_issue = validate_date_filters(task)
+            if date_issue:
+                return SpiderRunResult(success=False, message=date_issue)
 
         workdir = Path(tempfile.mkdtemp(prefix="jingxu-spider-"))
         try:
@@ -1545,13 +1599,21 @@ def _cli_config_document(config: SpiderConfig) -> dict:
         "filter_config": {
             "min_account_count": filters.min_accounts,
             "min_total_occurrences": filters.min_occurrences,
+            "min_like_count": filters.min_likes,
             "filter_by": filters.filter_by,
             "enable_fuzzy_cluster": filters.enable_fuzzy,
             "fuzzy_threshold": filters.fuzzy_threshold,
         },
         "headless": filters.headless,
+        "browser_rotate_seconds": filters.browser_rotate_seconds,
+        "browser_rotate_pages": filters.browser_rotate_pages,
         "max_scrolls_per_account": filters.max_scrolls,
         "export_dir": str(data_directory() / "Spider" / "exports"),
+        "report_tasks": [
+            {key: value for key, value in _cli_config_document(SpiderConfig(filters=task)).items()
+             if key in ("time_config", "filter_config")}
+            for task in config.report_tasks
+        ],
     }
 
 

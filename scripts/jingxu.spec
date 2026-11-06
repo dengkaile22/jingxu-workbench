@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包规格：炳恒快速混剪 · Python 版（Windows x64）。
+"""PyInstaller 打包规格：清影快速混剪 · Python 版（Windows x64）。
 
 设计取舍：
 
@@ -29,7 +29,7 @@ from PyInstaller.utils.hooks import collect_all
 
 PROJECT_ROOT = Path(SPECPATH).resolve().parent          # noqa: F821 - PyInstaller 注入
 PACKAGE_DIR = PROJECT_ROOT / "core"
-APP_NAME = "炳恒快速混剪"
+APP_NAME = "清影快速混剪"
 
 ASSET_DIR = PACKAGE_DIR / "jingxu" / "ui" / "assets"
 # 注意：目标目录必须保留 jingxu/ui/assets 层级，

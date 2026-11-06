@@ -6,6 +6,7 @@ import inspect
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -190,7 +191,7 @@ class RenderQueue:
         self._max_history = max_history
         self._max_concurrency = self.clamp_concurrency(max_concurrency)
 
-        self._pending: list[str] = []
+        self._pending: deque[str] = deque()
         self._jobs: dict[str, _MutableJob] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._listeners: list[ListenerFn] = []
@@ -422,7 +423,7 @@ class RenderQueue:
                     candidate_id = self._pending[0]
                     candidate = self._jobs.get(candidate_id)
                     if candidate is None:
-                        self._pending.pop(0)
+                        self._pending.popleft()
                         continue
 
                     # 排队中的任务尚未占用资源，不能参与独占判断，否则
@@ -445,7 +446,7 @@ class RenderQueue:
                 if self._stop_requested:
                     return
 
-                job_id = self._pending.pop(0)
+                job_id = self._pending.popleft()
                 job = self._jobs[job_id]
                 cancel_event = self._cancel_events[job_id]
                 self._transition_locked(job, JobState.PREPARING)

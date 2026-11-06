@@ -5,6 +5,7 @@ Product aggregator, cross-account identical item detection, and threshold filter
 from typing import List, Tuple, Optional
 from collections import defaultdict
 from datetime import datetime
+from dataclasses import replace
 import re
 from core.models import VideoProductItem, RetainedProduct, OccurrenceFilterConfig
 from core.text_utils import (
@@ -15,11 +16,15 @@ from core.text_utils import (
 from core.record_identity import deduplicate_items
 
 
+_PRICE_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
+_DATE_PREFIX_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+
+
 def parse_price(price_str: str) -> float:
     """Extract numeric price from price string."""
     if not price_str:
         return 0.0
-    match = re.search(r"(\d+(?:\.\d+)?)", price_str)
+    match = _PRICE_PATTERN.search(price_str)
     if match:
         try:
             return float(match.group(1))
@@ -40,7 +45,7 @@ def _sample_video_date(item: Optional[VideoProductItem]) -> str:
             )
         except ValueError:
             # Some source payloads only provide a date, while others append a label.
-            match = re.match(r"^(\d{4}-\d{2}-\d{2})", value)
+            match = _DATE_PREFIX_PATTERN.match(value)
             if match:
                 return match.group(1)
     timestamp = item.publish_time
@@ -99,8 +104,15 @@ class ProductAnalyzer:
             for bucket in buckets:
                 bucket.discard(index) if remove else bucket.add(index)
 
+        exact_cache: dict[tuple[str, str], int] = {}
         for item in items:
             name = item.cleaned_name or item.product_name
+            exact_key = (item.platform, name)
+            cached_idx = exact_cache.get(exact_key)
+            if cached_idx is not None:
+                clusters[cached_idx].append(item)
+                continue
+
             best_idx = -1
             best_sim = 0.0
 
@@ -119,9 +131,12 @@ class ProductAnalyzer:
                 if sim >= self.config.fuzzy_threshold and sim > best_sim:
                     best_sim = sim
                     best_idx = idx
+                    if best_sim >= 0.99999:
+                        break
 
             if best_idx >= 0:
                 clusters[best_idx].append(item)
+                exact_cache[exact_key] = best_idx
                 # If current item's cleaned name is shorter/cleaner, update rep
                 if len(name) < len(cluster_reps[best_idx]) and len(name) >= 4:
                     update_index(
@@ -133,20 +148,26 @@ class ProductAnalyzer:
                 index = len(clusters)
                 clusters.append([item])
                 cluster_reps.append(name)
+                exact_cache[exact_key] = index
                 platform_clusters[item.platform].add(index)
                 update_index(item.platform, index, name)
 
         return clusters
 
     def aggregate_and_filter(
-        self, items: List[VideoProductItem]
+        self, items: List[VideoProductItem], *, include_unfiltered: bool = True
     ) -> Tuple[List[RetainedProduct], List[RetainedProduct]]:
         """
         Aggregate all items, apply threshold filter.
         Returns:
             (retained_products, all_aggregated_products)
         """
-        clusters = self.group_products(deduplicate_items(items))
+        observations = deduplicate_items(items)
+        # Likes are a video-level condition: low-like records must not influence
+        # title clustering, frequency, account reach or the linked example.
+        if self.config.filter_by == "likes":
+            observations = [item for item in observations if item.like_count >= self.config.min_like_count]
+        clusters = self.group_products(observations)
         aggregated: List[RetainedProduct] = []
 
         for cluster in clusters:
@@ -155,9 +176,14 @@ class ProductAnalyzer:
 
             # Pick best representative product name (most frequent or cleanest)
             name_counts = defaultdict(int)
+            name_likes = defaultdict(int)
             for it in cluster:
                 name_counts[it.product_name] += 1
-            best_raw_name = max(name_counts.items(), key=lambda x: x[1])[0]
+                name_likes[it.product_name] = max(name_likes[it.product_name], it.like_count)
+            best_raw_name = max(
+                name_counts,
+                key=lambda name: (name_counts[name], name_likes[name]),
+            )
 
             cleaned_name = cluster[0].cleaned_name or clean_product_title(best_raw_name)
 
@@ -182,9 +208,10 @@ class ProductAnalyzer:
             account_count = len(account_names)
 
             # Unique videos
-            video_ids = list(
-                dict.fromkeys(it.video_id for it in cluster if it.video_id)
-            )
+            video_ids = list(dict.fromkeys(
+                (it.account_id or it.account_name, it.video_id or it.video_url)
+                for it in cluster if it.video_id or it.video_url
+            ))
             video_count = len(video_ids) if video_ids else len(cluster)
 
             # Prices
@@ -200,11 +227,15 @@ class ProductAnalyzer:
                 price_range = "暂无"
 
             # Example link, likes, and date must all come from the same video.
-            best_items = sorted(cluster, key=lambda it: it.like_count, reverse=True)
-            sample_video = next((it for it in best_items if it.video_url), None)
+            best_items = sorted(cluster, key=lambda it: (it.like_count, bool(it.video_url), it.publish_time), reverse=True)
+            sample_video = best_items[0] if best_items else None
             sample_video_url = sample_video.video_url if sample_video else ""
             sample_video_like_count = sample_video.like_count if sample_video else 0
             sample_video_date = _sample_video_date(sample_video)
+            if self.config.filter_by == "likes" and sample_video:
+                best_raw_name = sample_video.product_name
+                cleaned_name = sample_video.cleaned_name
+            cover_url = next((it.cover_url for it in best_items if it.cover_url), "")
 
             max_like_count = max((it.like_count for it in cluster), default=0)
 
@@ -221,6 +252,7 @@ class ProductAnalyzer:
                 max_like_count=max_like_count,
                 sample_video_like_count=sample_video_like_count,
                 sample_video_date=sample_video_date,
+                cover_url=cover_url,
             )
             aggregated.append(retained)
 
@@ -269,5 +301,12 @@ class ProductAnalyzer:
 
         sort_products(filtered)
         sort_products(aggregated)
+
+        # Preserve the SDK's second return value (all products, including those
+        # below the likes threshold). Report tables consume only the first value.
+        if include_unfiltered and self.config.filter_by == "likes" and self.config.min_like_count > 0:
+            _, aggregated = ProductAnalyzer(replace(self.config, min_like_count=0)).aggregate_and_filter(
+                items, include_unfiltered=False
+            )
 
         return filtered, aggregated

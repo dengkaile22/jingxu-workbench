@@ -99,3 +99,48 @@ def test_make_asset_accepts_explicit_codec_and_audio_codec() -> None:
     assert asset.video_codec == "hevc"
     assert asset.audio_codec == ""
     assert asset.has_audio is False
+
+
+def test_probe_media_cache_and_batch(monkeypatch, tmp_path) -> None:
+    import json
+    from unittest.mock import MagicMock
+    from jingxu.infrastructure.ffprobe import (
+        clear_probe_cache,
+        probe_media,
+        probe_media_batch,
+    )
+
+    clear_probe_cache()
+    file1 = tmp_path / "v1.mp4"
+    file2 = tmp_path / "v2.mp4"
+    file1.write_bytes(b"dummy1")
+    file2.write_bytes(b"dummy2")
+
+    mock_run = MagicMock()
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = json.dumps(_payload())
+    mock_run.return_value.stderr = ""
+    monkeypatch.setattr("subprocess.run", mock_run)
+
+    dummy_tool = tmp_path / "ffprobe.exe"
+    dummy_tool.write_text("dummy")
+
+    # 首次探测：调用 subprocess
+    a1 = probe_media(file1, dummy_tool)
+    assert a1.width == 1080
+    assert mock_run.call_count == 1
+
+    # 二次探测相同未修改文件：命中缓存，不再次调用 subprocess
+    a2 = probe_media(file1, dummy_tool)
+    assert a2.width == 1080
+    assert mock_run.call_count == 1
+    assert a1.asset_id != a2.asset_id  # 拥有独立资产 ID
+
+    # 批量探测
+    results = probe_media_batch([file1, file2], dummy_tool)
+    assert len(results) == 2
+    assert results[0][0] == file1 and results[0][1] is not None
+    assert results[1][0] == file2 and results[1][1] is not None
+    # file1 命中缓存，只有 file2 调用了 subprocess
+    assert mock_run.call_count == 2
+

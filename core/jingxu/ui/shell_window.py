@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QEvent, QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -41,7 +41,7 @@ from jingxu.domain.render import ProcessingMode, RenderSettings
 from jingxu.infrastructure.audio_library import AudioLibrary
 from jingxu.infrastructure.downloader import DownloadQueue, default_download_directory
 from jingxu.infrastructure.encoders import default_registry
-from jingxu.infrastructure.ffprobe import ProbeError, probe_media
+from jingxu.infrastructure.ffprobe import ProbeError, probe_media, probe_media_batch
 from jingxu.infrastructure.layer_store import LayerStore, overlay_library_path
 from jingxu.infrastructure.paths import data_directory
 from jingxu.infrastructure.project_store import (
@@ -77,6 +77,7 @@ from jingxu.ui.widgets import (
     SectionExpander,
     SectionHeader,
     render_svg_path,
+    status_chip,
 )
 
 MODULE_COMPOSITION = "composition"
@@ -172,11 +173,11 @@ class GateWell(QFrame):
         watermark_layout = QVBoxLayout(self._watermark)
         watermark_layout.setContentsMargins(0, 0, 0, 0)
         watermark_layout.setSpacing(0)
-        logo = QLabel("炳恒")
+        logo = QLabel("清影")
         logo.setStyleSheet(f"color: {theme.BRAND_BLOOM}; font-size: 30px; font-weight: 700;")
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         watermark_layout.addWidget(logo)
-        title = QLabel("炳恒快速混剪")
+        title = QLabel("清影快速混剪")
         title.setObjectName("GateTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setContentsMargins(0, 16, 0, 0)
@@ -256,7 +257,7 @@ def rotated_text_pixmap(text: str, color: str, *, pixel_size: int = 11) -> QPixm
 class ShellWindow(QMainWindow):
     def __init__(self, ffmpeg: Path, ffprobe: Path, queue: RenderQueue) -> None:
         super().__init__()
-        self.setWindowTitle("炳恒快速混剪")
+        self.setWindowTitle("清影快速混剪")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         # 窗口/任务栏图标（.NET 版为 Assets/AppIcon.ico）。
         # 无边框窗口仍需要它，任务栏与 Alt+Tab 才会显示正确图标。
@@ -272,6 +273,12 @@ class ShellWindow(QMainWindow):
         self._group = 0
         self._request_counter = 0
         self._queue_expanded = True
+        self._queue_signature: tuple | None = None
+        # 队列进度事件的合并刷新节拍（结构性事件仍走即时刷新）。
+        self._queue_ui_timer = QTimer(self)
+        self._queue_ui_timer.setSingleShot(True)
+        self._queue_ui_timer.setInterval(60)
+        self._queue_ui_timer.timeout.connect(self._flush_queue_ui)
         self._inspector_expanded = True
         self._gate_generation = 0
         self._gate_preview_path: str | None = None
@@ -390,7 +397,7 @@ class ShellWindow(QMainWindow):
         row.addWidget(divider)
         row.addSpacing(12)
 
-        wordmark = QLabel("炳恒快速混剪")
+        wordmark = QLabel("清影快速混剪")
         wordmark.setObjectName("Wordmark")
         row.addWidget(wordmark)
 
@@ -712,11 +719,24 @@ class ShellWindow(QMainWindow):
         header.setFixedHeight(theme.QUEUE_COLLAPSED_HEIGHT)
         header_row = QHBoxLayout(header)
         header_row.setContentsMargins(16, 0, 16, 0)
-        header_row.setSpacing(14)
+        header_row.setSpacing(10)
         header_row.addWidget(SectionHeader("任务队列"))
         self._queue_summary = Caption("队列空闲 · 暂无任务")
         self._queue_summary.setWordWrap(False)
         header_row.addWidget(self._queue_summary)
+        self._queue_chips: dict[str, QLabel] = {}
+        self._queue_chip_labels: dict[str, str] = {}
+        for key, label, color, tint in (
+            ("running", "进行中", theme.STATUS_RUNNING, "#FBF1E3"),
+            ("queued", "排队", theme.INK_MUTED, "#F1F0EA"),
+            ("completed", "已完成", "#3F7A55", "#E9F3EC"),
+            ("failed", "失败", theme.STATUS_FAILED, "#FAEAE7"),
+        ):
+            chip = status_chip(label, color=color, tint=tint)
+            chip.setVisible(False)
+            self._queue_chips[key] = chip
+            self._queue_chip_labels[key] = label
+            header_row.addWidget(chip)
         header_row.addStretch(1)
         self._queue_toggle = GlyphButton(icons.UI_CHEVRON, icon_size=16, stroke=1.4, button_size=(30, 30))
         self._queue_toggle.clicked.connect(lambda: self._set_queue_expanded(not self._queue_expanded))
@@ -729,27 +749,41 @@ class ShellWindow(QMainWindow):
         panel_row.setContentsMargins(14, 10, 14, 10)
         panel_row.setSpacing(10)
 
-        icon = QLabel()
-        icon.setPixmap(render_svg_path(icons.STATUS_DRAFT, 16, theme.INK_MUTED, stroke_width=2))
-        panel_row.addWidget(icon, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._queue_icon = QLabel()
+        panel_row.addWidget(self._queue_icon, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         column = QVBoxLayout()
         column.setSpacing(6)
         self._queue_detail = QLabel("队列空闲 · 暂无任务")
         column.addWidget(self._queue_detail)
+
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(10)
         self._queue_progress = QProgressBar()
         self._queue_progress.setRange(0, 100)
-        self._queue_progress.setFixedHeight(5)
+        self._queue_progress.setFixedHeight(8)
         self._queue_progress.setTextVisible(False)
-        self._queue_progress.setFixedWidth(220)
+        self._queue_progress.setFixedWidth(320)
         self._queue_progress.setVisible(False)
-        column.addWidget(self._queue_progress)
-        panel_row.addLayout(column)
+        progress_row.addWidget(self._queue_progress)
+
+        self._queue_percent = QLabel("")
+        self._queue_percent.setObjectName("Mono")
+        self._queue_percent.setStyleSheet(f"color: {theme.STATUS_RUNNING_TEXT}; font-size: 12px; font-weight: 600;")
+        self._queue_percent.setMinimumWidth(46)
+        self._queue_percent.setVisible(False)
+        progress_row.addWidget(self._queue_percent)
+
+        self._queue_timing = Caption("")
+        self._queue_timing.setVisible(False)
+        progress_row.addWidget(self._queue_timing)
+        progress_row.addStretch(1)
+        column.addLayout(progress_row)
+        panel_row.addLayout(column, stretch=1)
 
         queue_hint = Caption("· 完成编排后加入队列，可在此跟踪阶段、进度并取消或重试。")
         queue_hint.setWordWrap(False)
         panel_row.addWidget(queue_hint)
-        panel_row.addStretch(1)
 
         wrapper = QWidget()
         wrapper_layout = QHBoxLayout(wrapper)
@@ -781,19 +815,16 @@ class ShellWindow(QMainWindow):
         added = 0
         failures: list[str] = []
         known = {asset.path for asset in self._assets}
+        to_probe = [Path(raw_path) for raw_path in paths if Path(raw_path) not in known]
 
-        for raw_path in paths:
-            path = Path(raw_path)
-            if path in known:
-                continue
-            try:
-                asset = probe_media(path, self._ffprobe)
-            except ProbeError as error:
-                failures.append(f"{path.name}：{error}")
-                continue
-            self._assets.append(asset)
-            known.add(path)
-            added += 1
+        if to_probe:
+            for path, asset, error in probe_media_batch(to_probe, self._ffprobe, probe_fn=probe_media):
+                if asset is not None:
+                    self._assets.append(asset)
+                    known.add(path)
+                    added += 1
+                else:
+                    failures.append(f"{path.name}：{error}")
 
         if added:
             self._refresh_materials()
@@ -902,6 +933,8 @@ class ShellWindow(QMainWindow):
                 self._bridge.event.emit("gate-preview-failed", (generation, str(error)))
                 return
             self._bridge.event.emit("gate-preview", (generation, str(target)))
+
+        threading.Thread(target=work, name="jingxu-gate-preview", daemon=True).start()
 
     def _on_gate_preview(self, generation: int, path: str) -> None:
         """收到首帧预览：丢弃过期结果（代际守卫）并把旧图清理掉。"""
@@ -1048,7 +1081,7 @@ class ShellWindow(QMainWindow):
             state = "已保存"
         self._save_state_label.setText(state)
         self._inspector_save_label.setText(state)
-        self.setWindowTitle(f"炳恒快速混剪 — {self._project_name}" if self._project_name else "炳恒快速混剪")
+        self.setWindowTitle(f"清影快速混剪 — {self._project_name}" if self._project_name else "清影快速混剪")
 
     def _collect_project_document(self, name: str | None = None) -> ProjectDocument:
         """把当前界面状态收拢为项目文档（不落盘）。"""
@@ -1095,16 +1128,21 @@ class ShellWindow(QMainWindow):
         failures = 0
         for index in range(2):
             entries = document.groups[index] if index < len(document.groups) else ()
-            assets: list[MediaAsset] = []
+            to_probe: list[Path] = []
             for raw_path in entries:
                 path = Path(str(raw_path))
                 if not path.is_file():
                     failures += 1
                     continue
-                try:
-                    assets.append(probe_media(path, self._ffprobe))
-                except ProbeError:
-                    failures += 1
+                to_probe.append(path)
+
+            assets: list[MediaAsset] = []
+            if to_probe:
+                for _, asset, _ in probe_media_batch(to_probe, self._ffprobe, probe_fn=probe_media):
+                    if asset is not None:
+                        assets.append(asset)
+                    else:
+                        failures += 1
             self._materials[index] = assets
         self._refresh_materials()
 
@@ -1301,35 +1339,115 @@ class ShellWindow(QMainWindow):
             generation, message = job
             self._on_effect_preview_failed(int(generation), str(message))
             return
+        # 结构性/终态变化立即刷新；渲染进度（每秒多次）合并为一个 60ms 节拍的刷新，
+        # 避免每个进度事件都触发一次「全页 + 底部条」的界面更新。
+        if event in ("added", "finished"):
+            self._flush_queue_ui()
+        else:
+            self._schedule_queue_ui_refresh()
+
+    def _schedule_queue_ui_refresh(self) -> None:
+        if not self._queue_ui_timer.isActive():
+            self._queue_ui_timer.start()
+
+    def _flush_queue_ui(self) -> None:
+        self._queue_ui_timer.stop()
         self._queue_page.refresh()
         self._refresh_queue_summary()
 
     def _refresh_queue_summary(self) -> None:
         jobs = self._queue.jobs
-        active = [job for job in jobs if job.is_active]
-        finished = [job for job in jobs if not job.is_active]
+        running = [job for job in jobs if job.state in (JobState.PREPARING, JobState.RUNNING, JobState.FINALIZING)]
+        waiting = [job for job in jobs if job.state is JobState.QUEUED]
+        completed = [job for job in jobs if job.state is JobState.COMPLETED]
         failed = [job for job in jobs if job.state is JobState.FAILED]
+        current = next((job for job in jobs if job.state is JobState.RUNNING), None)
+        if current is None:
+            current = next((job for job in jobs if job.state in (JobState.PREPARING, JobState.FINALIZING)), None)
+
+        last = jobs[-1] if jobs else None
+        # 高频队列事件下，底部队列条只有内容变化时才更新（含百分比取整）。
+        signature = (
+            len(jobs),
+            len(running),
+            len(waiting),
+            len(completed),
+            len(failed),
+            current.id if current else "",
+            int(current.percent) if current else -1,
+            current.message if current else "",
+            current.state if current else None,
+            last.state if last else None,
+            last.message if last else "",
+            self._queue.paused,
+        )
+        if signature == self._queue_signature:
+            return
+        self._queue_signature = signature
 
         if not jobs:
             self._queue_summary.setText("队列空闲 · 暂无任务")
             self._queue_detail.setText("队列空闲 · 暂无任务")
-            self._queue_progress.setVisible(False)
-        else:
-            self._queue_summary.setText(
-                f"共 {len(jobs)} 个 · 进行中 {len(active)} · 已结束 {len(finished)} · 失败 {len(failed)}"
+            self._queue_icon.setPixmap(
+                render_svg_path(icons.STATUS_DRAFT, 16, theme.INK_MUTED, stroke_width=2)
             )
-            running = next((job for job in jobs if job.state is JobState.RUNNING), None)
-            if running is not None:
-                self._queue_detail.setText(f"渲染中：{running.display_name} · {running.percent:.0f}%")
-                self._queue_progress.setVisible(True)
-                self._queue_progress.setValue(int(running.percent))
-            else:
-                last = jobs[-1]
-                suffix = f" · {last.message}" if last.message else ""
-                self._queue_detail.setText(
-                    f"最近任务：{last.display_name} · {last.state.display_text}{suffix}"
-                )
-                self._queue_progress.setVisible(False)
+            self._queue_progress.setVisible(False)
+            self._queue_percent.setVisible(False)
+            self._queue_timing.setVisible(False)
+            for chip in self._queue_chips.values():
+                chip.setVisible(False)
+            return
+
+        self._queue_summary.setText(f"共 {len(jobs)} 个任务")
+        counts = {
+            "running": len(running),
+            "queued": len(waiting),
+            "completed": len(completed),
+            "failed": len(failed),
+        }
+        for key, count in counts.items():
+            chip = self._queue_chips[key]
+            chip.setText(f"{self._queue_chip_labels[key]} {count}")
+            chip.setVisible(count > 0)
+
+        if current is not None:
+            color = {
+                JobState.PREPARING: theme.STATUS_RUNNING,
+                JobState.RUNNING: theme.STATUS_RUNNING,
+                JobState.FINALIZING: theme.STATUS_RUNNING,
+            }.get(current.state, theme.INK_MUTED)
+            icon = {
+                JobState.PREPARING: icons.STATUS_QUEUED,
+                JobState.RUNNING: icons.STATUS_RUNNING,
+                JobState.FINALIZING: icons.STATUS_RUNNING,
+            }.get(current.state, icons.STATUS_DRAFT)
+            self._queue_icon.setPixmap(render_svg_path(icon, 16, color, stroke_width=2))
+            self._queue_detail.setText(f"{current.state.display_text}：{current.display_name}")
+            self._queue_progress.setVisible(True)
+            self._queue_progress.setValue(int(current.percent))
+            self._queue_percent.setVisible(True)
+            self._queue_percent.setText(f"{current.percent:.0f}%")
+            self._queue_timing.setVisible(bool(current.message))
+            self._queue_timing.setText(current.message)
+            return
+
+        last = jobs[-1]
+        color = {
+            JobState.COMPLETED: "#3F7A55",
+            JobState.FAILED: theme.STATUS_FAILED,
+        }.get(last.state, theme.INK_MUTED)
+        icon = {
+            JobState.COMPLETED: icons.STATUS_COMPLETED,
+            JobState.FAILED: icons.STATUS_FAILED,
+            JobState.CANCELLED: icons.STATUS_CANCELLED,
+        }.get(last.state, icons.STATUS_DRAFT)
+        self._queue_icon.setPixmap(render_svg_path(icon, 16, color, stroke_width=2))
+        paused_note = " · 已暂停调度" if self._queue.paused and waiting else ""
+        self._queue_detail.setText(f"最近任务：{last.display_name} · {last.state.display_text}{paused_note}")
+        self._queue_progress.setVisible(False)
+        self._queue_percent.setVisible(False)
+        self._queue_timing.setVisible(bool(last.message))
+        self._queue_timing.setText(last.message)
 
     def _set_queue_expanded(self, expanded: bool) -> None:
         self._queue_expanded = expanded

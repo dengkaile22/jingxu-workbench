@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from core.browser_manager import BROWSER_SESSION_ERRORS
+from core.browser_recovery import check_browser_session
 
 import requests
 
@@ -217,6 +218,7 @@ def _page_url(page: Any) -> str:
 
 
 def _check_page_access(page: Any) -> None:
+    check_browser_session(page)
     try:
         body = page.run_js("return document.body ? document.body.innerText : '';")
     except BROWSER_SESSION_ERRORS:
